@@ -15,6 +15,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# A date from seconds since 1970, with GNU date (Linux, Git Bash) or BSD's (macOS).
+utc() {
+	date -u -d "@$1" "$2" 2>/dev/null || date -u -r "$1" "$2"
+}
+
 if d=$(git describe --tags --long --abbrev=8 --match 'v[0-9][0-9][0-9][0-9].*' 2>/dev/null); then
 	tag=${d%-*-g*}
 	rest=${d#"$tag"-}
@@ -25,8 +30,8 @@ else
 	when=$(git log -1 --format=%ct 2>/dev/null || date +%s)
 	# A day later, so Sunday counts as the start of the next ISO week.
 	when=$((when + 86400))
-	week=$(date -u -d "@$when" +%V | sed 's/^0//')
-	base="$(date -u -d "@$when" +%G).$week.0"
+	week=$(utc "$when" +%V | sed 's/^0//')
+	base="$(utc "$when" +%G).$week.0"
 	count=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 	hash=$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 fi
