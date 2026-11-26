@@ -160,7 +160,7 @@ pub fn add(app: &mut App, dir: PathBuf, size: UVec2) {
 }
 
 /// Messages show under the caption rather than behind it.
-fn toasts_below_caption(mut toast: Query<&mut Node, (With<ui::ToastText>, Added<ui::ToastText>)>) {
+fn toasts_below_caption(mut toast: Query<&mut Node, Added<ui::ToastBox>>) {
     for mut n in &mut toast {
         n.top = px(84);
     }

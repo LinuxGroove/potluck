@@ -686,6 +686,8 @@ pub struct Prompt;
 #[derive(Component)]
 pub struct ToastText;
 #[derive(Component)]
+pub struct ToastBox;
+#[derive(Component)]
 pub struct InfoText;
 #[derive(Component)]
 pub struct HealthBar;
@@ -713,13 +715,22 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                 TextColor(DIM),
                 Node { position_type: PositionType::Absolute, left: px(18), top: px(14), ..default() },
             ));
+            // over menus too, so a share code shows while Look inside is open
             h.spawn((
+                ToastBox,
+                Node { position_type: PositionType::Absolute, top: px(40), width: percent(100), padding: UiRect::horizontal(percent(15)), justify_content: JustifyContent::Center, ..default() },
+                GlobalZIndex(30),
+                Pickable::IGNORE,
+            ))
+            .with_child((
                 ToastText,
                 Text::new(""),
                 TextFont { font: ui.clone().into(), font_size: FontSize::Px(18.0), ..default() },
                 TextColor(INK),
                 TextLayout::justify(Justify::Center),
-                Node { position_type: PositionType::Absolute, top: px(40), width: percent(100), padding: UiRect::horizontal(percent(15)), justify_content: JustifyContent::Center, ..default() },
+                Node { padding: UiRect::axes(px(16), px(8)), border_radius: BorderRadius::all(px(12)), ..default() },
+                BackgroundColor(Color::srgba(0.07, 0.08, 0.1, 0.8)),
+                Visibility::Hidden,
             ));
             h.spawn((
                 Prompt,
@@ -787,7 +798,7 @@ pub fn update_hud(
     mut texts: ParamSet<(
         Query<(&HotbarCount, &mut Text)>,
         Query<&mut Text, With<Prompt>>,
-        Query<&mut Text, With<ToastText>>,
+        Query<(&mut Text, &mut Visibility), (With<ToastText>, Without<Hud>)>,
         Query<&mut Text, With<InfoText>>,
         Query<(&LabelText, &mut Text, &mut Node, &mut Visibility)>,
     )>,
@@ -833,8 +844,9 @@ pub fn update_hud(
         t.1 -= time.delta_secs();
     }
     toasts.0.retain(|t| t.1 > 0.0);
-    if let Ok(mut t) = texts.p2().single_mut() {
+    if let Ok((mut t, mut v)) = texts.p2().single_mut() {
         t.0 = toasts.0.iter().map(|t| t.0.clone()).collect::<Vec<_>>().join("\n");
+        *v = if t.0.is_empty() { Visibility::Hidden } else { Visibility::Inherited };
     }
     if let Ok(mut t) = texts.p3().single_mut() {
         t.0 = info.line.clone();
