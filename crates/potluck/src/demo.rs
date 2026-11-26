@@ -353,7 +353,8 @@ fn ride(x: &mut Ctx, turn: f32) {
     }
     x.c.mv.y = 1.0;
     x.c.look.x = turn * x.dt;
-    x.c.look.y = -(-0.08 - x.me.pitch) * (x.dt * 3.0).min(1.0);
+    // look down a little so the Mossback under you is in the picture
+    x.c.look.y = -(-0.3 - x.me.pitch) * (x.dt * 3.0).min(1.0);
 }
 
 /// Moves the menu's selection down to an item, one press at a time.

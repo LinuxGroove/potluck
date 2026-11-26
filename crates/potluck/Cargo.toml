@@ -20,10 +20,14 @@ ctrlc = { version = "3.5.3", features = ["termination"] }
 [[bin]]
 name = "potluck"
 path = "src/main.rs"
+# the tests are in the library
+test = false
 
 [[bin]]
 name = "potluck-server"
 path = "src/server.rs"
+# the tests are in the library
+test = false
 
 [dev-dependencies]
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
