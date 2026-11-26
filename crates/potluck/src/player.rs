@@ -1,0 +1,480 @@
+//! The local player: walking, swimming, flying, looking, breaking and placing.
+
+use bevy::prelude::*;
+
+use crate::blocks::{self, BlockId, Shape, AIR, STARTER_HOTBAR, WATER};
+use crate::input::Controls;
+use crate::settings::Settings;
+use crate::ui::Focus;
+use crate::world::{Voxels, START, WY};
+
+pub const HALF_W: f32 = 0.3;
+pub const HEIGHT: f32 = 1.8;
+pub const EYE: f32 = 1.62;
+const GRAVITY: f32 = 30.0;
+const JUMP: f32 = 8.7;
+const WALK: f32 = 4.3;
+const SPRINT: f32 = 5.8;
+const SNEAK: f32 = 1.6;
+const FLY: f32 = 11.0;
+const REACH: f32 = 6.0;
+pub const MAX_HEALTH: f32 = 20.0;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Hit {
+    pub block: IVec3,
+    pub normal: IVec3,
+    pub id: BlockId,
+}
+
+#[derive(Resource)]
+pub struct Me {
+    /// Feet, in the middle of the body.
+    pub pos: Vec3,
+    pub vel: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+    pub flying: bool,
+    pub sprint: bool,
+    pub in_water: bool,
+    pub slot: usize,
+    pub hotbar: [BlockId; 9],
+    /// How many of each hotbar block (survival only).
+    pub counts: [u32; 9],
+    pub health: f32,
+    fall_from: f32,
+    last_jump: f64,
+    pub breaking: Option<(IVec3, f32)>,
+    repeat: f32,
+    /// The creature being ridden.
+    pub riding: Option<u64>,
+    pub third_person: bool,
+    pub target: Option<Hit>,
+    /// The creature in the crosshair, nearer than any block.
+    pub aim_body: Option<u64>,
+    regen: f32,
+    /// Seconds since the last hurt, for the HUD's flash.
+    pub hurt: f32,
+}
+
+impl Default for Me {
+    fn default() -> Self {
+        Self {
+            pos: Vec3::new(START.x + 0.5, 60.0, START.z + 0.5),
+            vel: Vec3::ZERO,
+            yaw: 0.0,
+            pitch: -0.12,
+            on_ground: false,
+            flying: false,
+            sprint: false,
+            in_water: false,
+            slot: 0,
+            hotbar: STARTER_HOTBAR,
+            counts: [0; 9],
+            health: MAX_HEALTH,
+            fall_from: 0.0,
+            last_jump: -10.0,
+            breaking: None,
+            repeat: 0.0,
+            riding: None,
+            third_person: false,
+            target: None,
+            aim_body: None,
+            regen: 0.0,
+            hurt: 9.0,
+        }
+    }
+}
+
+impl Me {
+    pub fn eye(&self) -> Vec3 {
+        self.pos + Vec3::Y * EYE
+    }
+
+    pub fn forward(&self) -> Vec3 {
+        Quat::from_euler(EulerRot::YXZ, self.yaw, self.pitch, 0.0) * Vec3::NEG_Z
+    }
+
+    /// Puts the player on the ground at the start (or a given spot).
+    pub fn respawn(&mut self, w: &Voxels, at: Option<Vec3>) {
+        let p = at.unwrap_or(Vec3::new(START.x + 0.5, 0.0, START.z + 0.5));
+        let top = w.top(p.x.floor() as i32, p.z.floor() as i32);
+        self.pos = Vec3::new(p.x, top as f32 + 1.01, p.z);
+        self.vel = Vec3::ZERO;
+        self.yaw = 0.0;
+        self.pitch = -0.12;
+        self.health = MAX_HEALTH;
+        self.fall_from = self.pos.y;
+        self.riding = None;
+        self.flying = false;
+    }
+
+    pub fn give(&mut self, id: BlockId) {
+        if let Some(i) = self.hotbar.iter().position(|&b| b == id) {
+            self.counts[i] += 1;
+        } else if let Some(i) = (0..9).find(|&i| self.counts[i] == 0) {
+            self.hotbar[i] = id;
+            self.counts[i] = 1;
+        }
+    }
+
+    pub fn hurt(&mut self, amount: f32) {
+        self.health -= amount;
+        self.hurt = 0.0;
+    }
+}
+
+/// Whether a box (min corner, size) overlaps anything solid.
+pub fn blocked(w: &Voxels, min: Vec3, size: Vec3) -> bool {
+    let a = min.floor().as_ivec3();
+    let b = (min + size - Vec3::splat(1e-4)).floor().as_ivec3();
+    for y in a.y..=b.y {
+        for z in a.z..=b.z {
+            for x in a.x..=b.x {
+                if y < 0 {
+                    return true;
+                }
+                if blocks::is_solid(w.get(x, y, z)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Moves a body of the given half width and height by `d`, one axis at a
+/// time, stopping at blocks. Returns which axes hit something.
+pub fn move_body(w: &Voxels, pos: &mut Vec3, d: Vec3, half: f32, height: f32) -> BVec3 {
+    let mut hit = BVec3::FALSE;
+    let steps = (d.abs().max_element() / 0.35).ceil().max(1.0) as i32;
+    let s = d / steps as f32;
+    for _ in 0..steps {
+        for axis in [1usize, 0, 2] {
+            if s[axis] == 0.0 {
+                continue;
+            }
+            let mut p = *pos;
+            p[axis] += s[axis];
+            let min = Vec3::new(p.x - half, p.y, p.z - half);
+            let size = Vec3::new(half * 2.0, height, half * 2.0);
+            if blocked(w, min, size) {
+                match axis {
+                    0 => hit.x = true,
+                    1 => hit.y = true,
+                    _ => hit.z = true,
+                }
+                // slide up to the block's face
+                let lo = min[axis];
+                let hi = lo + size[axis];
+                if s[axis] > 0.0 {
+                    if axis != 1 {
+                        p[axis] = hi.floor() - half - 1e-3;
+                    } else {
+                        p[axis] = hi.floor() - height - 1e-3;
+                    }
+                } else if axis != 1 {
+                    p[axis] = lo.floor() + 1.0 + half + 1e-3;
+                } else {
+                    p[axis] = lo.floor() + 1.0;
+                }
+                let min2 = Vec3::new(p.x - half, p.y, p.z - half);
+                if blocked(w, min2, size) {
+                    p[axis] = pos[axis];
+                }
+            }
+            *pos = p;
+        }
+    }
+    hit
+}
+
+/// Walks a ray through the blocks (Amanatides and Woo) to the first one that
+/// can be broken.
+pub fn raycast(w: &Voxels, from: Vec3, dir: Vec3, reach: f32) -> Option<Hit> {
+    let mut p = from.floor().as_ivec3();
+    let step = dir.signum().as_ivec3();
+    let next = |v: f32, s: i32, p: i32| {
+        if s > 0 { p as f32 + 1.0 - v } else { v - p as f32 }
+    };
+    let inv = Vec3::new(1.0 / dir.x.abs().max(1e-9), 1.0 / dir.y.abs().max(1e-9), 1.0 / dir.z.abs().max(1e-9));
+    let mut t_max = Vec3::new(next(from.x, step.x, p.x) * inv.x, next(from.y, step.y, p.y) * inv.y, next(from.z, step.z, p.z) * inv.z);
+    let mut normal = IVec3::ZERO;
+    let mut t = 0.0;
+    while t <= reach {
+        let id = w.at(p);
+        if id != AIR && id != WATER {
+            return Some(Hit { block: p, normal, id });
+        }
+        if t_max.x < t_max.y && t_max.x < t_max.z {
+            p.x += step.x;
+            t = t_max.x;
+            t_max.x += inv.x;
+            normal = IVec3::new(-step.x, 0, 0);
+        } else if t_max.y < t_max.z {
+            p.y += step.y;
+            t = t_max.y;
+            t_max.y += inv.y;
+            normal = IVec3::new(0, -step.y, 0);
+        } else {
+            p.z += step.z;
+            t = t_max.z;
+            t_max.z += inv.z;
+            normal = IVec3::new(0, 0, -step.z);
+        }
+    }
+    None
+}
+
+pub fn look(c: Res<Controls>, focus: Res<Focus>, mut me: ResMut<Me>) {
+    if !focus.playing() {
+        return;
+    }
+    me.yaw -= c.look.x;
+    me.pitch = (me.pitch - c.look.y).clamp(-1.55, 1.55);
+}
+
+pub fn walk(
+    c: Res<Controls>,
+    focus: Res<Focus>,
+    settings: Res<Settings>,
+    voxels: Res<Voxels>,
+    time: Res<Time>,
+    mut me: ResMut<Me>,
+    mut toasts: ResMut<crate::ui::Toasts>,
+) {
+    let dt = time.delta_secs().min(0.05);
+    let now = time.elapsed_secs_f64();
+    me.hurt += dt;
+    if me.riding.is_some() {
+        me.vel = Vec3::ZERO;
+        me.fall_from = me.pos.y;
+        return;
+    }
+    let playing = focus.playing();
+    let mv = if playing { c.mv } else { Vec2::ZERO };
+    let fwd = Vec3::new(-me.yaw.sin(), 0.0, -me.yaw.cos());
+    let right = Vec3::new(fwd.z * -1.0, 0.0, fwd.x);
+    let wish = (fwd * mv.y + right * mv.x).clamp_length_max(1.0);
+
+    if playing && c.sprint_pressed {
+        me.sprint = !me.sprint;
+    }
+    if mv.y <= 0.1 {
+        me.sprint = false;
+    }
+    if playing && c.jump_pressed {
+        if !settings.survival && now - me.last_jump < 0.3 {
+            me.flying = !me.flying;
+            me.vel.y = 0.0;
+            me.last_jump = -10.0;
+        } else {
+            me.last_jump = now;
+        }
+    }
+    let feet = me.pos.floor().as_ivec3();
+    let mid = (me.pos + Vec3::Y * 0.9).floor().as_ivec3();
+    me.in_water = voxels.at(feet) == WATER || voxels.at(mid) == WATER;
+
+    let mut vel = me.vel;
+    if me.flying {
+        let speed = if me.sprint { FLY * 1.8 } else { FLY };
+        let target = wish * speed;
+        vel.x += (target.x - vel.x) * (dt * 10.0).min(1.0);
+        vel.z += (target.z - vel.z) * (dt * 10.0).min(1.0);
+        let up = if playing && c.jump { 1.0 } else { 0.0 } - if playing && c.crouch { 1.0 } else { 0.0 };
+        vel.y += (up * speed * 0.8 - vel.y) * (dt * 10.0).min(1.0);
+    } else {
+        let speed = if playing && c.crouch { SNEAK } else if me.sprint { SPRINT } else { WALK };
+        let speed = if me.in_water { speed * 0.6 } else { speed };
+        let target = wish * speed;
+        let grip = if me.on_ground { 14.0 } else { 3.0 };
+        vel.x += (target.x - vel.x) * (dt * grip).min(1.0);
+        vel.z += (target.z - vel.z) * (dt * grip).min(1.0);
+        if me.in_water {
+            vel.y -= GRAVITY * 0.25 * dt;
+            vel.y = vel.y.max(-3.0);
+            if playing && c.jump {
+                vel.y = (vel.y + 18.0 * dt).min(3.2);
+            }
+        } else {
+            vel.y -= GRAVITY * dt;
+            vel.y = vel.y.max(-60.0);
+            if playing && c.jump && me.on_ground {
+                vel.y = JUMP;
+            }
+        }
+    }
+    let mut pos = me.pos;
+    let hit = move_body(&voxels, &mut pos, vel * dt, HALF_W, HEIGHT);
+    let landed = hit.y && vel.y < 0.0;
+    if hit.x { vel.x = 0.0 }
+    if hit.z { vel.z = 0.0 }
+    if hit.y { vel.y = 0.0 }
+    // fall damage, in survival
+    if landed {
+        let fell = me.fall_from - pos.y;
+        if settings.survival && !me.in_water && fell > 3.5 {
+            me.hurt((fell - 3.0).floor());
+        }
+    }
+    me.on_ground = landed;
+    if landed && me.flying && !playing {
+        me.flying = false;
+    }
+    if me.on_ground || me.in_water || me.flying || vel.y > 0.0 {
+        me.fall_from = pos.y;
+    }
+    me.pos = pos;
+    me.vel = vel;
+    // health comes back slowly
+    if me.health < MAX_HEALTH {
+        me.regen += dt;
+        if me.regen > 4.0 {
+            me.regen = 0.0;
+            me.health = (me.health + 1.0).min(MAX_HEALTH);
+        }
+    }
+    if me.pos.y < -20.0 || me.health <= 0.0 {
+        let msg = if me.health <= 0.0 { "You were hurt too badly. Back to the hill." } else { "You fell out of the world. Back to the hill." };
+        let w = &*voxels;
+        me.respawn(w, None);
+        toasts.push(msg);
+    }
+    if me.pos.y > WY as f32 + 40.0 {
+        me.pos.y = WY as f32 + 40.0;
+    }
+}
+
+/// Breaking and placing blocks, and choosing what's in hand.
+pub fn build(
+    c: Res<Controls>,
+    focus: Res<Focus>,
+    settings: Res<Settings>,
+    time: Res<Time>,
+    mut voxels: ResMut<Voxels>,
+    mut me: ResMut<Me>,
+    herd: Res<crate::creatures::Herd>,
+) {
+    let dt = time.delta_secs();
+    let dir = me.forward();
+    me.target = raycast(&voxels, me.eye(), dir, REACH);
+    if !focus.playing() || me.riding.is_some() {
+        me.breaking = None;
+        return;
+    }
+    if c.hotbar_step != 0 {
+        me.slot = (me.slot as i32 + c.hotbar_step).rem_euclid(9) as usize;
+    }
+    if let Some(s) = c.hotbar_slot {
+        me.slot = s;
+    }
+    let Some(hit) = me.target else {
+        me.breaking = None;
+        return;
+    };
+    if me.aim_body.is_some() {
+        me.breaking = None;
+        return;
+    }
+    // breaking
+    if c.break_held {
+        let hardness = blocks::block(hit.id).hardness;
+        if hardness >= 0.0 {
+            if settings.survival {
+                let progress = match me.breaking {
+                    Some((b, p)) if b == hit.block => p + dt / hardness.max(0.05),
+                    _ => dt / hardness.max(0.05),
+                };
+                if progress >= 1.0 {
+                    voxels.set(hit.block, AIR);
+                    me.give(hit.id);
+                    me.breaking = None;
+                } else {
+                    me.breaking = Some((hit.block, progress));
+                }
+            } else {
+                me.repeat -= dt;
+                if c.break_pressed || me.repeat <= 0.0 {
+                    voxels.set(hit.block, AIR);
+                    me.repeat = 0.22;
+                }
+            }
+        }
+    } else {
+        me.breaking = None;
+        me.repeat = 0.0;
+    }
+    // placing
+    if c.place_pressed {
+        let id = me.hotbar[me.slot];
+        if settings.survival && me.counts[me.slot] == 0 {
+            return;
+        }
+        let at = if blocks::shape(hit.id) == Shape::Cross { hit.block } else { hit.block + hit.normal };
+        let here = voxels.at(at);
+        if here != AIR && here != WATER && blocks::shape(here) != Shape::Cross {
+            return;
+        }
+        if blocks::is_solid(id) {
+            let min = at.as_vec3();
+            let pmin = Vec3::new(me.pos.x - HALF_W, me.pos.y, me.pos.z - HALF_W);
+            let psize = Vec3::new(HALF_W * 2.0, HEIGHT, HALF_W * 2.0);
+            let overlap = |amin: Vec3, asize: Vec3| (amin.cmplt(min + Vec3::ONE) & (amin + asize).cmpgt(min)).all();
+            if overlap(pmin, psize) {
+                return;
+            }
+            for b in herd.bodies.values() {
+                if overlap(b.pos - Vec3::new(b.half.x, 0.0, b.half.z), b.half * Vec3::new(2.0, 1.0, 2.0)) {
+                    return;
+                }
+            }
+        }
+        // plants need ground under them
+        if blocks::shape(id) == Shape::Cross && !blocks::is_opaque(voxels.at(at - IVec3::Y)) {
+            return;
+        }
+        if voxels.set(at, id) && settings.survival {
+            let s = me.slot;
+            me.counts[s] -= 1;
+        }
+    }
+}
+
+/// Plants with nothing under them fall away.
+pub fn settle_plants(mut voxels: ResMut<Voxels>) {
+    let changed: Vec<IVec3> = voxels.changes.iter().filter(|(_, id)| *id == AIR).map(|(p, _)| *p).collect();
+    for p in changed {
+        let up = p + IVec3::Y;
+        if blocks::shape(voxels.at(up)) == Shape::Cross {
+            voxels.set(up, AIR);
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct MainCamera;
+
+pub fn place_camera(me: Res<Me>, voxels: Res<Voxels>, mut cam: Query<&mut Transform, With<MainCamera>>) {
+    let Ok(mut t) = cam.single_mut() else { return };
+    let rot = Quat::from_euler(EulerRot::YXZ, me.yaw, me.pitch, 0.0);
+    let eye = me.eye();
+    if me.third_person {
+        // back off behind the player, stopping short of blocks
+        let back = rot * Vec3::Z;
+        let mut d = 4.0;
+        let mut s = 0.0;
+        while s < 4.0 {
+            s += 0.25;
+            if blocks::is_solid(voxels.at((eye + back * s).floor().as_ivec3())) {
+                d = (s - 0.4).max(0.3);
+                break;
+            }
+        }
+        t.translation = eye + back * d;
+    } else {
+        t.translation = eye;
+    }
+    t.rotation = rot;
+}

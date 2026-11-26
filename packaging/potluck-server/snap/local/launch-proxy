@@ -1,0 +1,32 @@
+#!/bin/bash
+# Service: Caddy in front of the world, with automatic HTTPS for `domain`.
+# Only enabled when `snap set potluck-server domain=potluck.example.org` is set.
+. "$SNAP/bin/common.sh"
+
+domain="$(cfg domain)"
+if [ -z "$domain" ]; then
+  log "No domain set; the HTTPS proxy is off."
+  exit 0
+fi
+
+mkdir -p "$SNAP_COMMON/caddy" "$SNAP_DATA/caddy"
+email="$(cfg proxy.email)"
+caddyfile="$SNAP_DATA/caddy/Caddyfile"
+{
+  echo "{"
+  echo "	admin off"
+  if [ -n "$email" ]; then
+    echo "	email $email"
+  fi
+  echo "}"
+  echo ""
+  echo "$domain {"
+  echo "	# The world's WebSocket and its status page are on the same port."
+  echo "	reverse_proxy 127.0.0.1:$(cfg port 47126)"
+  echo "}"
+} >"$caddyfile"
+
+export XDG_DATA_HOME="$SNAP_COMMON/caddy"
+export XDG_CONFIG_HOME="$SNAP_DATA/caddy"
+export HOME="$SNAP_COMMON/caddy"
+exec "$SNAP/bin/caddy" run --config "$caddyfile" --adapter caddyfile

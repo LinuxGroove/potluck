@@ -1,3 +1,6 @@
 /target
+/build
+/server.key
+/VERSION
 *.swp
 .DS_Store

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7cc4f0"/>
+      <stop offset="1" stop-color="#ffd9a0"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#sky)"/>
+  <!-- steam -->
+  <path d="M96 70c-10-14 8-22 0-36M128 62c-10-14 8-22 0-36M160 70c-10-14 8-22 0-36" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" opacity="0.85"/>
+  <!-- blocks in the pot: grass, red wool, a lantern -->
+  <g stroke="#1c1a17" stroke-width="5" stroke-linejoin="round">
+    <rect x="62" y="86" width="50" height="50" fill="#8a5a33"/>
+    <rect x="62" y="86" width="50" height="17" fill="#6fbf3f"/>
+    <rect x="146" y="80" width="50" height="50" fill="#d8453b" transform="rotate(10 171 105)"/>
+    <rect x="104" y="72" width="46" height="56" rx="4" fill="#3a2f28"/>
+    <rect x="113" y="82" width="28" height="36" rx="3" fill="#ffc35c"/>
+  </g>
+  <!-- the pot -->
+  <path d="M44 124h168l-14 78a22 22 0 0 1-22 18H80a22 22 0 0 1-22-18z" fill="#2f3a46" stroke="#1c1a17" stroke-width="6" stroke-linejoin="round"/>
+  <rect x="36" y="116" width="184" height="20" rx="10" fill="#45525f" stroke="#1c1a17" stroke-width="6"/>
+  <path d="M84 160h88" stroke="#5b6b7a" stroke-width="8" stroke-linecap="round"/>
+</svg>

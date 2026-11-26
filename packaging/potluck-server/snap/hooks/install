@@ -1,0 +1,4 @@
+#!/bin/bash
+# Publish the default settings so `snap get potluck-server` shows them.
+set -euo pipefail
+snapctl set name="Potluck server" port=47126 seed=26 beacon=true tls.port=443

@@ -1,0 +1,11 @@
+name = "Mossback"
+by = "Potluck"
+kind = "creature"
+about = "A slow, mossy friend from the paddock on the Green. Ride one if you can stay on: they buck."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

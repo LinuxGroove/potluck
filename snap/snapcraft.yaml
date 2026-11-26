@@ -1,0 +1,78 @@
+name: potluck
+title: Potluck
+adopt-info: potluck
+base: core24
+summary: A block world where everything is made by someone you know
+description: |
+  Build, explore and play in a world of blocks, and look inside anything in
+  it. Every creature, block and mini game is a small creation written in
+  Luau that you can read, tweak with sliders, remix into your own copy and
+  share with friends by a code.
+
+  - Look inside anything to see the code that runs it, and Tweak its knobs
+    without touching code
+  - Remix a creation and edit it in any editor: the world reloads it the
+    moment you save
+  - Share a creation with an eight letter code, and load your friends'
+  - Play alone, host a world on the local network, or join a friend's
+    world or an always-on server by its address
+  - Creations friends bring into a world come with them when they join
+  - A calm camera and controller-first controls, fully playable with a
+    keyboard and mouse
+icon: snap/gui/potluck.svg
+grade: stable
+confinement: strict
+compression: lzo
+license: MIT AND OFL-1.1
+website: https://github.com/LinuxGroove/potluck
+source-code: https://github.com/LinuxGroove/potluck
+issues: https://github.com/LinuxGroove/potluck/issues
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  potluck:
+    command: bin/launch-potluck
+    extensions: [gnome]
+    plugs:
+      - audio-playback
+      - joystick
+      - network
+      # hosting a world, and hearing worlds announced on the local network
+      - network-bind
+
+parts:
+  potluck:
+    plugin: nil
+    source: .
+    build-snaps: [rustup]
+    build-packages:
+      - git
+      - pkg-config
+      - clang
+      - libasound2-dev
+      - libudev-dev
+      - libwayland-dev
+      - libxkbcommon-dev
+    stage-packages:
+      - libasound2t64
+      - libudev1
+      - libvulkan1
+      - libxkbcommon-x11-0
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+    override-build: |
+      rustup toolchain install stable --profile minimal
+      rustup default stable
+      version="$(cat VERSION 2>/dev/null || tools/version.sh)"
+      craftctl set version="$(echo "$version" | cut -c1-32)"
+      # CI writes server.key (the game server's key) before building, since
+      # the build environment doesn't see the runner's secrets.
+      POTLUCK_VERSION="$version" cargo build --release --locked --bin potluck
+      install -D -m 0755 target/release/potluck "$CRAFT_PART_INSTALL/bin/potluck"
+      install -D -m 0755 snap/local/potluck "$CRAFT_PART_INSTALL/bin/launch-potluck"
+      install -D -m 0644 LICENSE "$CRAFT_PART_INSTALL/usr/share/doc/potluck/LICENSE"
+      install -D -m 0644 assets/fonts/OFL.txt "$CRAFT_PART_INSTALL/usr/share/doc/potluck/fonts-OFL.txt"

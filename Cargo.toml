@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/potluck"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/LinuxGroove/potluck"
+
+# Fast enough to play in debug: our code lightly optimised, dependencies fully.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 4
+lto = "thin"

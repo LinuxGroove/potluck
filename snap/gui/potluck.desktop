@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Potluck
+Comment=A block world where everything is made by someone you know.
+Exec=potluck
+Icon=${SNAP}/meta/gui/potluck.svg
+Categories=Game;Simulation;
+Keywords=blocks;sandbox;building;voxel;modding;creations;friends;
+StartupWMClass=potluck
