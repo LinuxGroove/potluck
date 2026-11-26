@@ -461,11 +461,11 @@ pub fn place_camera(me: Res<Me>, voxels: Res<Voxels>, mut cam: Query<&mut Transf
     let rot = Quat::from_euler(EulerRot::YXZ, me.yaw, me.pitch, 0.0);
     let eye = me.eye();
     if me.third_person {
-        // back off behind the player, stopping short of blocks
-        let back = rot * Vec3::Z;
-        let mut d = 4.0;
+        // back off behind and above the player, stopping short of blocks
+        let back = rot * Vec3::new(0.0, 0.3, 1.0).normalize();
+        let mut d = 4.5;
         let mut s = 0.0;
-        while s < 4.0 {
+        while s < 4.5 {
             s += 0.25;
             if blocks::is_solid(voxels.at((eye + back * s).floor().as_ivec3())) {
                 d = (s - 0.4).max(0.3);

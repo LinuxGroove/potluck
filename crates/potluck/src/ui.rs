@@ -719,7 +719,7 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                 TextFont { font: ui.clone().into(), font_size: FontSize::Px(18.0), ..default() },
                 TextColor(INK),
                 TextLayout::justify(Justify::Center),
-                Node { position_type: PositionType::Absolute, top: px(40), width: percent(100), justify_content: JustifyContent::Center, ..default() },
+                Node { position_type: PositionType::Absolute, top: px(40), width: percent(100), padding: UiRect::horizontal(percent(15)), justify_content: JustifyContent::Center, ..default() },
             ));
             h.spawn((
                 Prompt,

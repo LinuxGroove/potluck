@@ -358,7 +358,7 @@ pub fn do_acts(
                         bring(&new_id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
                     }
                     if let Some(dir) = lib.list.get(&new_id).and_then(|c| c.dir.clone()) {
-                        toasts.push(format!("Your remix is in {}. Change main.luau in any editor and save: the world reloads it.", dir.display()));
+                        toasts.push(format!("Your remix is in {}. Change main.luau in any editor and save: the world reloads it.", short_path(&dir)));
                         open_folder(&dir);
                     }
                     focus.go(Screen::Inside(new_id));
@@ -488,5 +488,15 @@ pub fn knob_number(c: &Creation, key: &str) -> Option<f64> {
     match c.knobs.get(key) {
         Some(KnobValue::Number(n)) => Some(*n),
         _ => None,
+    }
+}
+
+/// A folder as a player would type it, with their home folder as `~`.
+pub fn short_path(dir: &std::path::Path) -> String {
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if !home.as_os_str().is_empty() && dir.starts_with(&home) => {
+            format!("~/{}", dir.strip_prefix(&home).unwrap_or(dir).display())
+        }
+        _ => dir.display().to_string(),
     }
 }

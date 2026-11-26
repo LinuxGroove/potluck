@@ -47,7 +47,7 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh).chain(),
-                (render::sky, render::lanterns, creatures::draw, net::draw_players, game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::lanterns, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),

@@ -691,6 +691,22 @@ fn blank_body(id: u64) -> Body {
 #[derive(Component)]
 pub struct PlayerView(u32);
 
+/// A person made of boxes, for other players and for yourself seen from
+/// behind.
+fn spawn_person<'a>(commands: &'a mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, hue: f32, pos: Vec3) -> EntityCommands<'a> {
+    let shirt = mats.add(StandardMaterial { base_color: Color::hsl(hue, 0.55, 0.55), perceptual_roughness: 0.9, ..default() });
+    let skin = mats.add(StandardMaterial { base_color: Color::srgb(0.86, 0.68, 0.52), perceptual_roughness: 0.9, ..default() });
+    let legs = mats.add(StandardMaterial { base_color: Color::srgb(0.2, 0.25, 0.4), perceptual_roughness: 0.9, ..default() });
+    let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let mut e = commands.spawn((Transform::from_translation(pos), Visibility::default()));
+    e.with_children(|c| {
+        c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(legs.clone()), Transform::from_xyz(0.0, 0.4, 0.0).with_scale(Vec3::new(0.5, 0.8, 0.28))));
+        c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(shirt.clone()), Transform::from_xyz(0.0, 1.15, 0.0).with_scale(Vec3::new(0.56, 0.7, 0.3))));
+        c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(skin.clone()), Transform::from_xyz(0.0, 1.72, 0.0).with_scale(Vec3::new(0.46, 0.46, 0.46))));
+    });
+    e
+}
+
 pub fn draw_players(
     mut commands: Commands,
     net: Res<Net>,
@@ -715,16 +731,29 @@ pub fn draw_players(
             continue;
         }
         let hue = (p.id as f32 * 67.0) % 360.0;
-        let shirt = mats.add(StandardMaterial { base_color: Color::hsl(hue, 0.55, 0.55), perceptual_roughness: 0.9, ..default() });
-        let skin = mats.add(StandardMaterial { base_color: Color::srgb(0.86, 0.68, 0.52), perceptual_roughness: 0.9, ..default() });
-        let legs = mats.add(StandardMaterial { base_color: Color::srgb(0.2, 0.25, 0.4), perceptual_roughness: 0.9, ..default() });
-        let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-        commands
-            .spawn((PlayerView(p.id), Transform::from_translation(p.pos), Visibility::default()))
-            .with_children(|c| {
-                c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(legs.clone()), Transform::from_xyz(0.0, 0.4, 0.0).with_scale(Vec3::new(0.5, 0.8, 0.28))));
-                c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(shirt.clone()), Transform::from_xyz(0.0, 1.15, 0.0).with_scale(Vec3::new(0.56, 0.7, 0.3))));
-                c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(skin.clone()), Transform::from_xyz(0.0, 1.72, 0.0).with_scale(Vec3::new(0.46, 0.46, 0.46))));
-            });
+        spawn_person(&mut commands, &mut meshes, &mut mats, hue, p.pos).insert(PlayerView(p.id));
+    }
+}
+
+#[derive(Component)]
+pub struct MyView;
+
+/// You, when the camera is behind you.
+pub fn draw_me(
+    mut commands: Commands,
+    me: Res<Me>,
+    mut view: Query<(&mut Transform, &mut Visibility), With<MyView>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    let Ok((mut t, mut vis)) = view.single_mut() else {
+        spawn_person(&mut commands, &mut meshes, &mut mats, 200.0, me.pos).insert((MyView, Visibility::Hidden));
+        return;
+    };
+    t.translation = me.pos;
+    t.rotation = Quat::from_rotation_y(me.yaw);
+    let want = if me.third_person { Visibility::Inherited } else { Visibility::Hidden };
+    if *vis != want {
+        *vis = want;
     }
 }

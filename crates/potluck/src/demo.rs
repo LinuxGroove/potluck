@@ -3,7 +3,9 @@
 //! however slowly the machine draws, and records every frame to a video
 //! (through ffmpeg) with stills along the way.
 //!
-//!     potluck --demo=DIR [--size=1280x720]
+//! ```sh
+//! potluck --demo=DIR [--size=1280x720]
+//! ```
 //!
 //! DIR gets `potluck-test-run.mp4` and numbered PNG stills.
 
@@ -154,7 +156,14 @@ pub fn add(app: &mut App, dir: PathBuf, size: UVec2) {
     app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / FPS)))
         .insert_resource(Demo { steps: script(), at: 0, since: 0.0, frames: 0, shot: 0, rec: Arc::new(Mutex::new(rec)), dir, stills: 0, started: false, ended: 0.0, wall: std::time::Instant::now() })
         .add_systems(PostStartup, spawn_caption)
-        .add_systems(Update, drive.after(crate::input::read).before(ui::menu_input));
+        .add_systems(Update, (drive.after(crate::input::read).before(ui::menu_input), toasts_below_caption));
+}
+
+/// Messages show under the caption rather than behind it.
+fn toasts_below_caption(mut toast: Query<&mut Node, (With<ui::ToastText>, Added<ui::ToastText>)>) {
+    for mut n in &mut toast {
+        n.top = px(84);
+    }
 }
 
 fn spawn_caption(mut commands: Commands, fonts: Res<ui::Fonts>) {
