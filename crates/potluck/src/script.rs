@@ -1211,7 +1211,15 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
             if parts.is_empty() {
                 Vec3::new(0.4, 1.0, 0.4)
             } else {
+                // as wide as it stands (its legs, or its body across its
+                // narrower side), not as long as it reaches: the box doesn't
+                // turn, and one as long as a pup would rest on the block
+                // beside it and hold it up in the air
                 let w = (hi.x - lo.x).max(hi.z - lo.z).min(2.8) / 2.0 * 0.85;
+                let reach = |a: Vec3, b: Vec3| Vec2::new(a.x.abs().max(b.x.abs()), a.z.abs().max(b.z.abs()));
+                let body = reach(lo, hi);
+                let legs = parts.iter().filter(|p| p.leg).map(|p| reach(p.at - p.size / 2.0, p.at + p.size / 2.0)).fold(Vec2::ZERO, Vec2::max);
+                let w = w.min(body.min_element().max((legs.x + legs.y) / 2.0));
                 Vec3::new(w, hi.y.clamp(0.3, 4.0), w)
             }
         }

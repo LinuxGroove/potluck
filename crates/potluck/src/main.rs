@@ -353,7 +353,7 @@ fn shot(
             // creatures face -z, turned by their yaw; stand a few blocks in
             // front, a little above, looking back at it
             let fwd = Quat::from_rotation_y(b.yaw) * Vec3::NEG_Z;
-            let reach = 1.5 + b.half.x.max(b.half.z) * 1.8;
+            let reach = 1.5 + b.reach() * 1.8;
             me.pos = b.pos + fwd * reach + Vec3::Y * (b.half.y * 1.1 - player::EYE);
             me.vel = Vec3::ZERO;
             me.yaw = fwd.x.atan2(fwd.z);

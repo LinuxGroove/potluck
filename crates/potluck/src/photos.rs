@@ -198,7 +198,7 @@ pub fn take(
         let first = |c: &str| chosen.as_deref() != Some(c);
         (first(&a.creation), a.pos.distance_squared(me.pos)).partial_cmp(&(first(&b.creation), b.pos.distance_squared(me.pos))).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let Some((b, (eye, target))) = bodies.iter().find_map(|b| viewpoint(&voxels, b.pos, b.half, b.yaw).map(|v| (*b, v))) else { return };
+    let Some((b, (eye, target))) = bodies.iter().find_map(|b| viewpoint(&voxels, b.pos, Vec3::new(b.reach(), b.half.y, b.reach()), b.yaw).map(|v| (*b, v))) else { return };
     let Ok((exposure, tonemapping, fog, grading, sky)) = main.single() else { return };
     let mut image = Image::new_target_texture(SIZE.x, SIZE.y, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
