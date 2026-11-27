@@ -1,0 +1,366 @@
+name = "Brickworks"
+by = "Potluck"
+kind = "mod"
+about = "Blocks of fired clay: red bricks, terracotta, roof tiles, clay slabs and paper lanterns, made in a kiln. Each block is drawn in letters in potluck.toml, so change a colour or a row there and the world shows it."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.12"
+tweak = "0.1"
+ui = "0.1"
+sound = "0.2"
+
+# The blocks: each letter in a picture is a pixel, coloured by `colors`
+# (. is see-through). A picture is 8, 16, 32 or 64 pixels square; `picture`
+# is every side, or give a `top`, `side` and `bottom`. `kind` says how it
+# sounds and which tools dig it (soft, hard, wood, plant or glass), and
+# `hardness` how many seconds it takes to break by hand.
+
+[blocks.red_bricks]
+name = "Red bricks"
+kind = "hard"
+hardness = 1.5
+colors = { m = "#cdc3b3", n = "#a3998b", a = "#a4432f", b = "#b24f37", c = "#933a2a", d = "#c25e42", e = "#7a2f23", f = "#8c4a36" }
+picture = """
+dddddddddfdddfdmdddffdddddfddddn
+accfcccccccccccmdbbbbbbfbbbbbbbm
+accccffccccccccmdbbbbbbbfbbbbbem
+fcccccccccccfcemdbbbbbbffbbbbbem
+acccccfccccccccnfbbbbbbbbbbbbbem
+fccccccccccfcfcmdbbbbbbbbbbbbbem
+efeeeeeeeeeeeeemeeeeeeeeeeeeeeem
+nmnnnnmnmmmmnmmmnnnmmmmnmmmmnnmn
+ddfddddnddddddddddddffdmdddfdddd
+aaaaaaemdaaaaaaaaaaaaaemdbbfbfbf
+faaaaaemfaaaaaaaaaaaaaemdbbbbbbb
+aaafaaemdaaafaaafaaaaaemdfbbbbbb
+aaaaaaamdffaaaaaaaaaaaemdbbbbbbf
+aaaaaaemdaaaaaaaaaaaaaemdbbbbbbb
+eefeefemeeeeeeeeeeeeeeemeeeeeeee
+mmnmnmmmmmnnmmmnmmmmnmmnnmnmmmmn
+dddddddddddfdddmdddddddddddddddm
+daaaaaaaaaafaaemfaaaaaaaaaafaaem
+daaaaaaaaaaaaaandaaaaaaaaaaaaaen
+daaaaaaaaaaaafenfaaaaaaaaaaaaaem
+daaaaaafaaaaaaemdafaafaaaaaffaen
+dfaaaaaaaaaafaemdafaaaaaaaaaaaam
+eefeeeeefeeeeeeneeeefeeeeeeeeeem
+mmnmmmnnmmmmnmmmmmnmnmmnnmmnnmmm
+dddddddmddfddddddddddddmdddddddd
+aaaaaaamdfaaaaaaaffaaafmaccccccc
+aaaaaaandaaaaaaafaaaaaemaccccccc
+aaaaaaemdaaaaaaaaaaaaaemaccccccc
+faaaaaamdaaaaaaaaaaaafemaccccccc
+aaaaaaamdaaaaaaaaaaaaaemaccccccc
+eeeeefemeeeeeeeeeeeeeeemeeeeeeee
+mmmmnnmmmnnmmmmnmmmmnnnmnmnmmmnn
+"""
+
+[blocks.terracotta]
+kind = "hard"
+hardness = 1.2
+colors = { t = "#b5653f", u = "#ab5d39", v = "#bf7048", w = "#9e5434", x = "#c47c55" }
+picture = """
+vxxvxvxxxvvxvvxvvvxxxvxxxxxxxvxx
+vvtwtttuvvvuttttvwvuttttxuvvvttw
+vttttttvuvttttwuuvvvtttutvvvtutw
+vtututuvuwuwuuuuttttuuwuuvtwvttw
+xuvuvttuttuutvvuttuvtuvvwtuttttw
+vttvvvvtttttuvwttttttvvutttttuvw
+vttvvvvttttvvvvtttttuvvvutxttuww
+xuvvvvtttttvvvvuwttutuvvtutttvvw
+xuvvvttttutuvvtutttutvuvuutttvvw
+vtvuvuttttvtuuvttuuvttvttuuxtttw
+xvtttuttvvvwtutuwvuvttttuvuvvuuw
+vvuttttvvvvtwtttuvvvutwtvvvvuttw
+vuutttvuvvvutttuvvvvwttwvvvvtttw
+xvutttutvvvttttuuvututttuvvvvttw
+xvvutuvtvvvutttvvvuutttttxuvuvtw
+xutvuututtutttututtwutvuvuuuttuw
+xtvtuvttxttvuvvttttuvvvvtuttuuvw
+vttvvvuttwtxvvvuwtttvvvvtttttuww
+xtvvvvvtttttvvvuttttuvvvuttttvvw
+xutuvvttttttvvvvttttuuvuttttttvw
+xuvvvttutttttvvututtuuvuvtutvuvw
+vuttutvuvutwttuuuvuvttttuuwvtutw
+xvvtttuuvvuuttttuvvtttxtuvuvttuw
+xvttttvvvvvtttttvvvvttttvvvvvttw
+xuttttwvvvvttttuvvvvtttttuvvuutw
+vvwtttuvvvvuttxtvuvttuxttuuuvttw
+xututttttvutttutvututvtuwutwvuvw
+vuvvuvvttttutvvuwuxuvuuvututxtuw
+vtuuvvutttuuuvvttwtttvvvvttttuuw
+xtvvvuuttttuvvvtutttuvvvuttttxvw
+vwvvvvttwtwuvvvuuwtttuvvuutttvvw
+vwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+"""
+
+[blocks.roof_tiles]
+name = "Roof tiles"
+kind = "hard"
+hardness = 1
+colors = { a = "#b4512b", b = "#c4633a", c = "#d47a4c", d = "#94401f", s = "#5e2716", e = "#a44a26" }
+picture = """
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+ccbbbbaaccbbbbaaccbbbbaaccbbbbaa
+ccbbbbaaccbebeaaccbbbbaeccbbebaa
+ccbbbbaaccbbbbaaccbbebaaccbbbbea
+bcbbbbaabcbbbeaabcbbbbaabcbbbbaa
+dbbbbbaddbbbbbaddbbbbbaddbbbbbad
+sdbbbbdssdbebbdssdebbbdssdbbbbds
+dsddddsddsddddsddsddddsddsddddsd
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+bbaaccbbbbaaccebbeaaccebbbaaccbe
+bbaaccbbbbaaccbbbbaaccbbbbaaccbb
+bbaaccbbbbaaccbbbbaaccbebbaaccbb
+bbaabcbbbbaabcbbbbaabcbbbbaabcbb
+bbaddbebbbaddbbbbbaddbbbbbaddbbb
+bbdssdbbbbdssdbbbbdssdbbbbdssdbb
+ddsddsddddsddsddddsddsddddsddsdd
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+ccbbbbaaccbbbbaaccbbbbaaccbebbaa
+ccbbbbaaccbbbbaaccbbbbaaccebbbae
+ccbbbbeaccbbbbaaccbbbbaaccbbbbae
+ecbebbaabcbbbeaabcbbbbaabcbbbbaa
+dbbbbbaddbbbbeaddbbbbbaddbbbbbad
+sdbbbedssdbbbbdssdbbbbdssdbbbbds
+dsddddsddsddddsddsddddsddsddddsd
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+bbaaccbbbbaaccbbbbaaccbbbeaaccbb
+bbaaccbebbaaccbbbbeaccbbbbaaccbb
+beaaccbbbbaaccbbbbaaccbbbbaaccbe
+bbaabcbbbbaabcbbbbaabcbbbbaabcbb
+bbaddebbbbaddebbbbaddbbbbbaddebb
+bbdssdbbbbdssdbbbbdssdbbbbdssdbb
+ddsddsddddsddsddddsddsddddsddsdd
+"""
+
+# Blocks made of boxes give each box as [x, y, z, x, y, z] in sixteenths of
+# a block; each side of a box shows the part of the picture it covers.
+[blocks.clay_slab]
+name = "Clay slab"
+kind = "hard"
+hardness = 0.8
+boxes = [[0, 0, 0, 16, 8, 16]]
+colors = { t = "#b5653f", u = "#ab5d39", v = "#bf7048", w = "#9e5434", x = "#c47c55" }
+picture = """
+vxxvxvxxxvvxvvxvvvxxxvxxxxxxxvxx
+vvtwtttuvvvuttttvwvuttttxuvvvttw
+vttttttvuvttttwuuvvvtttutvvvtutw
+vtututuvuwuwuuuuttttuuwuuvtwvttw
+xuvuvttuttuutvvuttuvtuvvwtuttttw
+vttvvvvtttttuvwttttttvvutttttuvw
+vttvvvvttttvvvvtttttuvvvutxttuww
+xuvvvvtttttvvvvuwttutuvvtutttvvw
+xuvvvttttutuvvtutttutvuvuutttvvw
+vtvuvuttttvtuuvttuuvttvttuuxtttw
+xvtttuttvvvwtutuwvuvttttuvuvvuuw
+vvuttttvvvvtwtttuvvvutwtvvvvuttw
+vuutttvuvvvutttuvvvvwttwvvvvtttw
+xvutttutvvvttttuuvututttuvvvvttw
+xvvutuvtvvvutttvvvuutttttxuvuvtw
+xutvuututtutttututtwutvuvuuuttuw
+xtvtuvttxttvuvvttttuvvvvtuttuuvw
+vttvvvuttwtxvvvuwtttvvvvtttttuww
+xtvvvvvtttttvvvuttttuvvvuttttvvw
+xutuvvttttttvvvvttttuuvuttttttvw
+xuvvvttutttttvvututtuuvuvtutvuvw
+vuttutvuvutwttuuuvuvttttuuwvtutw
+xvvtttuuvvuuttttuvvtttxtuvuvttuw
+xvttttvvvvvtttttvvvvttttvvvvvttw
+xuttttwvvvvttttuvvvvtttttuvvuutw
+vvwtttuvvvvuttxtvuvttuxttuuuvttw
+xututttttvutttutvututvtuwutwvuvw
+vuvvuvvttttutvvuwuxuvuuvututxtuw
+vtuuvvutttuuuvvttwtttvvvvttttuuw
+xtvvvuuttttuvvvtutttuvvvuttttxvw
+vwvvvvttwtwuvvvuuwtttuvvuutttvvw
+vwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+"""
+
+# `light` makes it light up what's round it, and the letters in `glow` shine.
+[blocks.paper_lantern]
+name = "Paper lantern"
+kind = "soft"
+hardness = 0.2
+light = true
+glow = "ywo"
+boxes = [[4, 0, 4, 12, 10, 12], [5, 10, 5, 11, 11, 11]]
+colors = { r = "#9e2a20", k = "#5a1a14", y = "#ffcf6e", o = "#f4a94a", w = "#fff0b8", g = "#3b2a1f" }
+top = """
+................
+................
+................
+................
+....rrrrrrrr....
+....rggggggr....
+....rggggggr....
+....rggggggr....
+....rggggggr....
+....rggggggr....
+....rggggggr....
+....rrrrrrrr....
+................
+................
+................
+................
+"""
+side = """
+................
+................
+................
+................
+................
+.....gggggg.....
+....rrrrrrrr....
+....kyyyyyyk....
+....kywwwyyk....
+....kooooook....
+....kywwwyyk....
+....kywwwyyk....
+....kooooook....
+....kywwwyyk....
+....kyyyyyyk....
+....rrrrrrrr....
+"""
+bottom = """
+................
+................
+................
+................
+....rrrrrrrr....
+....roooooor....
+....roooooor....
+....roooooor....
+....roooooor....
+....roooooor....
+....roooooor....
+....rrrrrrrr....
+................
+................
+................
+................
+"""
+
+[blocks.kiln]
+kind = "hard"
+hardness = 2
+light = true
+glow = "yor"
+boxes = [[1, 0, 1, 15, 13, 15], [6, 13, 6, 10, 16, 10]]
+colors = { m = "#8f8679", n = "#6f665b", a = "#7e3a2b", b = "#8d4632", c = "#6e3125", d = "#9b5440", e = "#55261d", f = "#4a3a32", k = "#2a1c17", y = "#ffd36b", o = "#ff9a3c", r = "#e0582a" }
+top = """
+................................
+................................
+..ffffffbbffffendbfbbfbbbbffbf..
+..bbbbbbbbfbfffmdbfbbbffbfbbbb..
+..bbbbbfbbbbbbemfbfbffbbfbbbbf..
+..fbfbfffbfbbffmdbffbfffffffff..
+..eeeeeffffeefenfefffefffffeee..
+..nmmnmnmmmmnnmmmmnmmmmnmnnnnm..
+..fddffnddddddfddfdddddndfdfdd..
+..bffffmffafaaafaaffaaamfaafff..
+..fbfbfnffaaafffaffaafemfaaffa..
+..bffbfmffaaafafafafafanffaafa..
+..fbbbendafaffffffffaffmdfaaff..
+..fbfbbmdfaffkkkkkkfafamffaaaf..
+..ffeeemeefffkrrrrkfefemeeeeff..
+..mnnnmmmnnmfkrrrrkfnmmmnnnmmm..
+..ffdfddfdfffkrrrrkfdddffdfddf..
+..aafaffafaafkrrrrkfbbbbbbffbb..
+..aaffaafaaffkkkkkkffbfffbbfbf..
+..ffaaaaaaafffffffffbbbbffbffb..
+..faafaaafaafaemdfbbbfffbfbbbb..
+..aaaffaaaaaaaemdbbbbbfbfbbbbb..
+..eeeeeeeeeeeeeneeeeeeeefeefee..
+..nnmmmnnmmnnmmnmmnmmmnnmmmnnm..
+..dddddmddddfdddddfdddfmdddddd..
+..ccccfndafaaafafaaafaemdbbbbb..
+..cfcfemdaaaaaafaaaaaafmfbbfbb..
+..ccfcfmdaaaaffaaafaaaemdbbfbb..
+..ccfcfmdaaaaaaaaaaaaaemdbbbbf..
+..ffcccmdfaaaaaaaaaaaafmdbbbfb..
+................................
+................................
+"""
+side = """
+............effeffef............
+............ffeffeff............
+............feffeffe............
+............effeffef............
+............ffeffeff............
+............feffeffe............
+..eeeeeffffeefenfefffefffffeee..
+..nmmnmnmmmmnnmmmmnmmmmnmnnnnm..
+..fddffnddddddfddfdddddndfdfdd..
+..bffffmffafaaafaaffaaamfaafff..
+..fbfbfnffaaafffaffaafemfaaffa..
+..bffbfmffaaafafafafafanffaafa..
+..fbbbendafaffaafaafaffmdfaaff..
+..fbfbbmdfaffaafaaaaafamffaaaf..
+..ffeeemeefffefeeefeefemeeeeff..
+..mnnnmmmnnmmmnnmmmnnmmmnnnmmm..
+..ffdfddfdfffddmddfddddffdfddf..
+..aafaffafaaafkkkkbbbbbbbbffbb..
+..aaffaafaafkkyyyykkfbfffbbfbf..
+..ffaaaaaaakoyyyyyyokbbbffbffb..
+..faafaaafaooyyyyyyoofffbfbbbb..
+..aaaffaaakooyyyyyyookfbfbbbbb..
+..eeeeeeekoooyyyyyyoookefeefee..
+..nnmmmnnkoooyyyyyyoooknmmmnnm..
+..dddddmdkooyoooyoooyokmdddddd..
+..ccccfndkoooyoooyoooykmdbbbbb..
+..cfcfemdkyoooyoooyoookmfbbfbb..
+..ccfcfmdkoyoooyoooyookmdbbfbb..
+..ccfcfmdkororororororkmdbbbbf..
+..ffcccmdkrorororororokmdbbbfb..
+..eefefnekororororororkmefeeee..
+..mmnmnmnnnnnnnnnnnnnnnnmnnnnm..
+"""
+bottom = """
+ffffffdfdffffddmdfdffdfdddfffddm
+dfbbfbfbffffbfemfbffbffbbbfbbffn
+ffffffffbbffffendbfbbfbbbbffbfbm
+ffbbbbbbbbfbfffmdbfbbbffbfbbbben
+ffbbbbbfbbbbbbemfbfbffbbfbbbbffm
+fbfbfbfffbfbbffmdbffbffffffffffm
+feeeeeeffffeefenfefffefffffeeefm
+mnnmmnmnmmmmnnmmmmnmmmmnmnnnnmnm
+ddfddffnddddddfddfdddddndfdfdddf
+bbbffffmffafaaafaaffaaamfaafffaf
+fbfbfbfnffaaafffaffaafemfaaffaaa
+bfbffbfmffaaafafafafafanffaafaaa
+bffbbbendafaffaafaafaffmdfaaffaf
+bbfbfbbmdfaffaafaaaaafamffaaafaf
+eeffeeemeefffefeeefeefemeeeefffe
+mmmnnnmmmnnmmmnnmmmnnmmmnnnmmmnn
+ddffdfddfdfffddmddfddddffdfddfdn
+daaafaffafaaafemdbbbbbbbbbffbben
+faaaffaafaafaafmdbbbfbfffbbfbffm
+daffaaaaaaafaaamdbbbbbbbffbffbfm
+dafaafaaafaafaemdfbbbfffbfbbbbem
+daaaaffaaaaaaaemdbbbbbfbfbbbbbbm
+efeeeeeeeeeeeeeneeeeeeeefeefeeem
+mmnnmmmnnmmnnmmnmmnmmmnnmmmnnmmn
+dddddddmddddfdddddfdddfmdddddddd
+ccccccfndafaaafafaaafaemdbbbbbbb
+cccfcfemdaaaaaafaaaaaafmfbbfbbbb
+ffccfcfmdaaaaffaaafaaaemdbbfbbbb
+ccccfcfmdaaaaaaaaaaaaaemdbbbbfbb
+ccffcccmdfaaaaaaaaaaaafmdbbbfbbb
+eeeefefneeeeeeeefeeeeeemefeeeeee
+mnmmnmnmmnnnmmnnmmnmnnnmmnnnnmmn
+"""
+
+# the kiln's roar, as it fires something
+[sounds.roar]
+caption = "The kiln roars"
+wave = "noise"
+pitch = [300, 180]
+length = 0.9
+attack = 0.15
+decay = 0.6
+lowpass = 700
+highpass = 60

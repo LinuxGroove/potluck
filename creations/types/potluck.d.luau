@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.11, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.1, @potluck/test 0.2
+-- @potluck/world 0.12, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.1, @potluck/test 0.2
 
 export type Position = vector | { number }
 

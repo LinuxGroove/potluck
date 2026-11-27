@@ -360,6 +360,9 @@ async fn a_creations_page_says_whats_in_it() {
     let (_, page) = m.page(&format!("/c/{hedgehog}?file=hedgehog.bbmodel"), None).await;
     assert!(page.contains("A Blockbench model") && page.contains("src=\"data:image/png;base64,"), "a model shows its picture, not its numbers");
     assert!(page.contains("spines_top") && !page.contains("&quot;elements&quot;"), "and its cubes");
+    let (_, page) = m.page(&format!("/c/{}", code("brickworks")), None).await;
+    assert!(page.contains("A block of its own, <b>Red bricks</b>") && page.contains("<b>Kiln</b>") && page.contains("gives light"), "its blocks, named as the game names them");
+    assert!(page.contains(r##"<svg class="pixels""##) && page.contains(r##"fill="#a4432f""##), "each drawn from its letters");
     let (_, page) = m.page(&format!("/c/{}", code("rodeo-ram")), None).await;
     assert!(page.contains("A client half") && page.contains("<b>client.luau</b>"));
     let (_, page) = m.page(&format!("/c/{}", code("frog")), None).await;

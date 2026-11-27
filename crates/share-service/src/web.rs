@@ -491,7 +491,7 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
 fn contents(toml: &crate::checks::Toml, files: &BTreeMap<String, String>) -> Markup {
     let models: Vec<(&String, usize)> = files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).map(|(n, t)| (n, crate::checks::model_cubes(t).unwrap_or(0))).collect();
     let tests = files.contains_key("test.luau");
-    if toml.actions.is_empty() && toml.sounds.is_empty() && models.is_empty() && toml.client.is_none() && !tests {
+    if toml.actions.is_empty() && toml.sounds.is_empty() && toml.blocks.is_empty() && models.is_empty() && toml.client.is_none() && !tests {
         return html! {};
     }
     html! {
@@ -504,6 +504,13 @@ fn contents(toml: &crate::checks::Toml, files: &BTreeMap<String, String>) -> Mar
                 @for (name, v) in &toml.sounds {
                     li { "A sound of its own, " b { (name) } @if let Some(c) = v.get("caption").and_then(|c| c.as_str()) { span.sub { " · \u{201c}" (c) "\u{201d}" } } }
                 }
+                @for (key, b) in &toml.blocks {
+                    li.block {
+                        @if let Some(svg) = block_picture(b) { (svg) }
+                        "A block of its own, " b { (crate::checks::block_name(key, b)) }
+                        @if b.get("light").and_then(|l| l.as_bool()) == Some(true) { span.sub { " · gives light" } }
+                    }
+                }
                 @for (file, cubes) in &models {
                     li { "A Blockbench model, " b { (file) } span.sub { " · " (count(*cubes as i64, "cube")) } }
                 }
@@ -514,6 +521,49 @@ fn contents(toml: &crate::checks::Toml, files: &BTreeMap<String, String>) -> Mar
             }
         }
     }
+}
+
+/// A block's side as a small picture: its letters' colours, a rectangle for
+/// each run of one colour along a row. Only checked colours and numbers go
+/// into it, so it can go on the page as it is.
+fn block_picture(b: &toml::Value) -> Option<Markup> {
+    let colors: BTreeMap<char, String> = b
+        .get("colors")?
+        .as_table()?
+        .iter()
+        .filter_map(|(k, v)| {
+            let hex = v.as_str()?.strip_prefix('#')?;
+            let ok = (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit());
+            (k.chars().count() == 1 && ok).then(|| (k.chars().next().unwrap(), format!("#{hex}")))
+        })
+        .collect();
+    let v = b.get("side").or_else(|| b.get("picture"))?;
+    let rows: Vec<Vec<char>> = match v {
+        toml::Value::String(t) => t.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).map(|l| l.chars().collect()).collect(),
+        toml::Value::Array(a) => a.iter().filter_map(|l| l.as_str()).map(|l| l.trim().chars().collect()).collect(),
+        _ => return None,
+    };
+    let n = rows.len();
+    if ![8, 16, 32, 64].contains(&n) || rows.iter().any(|r| r.len() != n) {
+        return None;
+    }
+    let mut svg = format!(r#"<svg class="pixels" viewBox="0 0 {n} {n}" width="32" height="32" shape-rendering="crispEdges" aria-hidden="true">"#);
+    for (y, row) in rows.iter().enumerate() {
+        let mut x = 0;
+        while x < n {
+            let c = row[x];
+            let mut w = 1;
+            while x + w < n && row[x + w] == c {
+                w += 1;
+            }
+            if let Some(fill) = colors.get(&c) {
+                svg.push_str(&format!(r#"<rect x="{x}" y="{y}" width="{w}" height="1" fill="{fill}"/>"#));
+            }
+            x += w;
+        }
+    }
+    svg.push_str("</svg>");
+    Some(PreEscaped(svg))
 }
 
 /// A Blockbench model on its page: its texture as a picture and its cubes,
