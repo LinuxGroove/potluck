@@ -414,6 +414,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         r#"{"type":"object","properties":{"creation":{"type":"string","description":"Its id: the folder's name for the player's own"}},"required":["creation"]}"#,
     ),
     (
+        "check",
+        "Type check a creation",
+        "Runs Luau's type checker over a creation's files (as saved in its folder, for the player's own) with the API's types, and lists what it's sure is wrong, with the file and line: a name the API doesn't have, a global that isn't one, the wrong number of values in a call, a plain value of the wrong kind. It says nothing about what it can only guess, so no hints isn't a promise the code is right: run its tests too.",
+        r#"{"type":"object","properties":{"creation":{"type":"string","description":"Its id: the folder's name for the player's own"}},"required":["creation"]}"#,
+    ),
+    (
         "tweak",
         "Turn a creation's knob",
         "Sets one of a running creation's Tweak knobs, as the player would in Tweak; it reloads with the new value a moment later. creations lists the knobs.",
@@ -437,7 +443,7 @@ fn tools() -> Vec<Value> {
     TOOLS
         .iter()
         .map(|(name, title, about, schema)| {
-            let read_only = matches!(*name, "creations" | "guide" | "log" | "look_around" | "screenshot");
+            let read_only = matches!(*name, "creations" | "guide" | "log" | "check" | "look_around" | "screenshot");
             json!({
                 "name": name,
                 "title": title,
@@ -504,11 +510,24 @@ pub fn answer(name: &str, args: &Value, cx: &mut Cx) -> Answer {
             one(s)
         }
         "test" => tests_of(arg(args, "creation")?, cx.lib, cx.voxels)?(),
+        "check" => one(check(arg(args, "creation")?, cx.lib)?),
         "tweak" => one(tweak(arg(args, "creation")?, arg(args, "knob")?, args.get("value").unwrap_or(&Value::Null), cx)?),
         "look_around" => one(pretty(&look_around(args.get("radius").and_then(Value::as_f64).unwrap_or(24.0).clamp(1.0, 64.0) as f32, cx))),
         "screenshot" => Err("there's no screen here to take a picture of".into()),
         _ => Err(format!("there's no tool called {name}")),
     }
+}
+
+/// What the type checker is sure is wrong in a creation, as saved.
+fn check(id: &str, lib: &Library) -> Result<String, String> {
+    let c = lib.to_test(id)?;
+    let hints = crate::check::check(&c);
+    Ok(if hints.is_empty() {
+        format!("{}: the type checker found nothing it's sure is wrong.", c.manifest.name)
+    } else {
+        let lines: Vec<String> = hints.iter().map(|h| h.to_string()).collect();
+        format!("{}: the type checker is sure of {} {}\n{}", c.manifest.name, hints.len(), if hints.len() == 1 { "thing" } else { "things" }, lines.join("\n"))
+    })
 }
 
 /// A creation's tests, ready to run away from the game's own thread.

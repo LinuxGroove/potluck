@@ -157,6 +157,27 @@ fn a_creation_that_never_stops_is_stopped() {
 }
 
 #[test]
+fn time_the_machine_gives_to_others_isnt_held_against_a_creation() {
+    use crate::script::Slice;
+    let ms = Duration::from_millis;
+    // off the core past its slice, as when a busy machine runs something else
+    let slice = Slice::new(ms(5));
+    std::thread::sleep(ms(15));
+    if cfg!(unix) {
+        assert!(!slice.over(), "waiting isn't running");
+    }
+    // on it, the slice runs out
+    let t = Instant::now();
+    while !slice.over() {
+        assert!(t.elapsed() < Duration::from_secs(5), "running uses it up");
+    }
+    // and however busy the machine, the wall has the last word
+    let slice = Slice::new(ms(5));
+    std::thread::sleep(ms(45));
+    assert!(slice.over(), "eight slices of waiting is too long");
+}
+
+#[test]
 fn a_creation_cannot_reach_outside_the_sandbox() {
     let mut voxels = world();
     let mut herd = Herd::default();
@@ -3702,7 +3723,7 @@ fn a_coding_helper_works_on_creations_through_the_dev_bridge() {
     let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }).to_string());
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let names: Vec<&str> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "test", "tweak", "look_around", "screenshot"]);
+    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "test", "check", "tweak", "look_around", "screenshot"]);
     let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "fly" } }).to_string());
     assert!(body.contains("-32602"), "an unknown tool is a protocol error: {body}");
 
@@ -3802,6 +3823,12 @@ end)
     assert_eq!(cx.herd.bodies.len(), before, "the world's own creatures are left alone");
     let (text, err) = bridge_tool(&open, &mut cx, "test", json!({ "creation": "balloon" }));
     assert!(!err && text.contains("5 of 5 cases passed"), "{text}");
+    // the type checker, on the folder as saved
+    let (text, err) = bridge_tool(&open, &mut cx, "check", json!({ "creation": "balloon" }));
+    assert!(!err && text.contains("found nothing it's sure is wrong"), "{text}");
+    std::fs::write(dir.join("main.luau"), "local world = require(\"@potluck/world\")\nworld.spwan()\n").unwrap();
+    let (text, err) = bridge_tool(&open, &mut cx, "check", json!({ "creation": id }));
+    assert!(!err && text.contains("sure of 1 thing\nmain.luau line 2: world has no spwan (did you mean world.spawn?)"), "{text}");
     // a screenshot needs the game's screen, which this test hasn't got
     assert!(bridge_tool(&open, &mut cx, "screenshot", json!({})).1);
     drop(open);
@@ -4806,4 +4833,79 @@ end)
     let l = h.list["test"].log.join("\n");
     assert!(l.contains("later Stone aim nil"), "{l}");
     assert_eq!(h.list["test"].error, None);
+}
+
+// ---------- type checking ----------
+
+const MISTAKES: &str = r#"--!strict
+local world = require("@potluck/world@0.12")
+local ui = require("@potluck/ui@0.2")
+local sound = require("@potluck/sound@0.2")
+
+local Frog = world.creature { name = "Frog", body = {} }
+
+world.spwan(Frog, vector.create(0, 0, 0))
+world.after("two", function() end)
+pritn("hello")
+local n = math.flor(2.5)
+ui.show(nil, "hi", "Hello", { at = "middle" })
+sound.play()
+world.set_block(vector.create(0, 0, 0))
+local function hop(height: number) return height end
+hop("high")
+function Frog:tick(dt)
+	-- what the checker guesses about self isn't sure enough to show
+	self.mood = "happy"
+	sound.play("croak", { at = self })
+	print(self.mood .. n)
+end
+"#;
+
+#[test]
+fn the_type_checker_says_only_what_its_sure_of() {
+    use crate::check::{check, files_hash, keep_checking, Hints};
+    home();
+    let mut c = creation(MISTAKES);
+    c.files.insert("client.luau".into(), "local net = require(\"@potluck/net@0.2\")\nnet.sned(\"hello\")\nprint(net.me().name)\n".into());
+    c.manifest.client = Some("client.luau".into());
+    let hints: Vec<String> = check(&c).iter().map(|h| h.to_string()).collect();
+    assert_eq!(
+        hints,
+        [
+            "client.luau line 2: net has no sned (did you mean net.send?)",
+            "main.luau line 8: world has no spwan (did you mean world.spawn?)",
+            "main.luau line 9: this should be a number, not some text",
+            "main.luau line 10: there's nothing called pritn here (did you mean print?)",
+            "main.luau line 11: math has no flor (did you mean math.floor?)",
+            "main.luau line 12: this should be one of \"bottom\", \"left\" or \"right\", not \"middle\"",
+            "main.luau line 13: this call takes 1 to 2 values, and it's given none",
+            "main.luau line 14: this call takes 2 values, and it's given 1",
+            "main.luau line 16: this should be a number, not some text",
+        ]
+    );
+    // the base game's creations have nothing it's sure of
+    let lib = Library::load();
+    for c in lib.list.values().filter(|c| matches!(c.origin, Origin::Base)) {
+        assert_eq!(check(c), vec![], "{}", c.id);
+    }
+    // the player's own creations are checked as they change, off the frame
+    let mut app = App::new();
+    let mut mine = Library::default();
+    mine.list.insert(c.id.clone(), c.clone());
+    app.insert_resource(mine).init_resource::<Hints>().add_systems(Update, keep_checking);
+    let started = std::time::Instant::now();
+    while app.world().resource::<Hints>().of(&c).is_none() && started.elapsed().as_secs() < 30 {
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.world().resource::<Hints>().of(&c).map(|h| h.len()), Some(9));
+    app.world_mut().resource_mut::<Library>().list.get_mut("test").unwrap().files.insert("main.luau".into(), "print(\"fixed\")\n".into());
+    let fixed = app.world().resource::<Library>().list["test"].clone();
+    assert_ne!(files_hash(&fixed), files_hash(&c));
+    assert!(app.world().resource::<Hints>().of(&fixed).is_none(), "what it found before is for the old files");
+    while app.world().resource::<Hints>().of(&fixed).is_none() && started.elapsed().as_secs() < 30 {
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.world().resource::<Hints>().of(&fixed).map(|h| h.len()), Some(1), "the client half's still wrong");
 }

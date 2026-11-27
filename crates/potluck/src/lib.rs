@@ -6,6 +6,7 @@ pub mod behaviours;
 pub mod blocks;
 pub mod bridge;
 pub mod chat;
+pub mod check;
 pub mod creations;
 pub mod creatures;
 pub mod demo;
@@ -69,6 +70,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<halves::Halves>()
         .init_resource::<chat::Chat>()
         .init_resource::<photos::Photos>()
+        .init_resource::<check::Hints>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
@@ -85,6 +87,8 @@ pub fn sim(app: &mut App, seed: u32) {
     // the dev bridge, for coding helpers: where there's a screen and a player
     if app.is_plugin_added::<bevy::window::WindowPlugin>() {
         bridge::add(app);
+        // and type checking the player's own creations as they're made
+        app.add_systems(Update, check::keep_checking);
     }
 }
 

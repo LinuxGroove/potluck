@@ -14,6 +14,7 @@
 //!                    [--tls-port=443 --cert=fullchain.pem --key=privkey.pem]
 //!                    [--data=/var/lib/potluck] [--no-beacon] [--max-players=50]
 //!     potluck-server --test=balloon|path/to/folder|all
+//!     potluck-server --typecheck=balloon|path/to/folder|all
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,7 +79,10 @@ const HELP: &str = "Options (or the POTLUCK_* environment variables; these win o
   --check              read the settings, say what's wrong, and stop
   --test=CREATION      run a creation's own tests (its test.luau) in a fresh world
                        and stop: an id, a folder, or all for every one that has
-                       tests. It ends with 1 if any failed, for scripts and CI";
+                       tests. It ends with 1 if any failed, for scripts and CI
+  --typecheck=CREATION type check a creation's files with the API's types and
+                       say what's sure to be wrong: an id, a folder, or all.
+                       It ends with 1 if anything was, for scripts and CI";
 
 /// `--test`: runs creations' own tests, each case in a fresh copy of the
 /// world from the seed, and says how they went.
@@ -112,6 +116,36 @@ fn test(what: &str, args: &[String]) -> i32 {
         println!("{} of {} creations passed their tests", creations.len() - failed, creations.len());
     }
     if failed > 0 { 1 } else { 0 }
+}
+
+/// `--typecheck`: what Luau's type checker is sure is wrong in creations.
+fn typecheck(what: &str) -> i32 {
+    let lib = Library::load();
+    let creations: Vec<Creation> = if what == "all" {
+        lib.list.values().cloned().collect()
+    } else {
+        match lib.to_test(what) {
+            Ok(c) => vec![c],
+            Err(e) => {
+                eprintln!("potluck-server: {e}");
+                return 2;
+            }
+        }
+    };
+    let mut found = 0;
+    for c in &creations {
+        let hints = potluck::check::check(c);
+        if hints.is_empty() {
+            println!("{}: nothing the type checker is sure is wrong", c.manifest.name);
+        } else {
+            found += 1;
+            println!("{}:", c.manifest.name);
+            for h in &hints {
+                println!("  {h}");
+            }
+        }
+    }
+    if found > 0 { 1 } else { 0 }
 }
 
 /// The settings: server.toml, then the environment and command line over it.
@@ -163,6 +197,9 @@ fn main() {
     let _ = std::fs::create_dir_all(settings::data_dir());
     if let Some(what) = args.iter().find_map(|a| a.strip_prefix("--test=")) {
         std::process::exit(test(what, &args));
+    }
+    if let Some(what) = args.iter().find_map(|a| a.strip_prefix("--typecheck=")) {
+        std::process::exit(typecheck(what));
     }
     let cfg = match settings_from(&args) {
         Ok(c) => c,

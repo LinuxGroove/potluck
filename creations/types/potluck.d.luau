@@ -219,7 +219,7 @@ export type Test = {
 	sent: (player: Player | number, topic: string) -> (Stored?, number),
 }
 
-export type Knob = { any, min: number?, max: number?, label: string?, order: number? }
+export type Knob = { [number]: any, min: number?, max: number?, label: string?, order: number? }
 export type Tweak = (spec: { [string]: Knob }) -> { [string]: any }
 
 return {}

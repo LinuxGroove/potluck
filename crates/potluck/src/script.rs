@@ -24,6 +24,56 @@ pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
 const LOAD_BUDGET: Duration = Duration::from_millis(300);
+/// How many slices of wall time a slice may stretch to while the machine is
+/// busy elsewhere, if the code itself ran for less than its slice.
+const BUSY_STRETCH: u32 = 8;
+
+/// A slice of time for a creation's code to run in. The clock on the wall
+/// says when it's up; past that, a slice that ran over only because the
+/// machine gave the core to something else (other threads, other programs,
+/// a busy server) isn't held against the creation, so long as the code itself
+/// ran for less than its slice and the wall says less than `BUSY_STRETCH`
+/// slices. Where a thread's own time can't be read, the wall alone decides.
+#[derive(Clone, Copy)]
+pub(crate) struct Slice {
+    start: Instant,
+    ran: Option<Duration>,
+    length: Duration,
+}
+
+impl Slice {
+    pub(crate) fn new(length: Duration) -> Slice {
+        Slice { start: Instant::now(), ran: thread_time(), length }
+    }
+
+    /// Whether the slice is used up. Cheap until the wall says it's up.
+    pub(crate) fn over(&self) -> bool {
+        let wall = self.start.elapsed();
+        if wall <= self.length {
+            return false;
+        }
+        if wall > self.length * BUSY_STRETCH {
+            return true;
+        }
+        match (self.ran, thread_time()) {
+            (Some(a), Some(b)) => b.saturating_sub(a) > self.length,
+            _ => true,
+        }
+    }
+}
+
+/// The time this thread has run on a core.
+fn thread_time() -> Option<Duration> {
+    #[cfg(unix)]
+    {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime only writes the timespec it's given
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0 {
+            return Some(Duration::new(t.tv_sec as u64, t.tv_nsec as u32));
+        }
+    }
+    None
+}
 /// Timers one creation may have waiting at once.
 pub const MAX_TIMERS: usize = 64;
 /// Handlers one creation may give `world.on`.
@@ -638,7 +688,7 @@ pub struct Vm {
     pub error: Option<String>,
     errors: u32,
     pub paused: bool,
-    deadline: Arc<Mutex<Instant>>,
+    deadline: Arc<Mutex<Slice>>,
     rng: Rng,
     pub load_ms: f32,
     /// How long its ticks take, on average and at most lately, in ms: its
@@ -1159,10 +1209,10 @@ impl Vm {
         let started = Instant::now();
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT).map_err(|e| e.to_string())?;
-        let deadline = Arc::new(Mutex::new(Instant::now() + LOAD_BUDGET));
+        let deadline = Arc::new(Mutex::new(Slice::new(LOAD_BUDGET)));
         let d = deadline.clone();
         lua.set_interrupt(move |_| {
-            if Instant::now() > *d.lock().unwrap() {
+            if d.lock().unwrap().over() {
                 return Err(bad("this creation took too long (is there a loop that never ends?)"));
             }
             Ok(VmState::Continue)
@@ -1782,7 +1832,7 @@ impl Vm {
     ) -> Result<R, String> {
         let budget = if time == 0.0 { LOAD_BUDGET } else { TICK_BUDGET };
         // generous while the API is set up; the creation's own time starts below
-        *self.deadline.lock().unwrap() = Instant::now() + LOAD_BUDGET;
+        *self.deadline.lock().unwrap() = Slice::new(LOAD_BUDGET);
         let kinds = self.kinds.clone();
         let mut rng = self.rng.clone();
         let ctx = RefCell::new(Ctx { voxels, herd, players, out, creation, kinds: &kinds, time, rng: &mut rng, log });
@@ -2070,7 +2120,7 @@ impl Vm {
                 Ok(())
             })?)?;
             let _ = &kind_tables;
-            *self.deadline.lock().unwrap() = Instant::now() + budget;
+            *self.deadline.lock().unwrap() = Slice::new(budget);
             f(&self.lua, self)
         });
         self.rng = rng;
