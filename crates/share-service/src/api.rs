@@ -56,6 +56,19 @@ pub fn routes() -> Router<Shared> {
         .route("/api/servers/heartbeat", post(heartbeat))
         .route("/api/servers/boards", post(boards_post))
         .route("/api/c/{code}/boards", get(boards))
+        .route("/api/friends", get(friends))
+        .route("/api/friends/code", post(friend_code))
+        .route("/api/friends/add", post(add_friend))
+        .route("/api/friends/answer", post(answer_friend))
+        .route("/api/friends/remove", post(remove_friend))
+        .route("/api/friends/block", post(block))
+        .route("/api/friends/unblock", post(unblock))
+        .route("/api/worlds", get(worlds))
+        .route("/api/worlds/share", post(share_world))
+        .route("/api/worlds/stop", post(stop_world))
+        .route("/api/worlds/join", post(join_world))
+        .route("/api/worlds/invite", post(invite_friend))
+        .route("/api/relay/allow", post(relay_allow))
         .route("/f/{sha}", get(file))
 }
 
@@ -435,4 +448,126 @@ async fn green(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
         })
         .collect();
     Ok(Json(json!({ "arches": arches })))
+}
+
+// ---------- friends ----------
+
+async fn friends(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let page = app.friends_page(&a)?;
+    let mut v = serde_json::to_value(&page).unwrap_or_default();
+    v["pretty"] = json!(codes::pretty(&page.code));
+    Ok(Json(v))
+}
+
+async fn friend_code(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let code = app.new_friend_code(&a)?;
+    Ok(Json(json!({ "code": code, "pretty": codes::pretty(&code) })))
+}
+
+#[derive(Deserialize)]
+struct CodeReq {
+    code: String,
+}
+
+async fn add_friend(State(app): State<Shared>, h: HeaderMap, Json(r): Json<CodeReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    Ok(Json(serde_json::to_value(app.add_friend(&a, &r.code)?).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct AnswerReq {
+    id: i64,
+    yes: bool,
+}
+
+async fn answer_friend(State(app): State<Shared>, h: HeaderMap, Json(r): Json<AnswerReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let friend = app.answer_friend(&a, r.id, r.yes)?;
+    Ok(Json(json!({ "friend": friend })))
+}
+
+#[derive(Deserialize)]
+struct HandleReq {
+    handle: String,
+}
+
+async fn remove_friend(State(app): State<Shared>, h: HeaderMap, Json(r): Json<HandleReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    app.remove_friend(&a, &r.handle)?;
+    Ok(Json(json!({ "removed": true })))
+}
+
+async fn block(State(app): State<Shared>, h: HeaderMap, Json(r): Json<HandleReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    app.block(&a, &r.handle)?;
+    Ok(Json(json!({ "blocked": true })))
+}
+
+async fn unblock(State(app): State<Shared>, h: HeaderMap, Json(r): Json<HandleReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    app.unblock(&a, &r.handle)?;
+    Ok(Json(json!({ "blocked": false })))
+}
+
+// ---------- worlds shared from home ----------
+
+async fn worlds(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let list: Vec<Value> = app
+        .open_worlds(&a)?
+        .into_iter()
+        .map(|w| {
+            let mut v = serde_json::to_value(&w).unwrap_or_default();
+            v["pretty"] = json!(crate::worlds::pretty(&w.code));
+            v
+        })
+        .collect();
+    Ok(Json(json!({ "worlds": list })))
+}
+
+async fn share_world(State(app): State<Shared>, h: HeaderMap, Json(b): Json<crate::worlds::Beat>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    Ok(Json(app.share_world(&a, b)?))
+}
+
+async fn stop_world(State(app): State<Shared>, h: HeaderMap, Json(r): Json<CodeReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    app.stop_world(&a, &r.code)?;
+    Ok(Json(json!({ "stopped": true })))
+}
+
+#[derive(Deserialize)]
+struct JoinReq {
+    code: String,
+    peer: String,
+}
+
+async fn join_world(State(app): State<Shared>, h: HeaderMap, Json(r): Json<JoinReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let way = app.join_world(&a, &r.code, &r.peer)?;
+    Ok(Json(serde_json::to_value(way).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct InviteFriendReq {
+    code: String,
+    handle: String,
+}
+
+async fn invite_friend(State(app): State<Shared>, h: HeaderMap, Json(r): Json<InviteFriendReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let name = app.invite(&a, &r.code, &r.handle)?;
+    Ok(Json(json!({ "invited": name })))
+}
+
+/// iroh-relay's access check (`access.http` in its config): a key it may
+/// carry gets `true`, as plain text, and anything else doesn't.
+async fn relay_allow(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let token = bearer(&h).unwrap_or_default();
+    let ok = !app.cfg.relay_token.is_empty() && codes::same_secret(&token, &app.cfg.relay_token);
+    let key = h.get("x-iroh-endpoint-id").and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
+    let allowed = ok && app.relay_allows(&key).unwrap_or(false);
+    (StatusCode::OK, if allowed { "true" } else { "false" }).into_response()
 }

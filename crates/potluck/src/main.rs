@@ -305,6 +305,7 @@ fn shot(
     frames: Option<Res<render::timings::Shared>>,
     mut exit: MessageWriter<AppExit>,
     mut chat: ResMut<chat::Chat>,
+    mut sharing: ResMut<net::Net>,
 ) {
     use bevy::render::view::screenshot::save_to_disk;
     if let Some(t) = s.tod {
@@ -386,6 +387,8 @@ fn shot(
                 "blocks" => ui::Screen::Blocks,
                 "market" => ui::Screen::Link,
                 "question" => ui::Screen::Panel,
+                "share" => ui::Screen::ShareWorld,
+                "friends" => ui::Screen::Friends,
                 "worlds" => ui::Screen::Worlds(false),
                 "backpack" => ui::Screen::Backpack,
                 _ => ui::Screen::Playing,
@@ -420,6 +423,30 @@ fn shot(
                 // as a creation asks: through Me, which keeps it open
                 me.panel = Some(potluck::script::Panel { creation: id.clone(), ask: 1, title: "Ride me?".into(), text: "I'll take you up the hill, but you'll have to hold on.".into(), choices: vec!["Climb on".into(), "Not now".into()] });
                 focus.panel = me.panel.clone();
+            }
+            if sc == "share" {
+                // shared for real, with no relay and no market, so it stays shared
+                let _ = sharing.share_from_home("Ken", "K7FQ2M", p2p::new_key(), None, false, Default::default());
+                let sent_addrs = sharing.shared().map(|(_, _, a)| a).unwrap_or_default();
+                focus.shared = Some(ui::SharedWorld {
+                    code: "K7FQ2M".into(),
+                    url: "https://potluck.linuxgroove.com/w/K7FQ2M".into(),
+                    who: "friends".into(),
+                    name: "Ken's world".into(),
+                    sent_addrs,
+                    ..Default::default()
+                });
+            }
+            if sc == "friends" {
+                let friend = |handle: &str, name: &str| share::Friend { handle: handle.into(), name: name.into() };
+                focus.friends = Some(share::Friends {
+                    code: "N8GT3WFA".into(),
+                    friends: vec![friend("drew", "Drew"), friend("kaden", "Kaden")],
+                    asking: vec![share::Asking { id: 1, handle: "cy".into(), name: "Cy".into(), young: false }],
+                    asked: vec![friend("bo", "Bo")],
+                    blocked: vec![],
+                });
+                focus.open_worlds = vec![share::OpenWorld { code: "K7FQ2M".into(), name: "Kaden's world".into(), by: "Kaden".into(), handle: "kaden".into(), players: 3, max_players: 9, invited: true }];
             }
             if sc == "keyboard" {
                 // a pad typing a line

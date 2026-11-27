@@ -31,6 +31,14 @@ pub struct Config {
     /// Let the server list check servers on this machine and private
     /// networks: for tests and a market on a LAN only.
     pub private_servers: bool,
+    /// The relay that carries worlds shared from home when two players
+    /// can't reach each other directly (iroh-relay, deploy/relay): its
+    /// https address, given to the game. Empty: friends connect directly or
+    /// not at all.
+    pub relay: String,
+    /// The token iroh-relay sends with its access checks
+    /// (`/api/relay/allow`), or `RELAY_TOKEN`. Empty: nobody may ask.
+    pub relay_token: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -74,6 +82,8 @@ impl Default for Config {
             words: None,
             dev_accounts: false,
             private_servers: false,
+            relay: String::new(),
+            relay_token: String::new(),
         }
     }
 }
@@ -115,6 +125,9 @@ impl Config {
         }
         if let Some(v) = env("POTLUCK_SHARE_DATA") {
             c.data = PathBuf::from(v);
+        }
+        if let Some(v) = env("RELAY_TOKEN") {
+            c.relay_token = v;
         }
         c.public_url = c.public_url.trim_end_matches('/').to_string();
         c.forgejo.url = c.forgejo.url.trim_end_matches('/').to_string();

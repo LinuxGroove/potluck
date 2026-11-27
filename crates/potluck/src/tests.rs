@@ -632,6 +632,11 @@ fn fake_game_server() -> String {
 /// (or none, for what needs no git hosting: passes, the server list,
 /// boards). It looks at servers on this machine.
 fn start_market(forgejo: Option<(&str, &str)>, run: &str) -> (String, Arc<potluck_share::market::App>) {
+    start_market_with(forgejo, run, |_| {})
+}
+
+/// A market with some of its settings changed first.
+fn start_market_with(forgejo: Option<(&str, &str)>, run: &str, edit: impl FnOnce(&mut potluck_share::config::Config) + Send + 'static) -> (String, Arc<potluck_share::market::App>) {
     let (tx, rx) = channel();
     let (seed, forgejo, token) = match forgejo {
         Some((f, t)) => (true, f.to_string(), t.to_string()),
@@ -655,6 +660,7 @@ fn start_market(forgejo: Option<(&str, &str)>, run: &str) -> (String, Arc<potluc
             cfg.forgejo.token = token;
             cfg.forgejo.email_domain = "test.invalid".into();
             cfg.private_servers = true;
+            edit(&mut cfg);
             let app = Arc::new(market::App::open(cfg, checks::Words::parse("grumbleweed\n")).unwrap());
             app.db().execute("INSERT INTO accounts (user_id, handle, name, created, beta, trusted) VALUES ('potluck', ?1, 'Potluck', 0, 1, 1)", [format!("potluck-{run}")]).unwrap();
             if seed {
@@ -875,6 +881,363 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     assert_eq!((scores[0]["name"].as_str(), scores[0]["server"].as_str(), scores[1]["value"].as_f64()), (Some("Cy"), Some("Riverbend"), Some(12.5)), "best first, with the server it was on: {v}");
 }
 
+/// The way under worlds shared from home, with no market: frames go both
+/// ways and come out as `Wire` events, a world shared with Always connect
+/// through LinuxGroove gives out no addresses and goes only by the relay,
+/// and with no relay at all friends on the same network still connect
+/// direct.
+#[test]
+fn frames_go_both_ways_peer_to_peer() {
+    use crate::p2p::{dial, key_text, new_key, Relay, Sharing};
+    use std::sync::mpsc::Sender;
+    let (map, url, _relay) = crate::p2p::rt().block_on(iroh::test_utils::run_relay_server()).expect("a relay");
+    let relay = Relay::testing(map, url);
+    // what one side hears: frames, which way it went, and the end
+    let hear = |rx: &Receiver<Wire>, want: &[u8], what: &str| -> (Option<Sender<Vec<u8>>>, Vec<bool>) {
+        let t = Instant::now();
+        let (mut joined, mut ways) = (None, vec![]);
+        while t.elapsed() < Duration::from_secs(30) {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Wire::Joined(_, out)) => joined = Some(out),
+                Ok(Wire::Link(_, l)) => ways.push(l.relayed),
+                Ok(Wire::Data(_, b)) if b == want => return (joined, ways),
+                Ok(Wire::Gone(_)) => panic!("{what}: gone"),
+                _ => {}
+            }
+        }
+        panic!("{what}: heard nothing");
+    };
+
+    for (through, with_relay) in [(true, true), (false, false)] {
+        let what = if through { "through the relay" } else { "with no relay" };
+        let relay = with_relay.then(|| relay.clone());
+        let secret = new_key();
+        let key = key_text(&secret);
+        let (tx, rx) = channel();
+        let sharing = Sharing::start(secret, relay.clone(), through, tx, Arc::new(Mutex::new(1))).unwrap();
+        assert_eq!(sharing.key(), key);
+        let addrs = sharing.addrs();
+        assert_eq!(addrs.is_empty(), through, "{what}: addresses {addrs:?}");
+        let (ctx, crx) = channel();
+        let out = dial(new_key(), relay, through, &key, &addrs, ctx).unwrap();
+        out.send(b"hello".to_vec()).unwrap();
+        let (back, host_ways) = hear(&rx, b"hello", what);
+        back.expect("the friend comes out as a player").send(b"welcome".to_vec()).unwrap();
+        let (_, friend_ways) = hear(&crx, b"welcome", what);
+        assert!(!host_ways.is_empty() && host_ways.iter().all(|r| *r == through), "{what}: the host's way {host_ways:?}");
+        assert!(friend_ways.iter().all(|r| *r == through), "{what}: the friend's way {friend_ways:?}");
+        // the friend leaves: the host hears they've gone
+        drop(out);
+        let t = Instant::now();
+        while !matches!(rx.recv_timeout(Duration::from_millis(100)), Ok(Wire::Gone(_))) {
+            assert!(t.elapsed() < Duration::from_secs(20), "{what}: the host never heard the friend go");
+        }
+    }
+    assert!(dial(new_key(), None, true, &key_text(&new_key()), &[], channel().0).is_err(), "through the relay with no relay can't go anywhere");
+}
+
+/// A relay for the tests that asks the market who may use it, as the
+/// real one does with `access.http`.
+#[derive(Debug)]
+struct AsksTheMarket(Arc<std::sync::OnceLock<(String, String)>>);
+
+impl iroh_relay::server::AccessControl for AsksTheMarket {
+    async fn on_connect(&self, r: &iroh_relay::server::ClientRequest) -> iroh_relay::server::Access {
+        let Some((market, token)) = self.0.get().cloned() else { return iroh_relay::server::Access::Deny { reason: None } };
+        let key = r.endpoint_id().to_string();
+        let ok = tokio::task::spawn_blocking(move || relay_asks(&market, &token, &key)).await.unwrap_or(false);
+        if ok { iroh_relay::server::Access::Allow } else { iroh_relay::server::Access::Deny { reason: None } }
+    }
+}
+
+/// What the market tells the relay about a key.
+fn relay_asks(market: &str, token: &str, key: &str) -> bool {
+    ureq::post(format!("{market}/api/relay/allow"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Iroh-Endpoint-Id", key)
+        .send_empty()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .is_some_and(|t| t == "true")
+}
+
+/// Sharing a world from home, peer to peer: Ada and Bo swap friend codes,
+/// Ada shares her world to Friends and Bo comes in under the name the
+/// market knows, straight to her game. Cy, who isn't a friend, is turned
+/// away, as is a pass made for another key; set to Anyone with the code,
+/// Cy comes in. A younger friend joins only while it's set to Friends, and
+/// Always connect through LinuxGroove goes by the relay, which lets in only
+/// the keys the market gave out. Invites put the world at the top of a
+/// friend's list, and once Ada stops sharing nobody gets in.
+#[test]
+fn a_world_shared_from_home_lets_friends_in_peer_to_peer() {
+    use crate::net::{self, Event, Msg, Net};
+    use crate::share::{Done, ShareJobs, Who, WorldWay};
+    use crate::ui::Focus;
+    home();
+    let run = crate::settings::random_hex(5);
+    let token = format!("relay-{run}");
+    let asks = Arc::new(std::sync::OnceLock::new());
+    let (map, relay_url, _relay) = crate::p2p::rt().block_on(iroh::test_utils::run_relay_server_with_access(true, Arc::new(AsksTheMarket(asks.clone())))).expect("a relay");
+    let relay = crate::p2p::Relay::testing(map, relay_url);
+    let (relay_text, token2) = (relay.url(), token.clone());
+    let (market, _mkt) = start_market_with(None, &run, move |cfg| {
+        cfg.relay = relay_text;
+        cfg.relay_token = token2;
+    });
+    asks.set((market.clone(), token.clone())).unwrap();
+    let server = fake_game_server();
+    let who = |name: &str, young: bool| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}"), young };
+    let (ada, bo, cy, dee) = (who("Ada", false), who("Bo", false), who("Cy", false), who("Dee", true));
+    // each player's game signs in on its own
+    let jobs: std::collections::HashMap<String, ShareJobs> = [&ada, &bo, &cy, &dee].iter().map(|w| (w.device.clone(), ShareJobs::default())).collect();
+    let j = |w: &Who| &jobs[&w.device];
+    let page = |w: &Who| {
+        j(w).friends(w);
+        match done(j(w), "a friends page") {
+            Done::Friends { page, .. } => page,
+            _ => panic!("not a friends page"),
+        }
+    };
+    let said = |w: &Who, what: &str| match done(j(w), what) {
+        Done::Friends { said, page } => (said, page),
+        _ => panic!("{what}: not a friends page"),
+    };
+
+    // Ada's friend code, typed by Bo the way people type them
+    let code = page(&ada).code;
+    assert_eq!(code.len(), 8, "{code}");
+    j(&bo).add_friend(&bo, &format!("{}-{}", &code[..4], &code[4..]).to_lowercase());
+    let (s, bo_page) = said(&bo, "Bo asks");
+    assert!(s.starts_with("Sent"), "{s}");
+    assert_eq!(bo_page.asked.len(), 1, "Bo sees his request waiting");
+    let asking = page(&ada).asking;
+    assert_eq!(asking.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), vec![bo.name.as_str()], "Ada sees Bo asking");
+    j(&ada).answer_friend(&ada, asking[0].id, true);
+    let (s, ada_page) = said(&ada, "Ada says yes");
+    assert!(s.contains("friends now"), "{s}");
+    let bo_handle = ada_page.friends.iter().find(|f| f.name == bo.name).expect("Bo is Ada's friend").handle.clone();
+    assert!(page(&bo).friends.iter().any(|f| f.name == ada.name), "and Ada is Bo's");
+
+    // Cy asks, Ada blocks him, and her code looks like nobody's to him after
+    j(&cy).add_friend(&cy, &code);
+    said(&cy, "Cy asks");
+    let cy_handle = page(&ada).asking.iter().find(|a| a.name == cy.name).expect("Cy asking").handle.clone();
+    j(&ada).unfriend(&ada, &cy_handle, true);
+    let (s, ada_page) = said(&ada, "Ada blocks Cy");
+    assert!(s.starts_with("Blocked") && ada_page.blocked.len() == 1 && ada_page.asking.is_empty(), "{s} {ada_page:?}");
+    j(&cy).add_friend(&cy, &code);
+    let (s, _) = said(&cy, "Cy asks again");
+    assert!(s.contains("isn't anyone's friend code"), "a block looks like a wrong code: {s}");
+    j(&ada).unblock(&ada, &cy_handle);
+    said(&ada, "Ada unblocks Cy");
+
+    // Dee, who is under 13, becomes Ada's friend too
+    j(&dee).add_friend(&dee, &code);
+    said(&dee, "Dee asks");
+    let dee_asks = page(&ada).asking.into_iter().find(|a| a.name == dee.name).expect("Dee asking");
+    assert!(dee_asks.young, "Ada's game knows Dee is younger");
+    j(&ada).answer_friend(&ada, dee_asks.id, true);
+    said(&ada, "Ada says yes to Dee");
+
+    // Ada shares her world, to Friends
+    let mut host = App::new();
+    host.add_plugins(MinimalPlugins);
+    crate::sim(&mut host, crate::SEED);
+    host.insert_resource(crate::settings::Settings { name: ada.name.clone(), server: server.clone(), market: market.clone(), device: ada.device.clone(), ..Default::default() });
+    host.update();
+    let secret = crate::p2p::new_key();
+    let ada_key = crate::p2p::key_text(&secret);
+    let beat = |host: &App, key: &str| {
+        let w = host.world();
+        crate::game::world_beat(w.resource::<Net>(), w.resource::<crate::settings::Settings>(), w.resource::<Voxels>(), key, false)
+    };
+    host.world().resource::<ShareJobs>().share_world(&ada, beat(&host, &ada_key), Some(secret));
+    let t = Instant::now();
+    let world_code = loop {
+        host.update();
+        if let Some(s) = &host.world().resource::<Focus>().shared {
+            break s.code.clone();
+        }
+        assert!(t.elapsed() < Duration::from_secs(30), "Ada's world was never shared: {}", host.world().resource::<Focus>().status);
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(world_code.len(), 6, "{world_code}");
+    // the game tells the market where it listens once it knows
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.sent_addrs.is_empty()) {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(20), "Ada's game never said where it listens");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(host.world().resource::<Net>().shared().map(|(c, k, _)| (c.to_string(), k.to_string())), Some((world_code.clone(), ada_key.clone())));
+    assert_eq!(host.world().resource::<Focus>().shared.as_ref().map(|s| s.who.as_str()), Some("friends"));
+    assert!(relay_asks(&market, &token, &ada_key), "the relay may carry Ada's world");
+    assert!(!relay_asks(&market, &token, &crate::p2p::key_text(&crate::p2p::new_key())), "and nobody else");
+    assert!(!relay_asks(&market, "not-the-token", &ada_key), "when it's really the relay asking");
+    let mut r = ureq::get(format!("{market}/w/{}", world_code.to_lowercase())).call().expect("the world's page");
+    let html = r.body_mut().read_to_string().unwrap();
+    assert!(html.contains(&crate::ui::pretty_world_code(&world_code)), "the QR code's page shows the code");
+
+    // a friend's game dials Ada's: the name it's welcomed under, whether it
+    // went by the relay (as both games see it) and its connection, or why not
+    let knock = |host: &mut App, w: WorldWay, through: bool, hello: &str, young: bool, key: Option<iroh::SecretKey>| -> Result<(String, bool, std::sync::mpsc::Sender<Vec<u8>>), String> {
+        let (tx, rx) = channel();
+        let out = crate::p2p::dial(key.unwrap_or(w.secret), crate::p2p::Relay::parse(&w.relay), through, &w.key, &w.addrs, tx).unwrap();
+        out.send(net::frame_msg(&Msg::Hello { name: hello.into(), protocol: net::PROTOCOL, pass: Some(w.pass), young })).unwrap();
+        let t = Instant::now();
+        let (mut name, mut relayed) = (None, vec![]);
+        while t.elapsed() < Duration::from_secs(40) {
+            host.update();
+            std::thread::sleep(Duration::from_millis(10));
+            for e in rx.try_iter() {
+                match net::decode(e) {
+                    Some(Event::Link(_, l)) => relayed.push(l.relayed),
+                    Some(Event::Msg(_, Msg::Refused(why))) => return Err(why),
+                    Some(Event::Msg(_, Msg::Roster(all))) if name.is_none() => name = all.last().cloned(),
+                    Some(Event::Gone(_)) => return Err(format!("gone (heard {name:?})")),
+                    _ => {}
+                }
+            }
+            // through the relay: every look at the way says so; direct: it
+            // gets there once the two games find each other
+            let Some(n) = &name else { continue };
+            let host_sees = host.world().resource::<Net>().remote_players().iter().find(|p| &p.name == n).and_then(|p| p.link.as_ref().map(|l| l.relayed));
+            if through && !relayed.is_empty() && t.elapsed() > Duration::from_secs(3) && host_sees == Some(true) {
+                return Ok((n.clone(), relayed.iter().all(|r| *r), out));
+            }
+            if !through && relayed.last() == Some(&false) && host_sees == Some(false) {
+                return Ok((n.clone(), false, out));
+            }
+        }
+        panic!("{hello} heard nothing back (welcomed as {name:?}, ways {relayed:?})");
+    };
+    let way = |w: &Who, code: &str| {
+        j(w).join_world(w, code);
+        match done(j(w), "the way in") {
+            Done::WorldWay(w) => w,
+            _ => panic!("not a way in"),
+        }
+    };
+
+    let mut w = way(&bo, &world_code.to_lowercase());
+    let t = Instant::now();
+    while w.addrs.is_empty() {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(20), "the market never heard where Ada's game listens");
+        std::thread::sleep(Duration::from_millis(100));
+        w = way(&bo, &world_code);
+    }
+    assert_eq!((w.code.as_str(), w.key.as_str(), w.name.clone()), (world_code.as_str(), ada_key.as_str(), format!("{}'s world", ada.name)));
+    let came = knock(&mut host, w, false, "bo the impostor", false, None);
+    assert_eq!(came.as_ref().map(|(n, r, _)| (n.as_str(), *r)), Ok((bo.name.as_str(), false)), "Bo comes in under the name the market knows, straight to Ada's game");
+    let bo_there = host.world().resource::<Net>().remote_players().iter().map(|p| p.handle.clone()).collect::<Vec<_>>();
+    assert_eq!(bo_there, vec![Some(bo_handle.clone())], "Ada's game knows who Bo is");
+    drop(came);
+
+    // a pass made for another game's key doesn't open it
+    let w = way(&bo, &world_code);
+    let why = knock(&mut host, w, false, "Bo", false, Some(crate::p2p::new_key())).expect_err("a pass for another key");
+    assert!(why.contains("another world"), "{why}");
+
+    // Cy isn't Ada's friend: the market says so, and won't give him a way in
+    j(&cy).join_world(&cy, &world_code);
+    let why = failed(j(&cy), "Cy joining a friends' world");
+    assert!(why.contains("friends"), "{why}");
+
+    // Anyone with the code: Cy comes in, and Dee can't while it's that way
+    host.world_mut().resource_mut::<crate::settings::Settings>().world_who = "code".into();
+    host.world().resource::<ShareJobs>().share_world(&ada, beat(&host, &ada_key), None);
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.who != "code") {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(30), "who may come never changed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let w = way(&cy, &world_code);
+    assert_eq!(knock(&mut host, w, false, "Cy", false, None).map(|(n, _, _)| n), Ok(cy.name.clone()), "anyone with the code comes in");
+    j(&dee).join_world(&dee, &world_code);
+    let why = failed(j(&dee), "Dee joining a world open to anyone");
+    assert!(why.contains("younger players"), "{why}");
+
+    // back to Friends: Dee comes in, always through LinuxGroove
+    host.world_mut().resource_mut::<crate::settings::Settings>().world_who = "friends".into();
+    host.world().resource::<ShareJobs>().share_world(&ada, beat(&host, &ada_key), None);
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.who != "friends") {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(30), "who may come never changed back");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let w = way(&dee, &world_code);
+    assert!(relay_asks(&market, &token, &crate::p2p::key_text(&w.secret)), "the relay may carry Dee's connection");
+    assert_eq!(knock(&mut host, w, true, "Dee", true, None).map(|(n, r, _)| (n, r)), Ok((dee.name.clone(), true)), "Dee comes in by the relay, and only by it");
+
+    // an invite puts Ada's world first on Bo's list
+    j(&ada).invite(&ada, &world_code, &bo_handle);
+    let Done::Said(s) = done(j(&ada), "Ada invites Bo") else { panic!("not said") };
+    assert!(s.starts_with("Invited"), "{s}");
+    j(&bo).worlds(&bo);
+    let Done::Worlds(list) = done(j(&bo), "Bo's friends' worlds") else { panic!("not worlds") };
+    assert_eq!(list.first().map(|o| (o.code.as_str(), o.invited)), Some((world_code.as_str(), true)), "{list:?}");
+    j(&cy).worlds(&cy);
+    let Done::Worlds(list) = done(j(&cy), "Cy's friends' worlds") else { panic!("not worlds") };
+    assert!(list.is_empty(), "Cy isn't Ada's friend, so her world isn't on his list: {list:?}");
+
+    // Bo's own game joins by the code, the way Join a friend's world does
+    let mut guest = App::new();
+    guest.add_plugins(MinimalPlugins);
+    crate::sim(&mut guest, crate::SEED);
+    guest.init_resource::<crate::player::Me>().init_resource::<crate::mesh::ChunkEntities>().add_systems(Update, net::client_net);
+    guest.insert_resource(crate::settings::Settings { name: "Bo".into(), server: server.clone(), market: market.clone(), device: bo.device.clone(), ..Default::default() });
+    guest.update();
+    guest.world().resource::<ShareJobs>().join_world(&bo, &world_code);
+    let t = Instant::now();
+    while guest.world().resource::<Net>().relayed() != Some(false) || !host.world().resource::<Net>().remote_players().iter().any(|p| p.name == bo.name) {
+        host.update();
+        guest.update();
+        assert!(t.elapsed() < Duration::from_secs(30), "Bo's game never got in: {}", guest.world().resource::<Focus>().status);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(guest.world().resource::<crate::ui::WorldInfo>().line.ends_with("direct"), "Bo's game says which way it went: {}", guest.world().resource::<crate::ui::WorldInfo>().line);
+    assert!(host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.players.iter().any(|(n, relayed)| n == &bo.name && !relayed)), "Share this world lists Bo, direct");
+    drop(guest);
+
+    // Ada stops sharing: her game closes it on the market
+    host.world_mut().resource_mut::<Net>().stop_sharing();
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.is_some() {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(10), "sharing never stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let t = Instant::now();
+    loop {
+        host.update();
+        j(&bo).join_world(&bo, &world_code);
+        match jobs_wait(j(&bo)) {
+            Done::Failed(why) => {
+                assert!(why.contains("isn't open"), "{why}");
+                break;
+            }
+            _ => assert!(t.elapsed() < Duration::from_secs(10), "the market still offers a way into a world that stopped"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The next thing a job finished with, failures included.
+fn jobs_wait(jobs: &crate::share::ShareJobs) -> crate::share::Done {
+    let start = Instant::now();
+    loop {
+        if let Some(d) = jobs.poll().into_iter().next() {
+            return d;
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "a job took too long");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn failed(jobs: &crate::share::ShareJobs, what: &str) -> String {
     let start = Instant::now();
     loop {
@@ -1043,6 +1406,65 @@ fn younger_players_share_with_friends_and_play_where_its_for_all_ages() {
     focus.go(Screen::Parents);
     focus.parents_open = false;
     assert!(acts(&focus, &settings).iter().any(|a| matches!(a, Act::UnlockParents(_))), "locked until the PIN");
+}
+
+/// A younger player's new friends wait for a parent: with no PIN the game
+/// says to ask for one, with one it asks for it, and only the right PIN
+/// sends the request. Their world is always for their friends, Always
+/// connect through LinuxGroove turns on with the age answer, and a parent
+/// can turn sharing and joining worlds off.
+#[test]
+fn a_younger_players_friends_and_worlds_wait_for_a_parent() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, Act, Acts, Focus, Kind, Screen, SharedWorld, WorldInfo};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    let offline = Settings { market: "http://127.0.0.1:9".into(), server: "http://127.0.0.1:9".into(), ..Default::default() };
+    app.insert_resource(offline.clone()).insert_resource(crate::player::Me::default());
+    let run = |app: &mut App, act: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(act);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    run(&mut app, Act::SetAge(true));
+    assert!(app.world().resource::<Settings>().through_relay, "a younger player's friends never see their address");
+
+    run(&mut app, Act::AddFriend("N8GT-3WFA".into()));
+    assert!(app.world().resource::<Focus>().status.contains("parent"), "{}", app.world().resource::<Focus>().status);
+    app.world_mut().resource_mut::<Settings>().parent_pin = offline.pin_hash("2468");
+    run(&mut app, Act::AddFriend("N8GT-3WFA".into()));
+    assert!(matches!(&app.world().resource::<Focus>().screen, Screen::ParentOk(a) if **a == Act::AddFriend("N8GT-3WFA".into())), "the PIN first");
+    run(&mut app, Act::ParentOk("1357".into()));
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::ParentOk(_)), "not with the wrong PIN");
+    run(&mut app, Act::ParentOk("2468".into()));
+    let focus = app.world().resource::<Focus>();
+    assert_eq!((&focus.screen, focus.status.as_str()), (&Screen::Friends, "Sending..."), "the right PIN sends it");
+    app.world_mut().resource_mut::<Settings>().friends_ok = false;
+    run(&mut app, Act::AnswerFriend(7, true));
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Friends, "a parent can let them make friends on their own");
+
+    // Share this world: friends only, and a parent can turn it off
+    let (lib, scripts, info) = (app.world().resource::<Library>(), app.world().resource::<Scripts>(), WorldInfo::default());
+    let mut settings = app.world().resource::<Settings>().clone();
+    let mut focus = Focus::default();
+    focus.go(Screen::ShareWorld);
+    let items = |focus: &Focus, settings: &Settings| menu_items(focus, lib, scripts, settings, &info).1;
+    let shown = items(&focus, &settings);
+    assert!(!shown.iter().any(|i| matches!(&i.kind, Kind::Choice { act: Act::WorldWho, .. })), "younger players don't choose who joins");
+    assert!(shown.iter().any(|i| i.kind == Kind::Button(Act::ShareWorld)));
+    focus.shared = Some(SharedWorld { code: "K7FQ2M".into(), url: "https://market.example/w/K7FQ2M".into(), who: "friends".into(), name: "Kid's world".into(), players: vec![("Ada".into(), true)], ..Default::default() });
+    let shown = items(&focus, &settings);
+    assert!(shown.iter().any(|i| i.label == "K7F-Q2M" && i.kind == Kind::Big), "the code, big");
+    assert!(shown.iter().any(|i| i.kind == Kind::Qr), "and its QR code");
+    assert!(shown.iter().any(|i| i.label.contains("Ada") && i.label.contains("through LinuxGroove")), "who's here, and which way");
+    settings.share_worlds = false;
+    assert!(!items(&focus, &settings).iter().any(|i| i.kind == Kind::Button(Act::StopSharing) || i.kind == Kind::Button(Act::ShareWorld)), "a parent turned sharing off");
+    settings.join_worlds = false;
+    focus.go(Screen::Join);
+    assert!(!items(&focus, &settings).iter().any(|i| matches!(i.kind, Kind::Button(Act::JoinCode(_)))), "or joining friends' worlds");
 }
 
 /// The first time anything would go online, the game asks who's playing,

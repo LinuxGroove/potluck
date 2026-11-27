@@ -2,7 +2,9 @@
 //! host owns the world and runs every creation; when someone joins they get
 //! the world and its creations, so there's nothing to install. Messages are
 //! JSON in length-prefixed frames over TCP, and hosts announce themselves on
-//! the local network with a UDP beacon.
+//! the local network with a UDP beacon. A world shared from home takes
+//! friends over the internet too, peer to peer (`p2p.rs`), with the same
+//! frames and the same events.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::UdpSocket;
@@ -23,7 +25,7 @@ use crate::render::Clock;
 use crate::script::Scripts;
 use crate::settings::Settings;
 use crate::ui::{Focus, Screen, Toasts, WorldInfo};
-use crate::transport::{self, TlsFiles, Wire};
+use crate::transport::{self, Link, TlsFiles, Wire};
 use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
@@ -144,12 +146,14 @@ pub enum Event {
     World(u32, Vec<u8>),
     Joined(u32, Sender<Vec<u8>>),
     Gone(u32),
+    Link(u32, Link),
 }
 
 pub fn decode(w: Wire) -> Option<Event> {
     match w {
         Wire::Joined(id, s) => Some(Event::Joined(id, s)),
         Wire::Gone(id) => Some(Event::Gone(id)),
+        Wire::Link(id, l) => Some(Event::Link(id, l)),
         Wire::Data(id, b) => match b.first() {
             Some(1) => Some(Event::World(id, b[1..].to_vec())),
             Some(0) => serde_json::from_slice(&b[1..]).ok().map(|m| Event::Msg(id, m)),
@@ -191,6 +195,8 @@ pub struct Remote {
     pub yaw: f32,
     /// Under 13, as the player said when they joined.
     pub young: bool,
+    /// Came peer to peer: their key, and whether through the relay now.
+    pub link: Option<Link>,
     out: Option<Sender<Vec<u8>>>,
     welcomed: bool,
     /// What this player has been told, so only changes go out.
@@ -216,7 +222,7 @@ fn r2v(v: Vec3) -> [f32; 3] {
 }
 
 fn remote(id: u32, name: String, out: Option<Sender<Vec<u8>>>) -> Remote {
-    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, young: false, out, welcomed: false, seen: Seen::default() }
+    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, young: false, link: None, out, welcomed: false, seen: Seen::default() }
 }
 
 pub struct HostNet {
@@ -234,6 +240,22 @@ pub struct HostNet {
     says: Vec<(u32, crate::chat::Say)>,
     /// Players welcomed since chat last looked, for its history.
     welcomed: Vec<u32>,
+    /// Where connections tell the world about themselves, and the next
+    /// player's number: kept for sharing from home later.
+    tx: Sender<Wire>,
+    next: Arc<Mutex<u32>>,
+    /// Open on the local network (a port and maybe a beacon), not only shared.
+    lan: bool,
+    /// Shared from home, peer to peer.
+    p2p: Option<P2pHost>,
+}
+
+/// A world shared from home: the endpoint friends dial, and who it lets in.
+struct P2pHost {
+    sharing: crate::p2p::Sharing,
+    rules: crate::hosting::Rules,
+    /// The code friends type, to show.
+    code: String,
 }
 
 pub struct ClientNet {
@@ -250,6 +272,12 @@ pub struct ClientNet {
     chat: bool,
     /// Lines of chat from the host, for chat to take.
     lines: Vec<crate::chat::Line>,
+    /// What to call the world in messages: its address, or its name when it
+    /// was shared from home.
+    shown: String,
+    /// Peer to peer: which way the connection goes now, once it's up.
+    link: Option<Link>,
+    p2p: bool,
 }
 
 pub enum Role {
@@ -271,6 +299,49 @@ pub struct Net {
 impl Default for Net {
     fn default() -> Self {
         Self { role: Role::Solo, my_id: 1, lan: None, since_send: 0.0, pending: vec![] }
+    }
+}
+
+impl HostNet {
+    #[allow(clippy::too_many_arguments)]
+    fn new(name: String, rules: crate::hosting::Rules, tx: Sender<Wire>, rx: Receiver<Wire>, status: Arc<Mutex<String>>, next: Arc<Mutex<u32>>, stop_beacon: Arc<Mutex<bool>>, lan: bool) -> HostNet {
+        HostNet {
+            events: Mutex::new(rx),
+            status,
+            name,
+            since_status: 9.0,
+            players: BTreeMap::new(),
+            stop_beacon,
+            rules,
+            since_roster: 9.0,
+            sent: (0, 0, 0.0),
+            says: vec![],
+            welcomed: vec![],
+            tx,
+            next,
+            lan,
+            p2p: None,
+        }
+    }
+}
+
+impl ClientNet {
+    fn new(rx: Receiver<Wire>, out: Sender<Vec<u8>>, addr: &str, shown: &str) -> ClientNet {
+        ClientNet {
+            events: Mutex::new(rx),
+            out,
+            host_name: String::new(),
+            players: BTreeMap::new(),
+            welcomed: false,
+            addr: addr.to_string(),
+            roster: vec![],
+            teleport: true,
+            chat: true,
+            lines: vec![],
+            shown: shown.to_string(),
+            link: None,
+            p2p: false,
+        }
     }
 }
 
@@ -310,7 +381,7 @@ impl Net {
             let cfg = transport::tls_config(&TlsFiles { cert, key })?;
             transport::listen(*tls_port, Some(cfg), tx.clone(), status.clone(), next.clone())?;
         }
-        transport::listen(o.port, None, tx, status.clone(), next)?;
+        transport::listen(o.port, None, tx.clone(), status.clone(), next.clone())?;
         let stop = Arc::new(Mutex::new(false));
         if o.beacon {
             // tell the local network every second
@@ -325,9 +396,88 @@ impl Net {
                 }
             });
         }
-        self.role = Role::Host(HostNet { events: Mutex::new(rx), status, name: o.name, since_status: 9.0, players: BTreeMap::new(), stop_beacon: stop, rules: o.rules, since_roster: 9.0, sent: (0, 0, 0.0), says: vec![], welcomed: vec![] });
+        self.role = Role::Host(HostNet::new(o.name, o.rules, tx, rx, status, next, stop, true));
         self.my_id = 1;
         Ok(format!("{}:{}", local_ip(), o.port))
+    }
+
+    /// Shares this world from home: friends with the market's pass for
+    /// `secret`'s key dial it peer to peer. A world that isn't open to the
+    /// local network already opens to nobody else. `rules` say who comes in
+    /// (passes for `p2p:<key>`, from the market).
+    pub fn share_from_home(&mut self, name: &str, code: &str, secret: iroh::SecretKey, relay: Option<crate::p2p::Relay>, through_relay: bool, rules: crate::hosting::Rules) -> Result<(), String> {
+        if let Role::Client(_) = self.role {
+            return Err("only the world's host can share it".into());
+        }
+        if through_relay && relay.is_none() {
+            return Err("Always connect through LinuxGroove is on, and LinuxGroove's relay isn't running".into());
+        }
+        if let Role::Solo = self.role {
+            let (tx, rx) = channel();
+            let status = Arc::new(Mutex::new("{}".to_string()));
+            self.role = Role::Host(HostNet::new(format!("{name}'s world"), Default::default(), tx, rx, status, Arc::new(Mutex::new(1)), Arc::new(Mutex::new(true)), false));
+            self.my_id = 1;
+        }
+        let Role::Host(h) = &mut self.role else { unreachable!() };
+        // a fresh key each time: the old endpoint goes first
+        h.p2p = None;
+        let sharing = crate::p2p::Sharing::start(secret, relay, through_relay, h.tx.clone(), h.next.clone())?;
+        h.p2p = Some(P2pHost { sharing, rules, code: code.to_string() });
+        Ok(())
+    }
+
+    /// Stops sharing from home: friends who came that way leave.
+    pub fn stop_sharing(&mut self) {
+        if let Role::Host(h) = &mut self.role {
+            h.p2p = None;
+        }
+    }
+
+    /// The code and key of the world shared from home, and the addresses
+    /// it listens on, while it's shared.
+    pub fn shared(&self) -> Option<(&str, &str, Vec<String>)> {
+        match &self.role {
+            Role::Host(HostNet { p2p: Some(p), .. }) => Some((&p.code, p.sharing.key(), p.sharing.addrs())),
+            _ => None,
+        }
+    }
+
+    /// Who may come into the world shared from home, while it's shared.
+    pub fn shared_rules(&self) -> Option<&crate::hosting::Rules> {
+        match &self.role {
+            Role::Host(HostNet { p2p: Some(p), .. }) => Some(&p.rules),
+            _ => None,
+        }
+    }
+
+    /// Changes who may come into the world shared from home (Friends, or
+    /// anyone with the code): the market decides, and this keeps the code.
+    pub fn set_share_code(&mut self, code: &str) {
+        if let Role::Host(HostNet { p2p: Some(p), .. }) = &mut self.role {
+            p.code = code.to_string();
+        }
+    }
+
+    /// Joins a world shared from home, by what the market said of it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn join_p2p(&mut self, code: &str, shown: &str, host_key: &str, addrs: &[String], secret: iroh::SecretKey, relay: Option<crate::p2p::Relay>, through_relay: bool, name: &str, pass: String, young: bool) -> Result<(), String> {
+        self.leave();
+        let (tx, rx) = channel();
+        let out = crate::p2p::dial(secret, relay, through_relay, host_key, addrs, tx)?;
+        let _ = out.send(frame_msg(&Msg::Hello { name: name.to_string(), protocol: PROTOCOL, pass: Some(pass), young }));
+        let mut c = ClientNet::new(rx, out, &format!("p2p:{code}"), shown);
+        c.p2p = true;
+        self.role = Role::Client(c);
+        Ok(())
+    }
+
+    /// Which way the connection to a world shared from home goes: Some(true)
+    /// through LinuxGroove's relay, Some(false) direct.
+    pub fn relayed(&self) -> Option<bool> {
+        match &self.role {
+            Role::Client(c) if c.p2p => c.link.as_ref().map(|l| l.relayed),
+            _ => None,
+        }
     }
 
     pub fn join(&mut self, addr: &str, name: &str, pass: Option<String>, young: bool) -> Result<(), String> {
@@ -335,8 +485,7 @@ impl Net {
         let (tx, rx) = channel();
         let out = transport::connect(addr, PORT, tx)?;
         let _ = out.send(frame_msg(&Msg::Hello { name: name.to_string(), protocol: PROTOCOL, pass, young }));
-        let role = ClientNet { events: Mutex::new(rx), out, host_name: String::new(), players: BTreeMap::new(), welcomed: false, addr: addr.to_string(), roster: vec![], teleport: true, chat: true, lines: vec![] };
-        self.role = Role::Client(role);
+        self.role = Role::Client(ClientNet::new(rx, out, addr, addr));
         Ok(())
     }
 
@@ -494,6 +643,7 @@ pub fn host_net(
     mut made_sent: Local<u64>,
 ) {
     let pending = std::mem::take(&mut net.pending);
+    info.joined = matches!(net.role, Role::Client(_));
     let Role::Host(_) = &net.role else {
         voxels.changes.clear();
         if !matches!(net.role, Role::Client(_)) {
@@ -538,11 +688,24 @@ pub fn host_net(
                 }
             }
             Event::World(..) => {}
+            Event::Link(id, link) => {
+                if let Role::Host(h) = &mut net.role {
+                    if let Some(p) = h.players.get_mut(&id) {
+                        p.link = Some(link);
+                    }
+                }
+            }
             Event::Msg(id, m) => match m {
                 Msg::Hello { name, protocol, pass, young } => {
                     let Role::Host(h) = &mut net.role else { continue };
                     let here = h.players.values().filter(|p| p.welcomed).count() + usize::from(me.is_some());
-                    let rules = h.rules.clone();
+                    let peer = h.players.get(&id).and_then(|p| p.link.as_ref()).map(|l| l.peer.clone());
+                    // who came from home: the market's pass for this world and this player's key
+                    let rules = match (&peer, &h.p2p) {
+                        (Some(_), Some(p2p)) => p2p.rules.clone(),
+                        (Some(_), None) => continue,
+                        (None, _) => h.rules.clone(),
+                    };
                     let Some(p) = h.players.get_mut(&id) else { continue };
                     let Some(out) = p.out.clone() else { continue };
                     if p.welcomed {
@@ -552,7 +715,11 @@ pub fn host_net(
                         let _ = out.send(frame_msg(&Msg::Refused("This world runs a different version of Potluck.".into())));
                         continue;
                     }
-                    let (shown, handle) = match rules.admit(&name, pass.as_deref(), here) {
+                    let admitted = match &peer {
+                        Some(peer) => rules.admit_peer(pass.as_deref(), here, peer),
+                        None => rules.admit(&name, pass.as_deref(), here).map(|(shown, handle)| (shown, handle, young)),
+                    };
+                    let (shown, handle, young) = match admitted {
                         Ok(w) => w,
                         Err(why) => {
                             let _ = out.send(frame_msg(&Msg::Refused(why)));
@@ -701,7 +868,17 @@ pub fn host_net(
     }
     let names: Vec<String> = net.remote_players().iter().map(|p| p.name.clone()).collect();
     let n = names.len();
-    info.line = format!("Hosting at {}  ·  {} {}", local_ip(), n, if n == 1 { "friend" } else { "friends" });
+    let through = net.remote_players().iter().filter(|p| p.link.as_ref().is_some_and(|l| l.relayed)).count();
+    let friends = format!("{n} {}", if n == 1 { "friend" } else { "friends" });
+    let friends = if through > 0 { format!("{friends} ({through} through LinuxGroove)") } else { friends };
+    info.line = match &net.role {
+        Role::Host(HostNet { p2p: Some(p), lan, .. }) => {
+            let code = crate::ui::pretty_world_code(&p.code);
+            if *lan { format!("Hosting at {}, shared as {code}  ·  {friends}", local_ip()) } else { format!("Shared as {code}  ·  {friends}") }
+        }
+        Role::Host(HostNet { lan: false, .. }) => format!("Not shared  ·  {friends}"),
+        _ => format!("Hosting at {}  ·  {friends}", local_ip()),
+    };
     let creations: Vec<String> = lib.running.iter().filter_map(|id| lib.list.get(id)).map(|c| format!("{} by {}", c.manifest.name, c.manifest.by)).collect();
     let dt = time.delta_secs();
     let roster = {
@@ -1037,9 +1214,14 @@ pub fn client_net(
     };
     for ev in events {
         match ev {
+            Event::Link(_, link) => {
+                if let Role::Client(c) = &mut net.role {
+                    c.link = Some(link);
+                }
+            }
             Event::Gone(_) => {
                 let (welcomed, addr) = match &net.role {
-                    Role::Client(c) => (c.welcomed, c.addr.clone()),
+                    Role::Client(c) => (c.welcomed, c.shown.clone()),
                     _ => (false, String::new()),
                 };
                 if welcomed {
@@ -1250,7 +1432,12 @@ pub fn client_net(
         net.send_host(&Msg::Me { pos: me.pos.to_array(), yaw: me.yaw });
     }
     if let Role::Client(c) = &net.role {
-        info.line = format!("In {}  ·  {} here", c.host_name, c.roster.len().max(c.players.len() + 1));
+        let way = match (&c.link, c.p2p) {
+            (Some(l), true) if l.relayed => "  ·  through LinuxGroove",
+            (Some(_), true) => "  ·  direct",
+            _ => "",
+        };
+        info.line = format!("In {}  ·  {} here{way}", c.host_name, c.roster.len().max(c.players.len() + 1));
     }
 }
 

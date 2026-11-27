@@ -70,6 +70,16 @@ pub enum Screen {
     Chat,
     /// Every block, to put one in your hand (creative).
     Blocks,
+    /// Sharing this world from home: its code, a QR code, who may join.
+    ShareWorld,
+    /// Friends to invite into the world shared now.
+    Invite,
+    /// Friends: your friend code, requests, friends and blocks.
+    Friends,
+    /// One friend, by handle: their world, removing or blocking them.
+    Friend(String),
+    /// A parent's PIN before a younger player's new friend; then the act.
+    ParentOk(Box<Act>),
     /// The worlds the player keeps, to play (or host, when true).
     Worlds(bool),
     /// One kept world: rename it or delete it.
@@ -188,6 +198,32 @@ pub enum Act {
     OpenBlocks,
     /// Put a block in your hand from Blocks.
     Hold(blocks::BlockId),
+    OpenShareWorld,
+    /// Share this world from home, with a code.
+    ShareWorld,
+    /// Who may join the world shared from home: friends, or anyone with the code.
+    WorldWho,
+    /// A new code for the world shared now: the old one stops working.
+    NewWorldCode,
+    StopSharing,
+    OpenInvite,
+    InviteFriend(String),
+    /// Join a world shared from home by its code.
+    JoinCode(String),
+    OpenFriends,
+    /// Send a friend request to whoever's code this is.
+    AddFriend(String),
+    /// Yes or no to a friend request, by its id.
+    AnswerFriend(i64, bool),
+    OpenFriend(String),
+    RemoveFriend(String),
+    BlockFriend(String),
+    Unblock(String),
+    NewFriendCode,
+    /// The PIN typed on ParentOk.
+    ParentOk(String),
+    /// An act a parent said yes to, done now.
+    Approved(Box<Act>),
     /// On the backpack: choose a slot to move, or where the chosen one
     /// goes (true for half of it).
     Slot(usize, bool),
@@ -308,6 +344,30 @@ pub struct Focus {
     /// The first item drawn, when a menu is taller than the window.
     first: usize,
     qr: Option<(String, Handle<Image>)>,
+    /// The player's friends, once the market's said.
+    pub friends: Option<crate::share::Friends>,
+    /// Friends' worlds open now, for Join a friend's world.
+    pub open_worlds: Vec<crate::share::OpenWorld>,
+    /// This world, while it's shared from home.
+    pub shared: Option<SharedWorld>,
+}
+
+/// A world shared from home, as Share this world shows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SharedWorld {
+    pub code: String,
+    /// Its page on the market, for the QR code.
+    pub url: String,
+    /// "friends" or "code".
+    pub who: String,
+    pub name: String,
+    /// Who's here, and whether they came through LinuxGroove's relay.
+    pub players: Vec<(String, bool)>,
+    /// Since the last heartbeat to the market.
+    pub since_beat: f32,
+    /// The addresses the market last heard, for friends on the same network
+    /// and to start hole punching from.
+    pub sent_addrs: Vec<String>,
 }
 
 impl Default for Focus {
@@ -344,6 +404,9 @@ impl Default for Focus {
             cols: 4,
             first: 0,
             qr: None,
+            friends: None,
+            open_worlds: vec![],
+            shared: None,
         }
     }
 }
@@ -356,6 +419,8 @@ impl Focus {
         self.screen = s;
         self.sel = 0;
         self.scroll = 0;
+        // a new screen starts at its top
+        self.first = 0;
     }
     /// The page open on a screen with pages, to change.
     fn page_mut(&mut self) -> Option<&mut usize> {
@@ -473,6 +538,8 @@ pub fn fonts(mut fonts: ResMut<Assets<Font>>, mut images: ResMut<Assets<Image>>,
 pub struct WorldInfo {
     pub line: String,
     pub in_world: bool,
+    /// In someone else's world, rather than one this game runs.
+    pub joined: bool,
 }
 
 // ---------- the menus' contents ----------
@@ -486,6 +553,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 button("Play alone", Act::OpenWorlds(false)),
                 button("Host a world for friends", Act::OpenWorlds(true)),
                 button("Join a friend's world", Act::OpenJoin),
+                button("Friends", Act::OpenFriends),
                 button("Load a creation from a code", Act::OpenCode),
                 button("Creations", Act::OpenLibrary),
                 button("The market", Act::Market("/".into(), "The market".into())),
@@ -500,6 +568,10 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             if settings.chat {
                 v.push(button("Chat", Act::OpenChat));
             }
+            if !info.joined {
+                v.push(button(if focus.shared.is_some() { "This world is shared" } else { "Share this world" }, Act::OpenShareWorld));
+            }
+            v.push(button("Friends", Act::OpenFriends));
             v.extend([button("Creations in this world", Act::OpenLibrary), button("Load a creation from a code", Act::OpenCode)]);
             v.push(button("The market", Act::Market("/".into(), "The market".into())));
             if let Some(j) = &focus.jam {
@@ -711,6 +783,10 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 v.push(Item { label: "Can share creations".into(), kind: Kind::Toggle { key: "sharing".into(), value: settings.sharing } });
                 v.push(Item { label: "Can join servers from the market's list".into(), kind: Kind::Toggle { key: "servers".into(), value: settings.servers } });
                 v.push(toggle("Can chat in a world", "chat", settings.chat));
+                v.push(toggle("Can share worlds with friends", "share_worlds", settings.share_worlds));
+                v.push(toggle("Can join friends' worlds", "join_worlds", settings.join_worlds));
+                v.push(toggle("New friends need your OK (this PIN)", "friends_ok", settings.friends_ok));
+                v.push(toggle("Always connect through LinuxGroove, so friends never see this computer's address", "through_relay", settings.through_relay));
                 let pin = focus.fields.get("newpin").cloned().unwrap_or_default();
                 let label = if settings.parent_pin.is_empty() { "A PIN, so only you can change these" } else { "A new PIN" };
                 v.push(Item { label: label.into(), kind: Kind::Field { key: "newpin".into(), value: pin.clone() } });
@@ -724,6 +800,18 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         }
         Screen::Join => {
             let mut v = vec![];
+            if settings.join_worlds {
+                for w in &focus.open_worlds {
+                    let here = if w.players == 1 { "1 here".to_string() } else { format!("{} here", w.players) };
+                    let label = if w.invited { format!("{} invited you: {}  ·  {here}", w.by, w.name) } else { format!("{}  ·  {here}", w.name) };
+                    v.push(button(label, Act::JoinCode(w.code.clone())));
+                }
+                let typed = focus.fields.get("worldcode").cloned().unwrap_or_default();
+                v.push(Item { label: "A world code, like K7F-Q2M".into(), kind: Kind::Field { key: "worldcode".into(), value: typed.clone() } });
+                v.push(button("Join that world", Act::JoinCode(typed)));
+            } else {
+                v.push(note("A parent turned off joining friends' worlds over the internet. Worlds on this network still work."));
+            }
             if focus.lan.is_empty() {
                 v.push(note("Looking for worlds on this network..."));
             }
@@ -928,6 +1016,140 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Close", Act::Answer(None)));
             (p.title.clone(), v)
         }
+        Screen::ShareWorld => {
+            let mut v = vec![];
+            let who = |w: &str| if w == "code" { "Anyone with the code" } else { "Your friends" };
+            if !settings.share_worlds {
+                v.push(note("A parent turned off sharing worlds. It's under Settings, Family, Parent settings."));
+            } else if info.joined {
+                v.push(note("This is a friend's world: only its host can share it."));
+            } else {
+                match &focus.shared {
+                    None => {
+                        v.push(note("Friends anywhere join with a code, and play straight from your computer: LinuxGroove only introduces you."));
+                        if settings.young {
+                            v.push(note("Who can join: your friends."));
+                        } else {
+                            v.push(Item { label: "Who can join".into(), kind: Kind::Choice { act: Act::WorldWho, value: who(&settings.world_who).into() } });
+                        }
+                        v.push(button("Share it", Act::ShareWorld));
+                    }
+                    Some(w) => {
+                        // the QR code first, so the sheet puts it beside what it's for
+                        if !w.url.is_empty() {
+                            v.push(Item { label: w.url.clone(), kind: Kind::Qr });
+                            v.push(note("Point a phone at this to see the code and how to join, to pass on to a friend."));
+                        }
+                        v.push(Item { label: pretty_world_code(&w.code), kind: Kind::Big });
+                        v.push(note("Friends type it under Join a friend's world."));
+                        if settings.young {
+                            v.push(note("Who can join: your friends."));
+                        } else {
+                            v.push(Item { label: "Who can join".into(), kind: Kind::Choice { act: Act::WorldWho, value: who(&w.who).into() } });
+                        }
+                        v.push(button("Invite a friend", Act::OpenInvite));
+                        for (name, relayed) in &w.players {
+                            v.push(note(format!("{name}  ·  {}", if *relayed { "through LinuxGroove" } else { "direct" })));
+                        }
+                        v.push(button("New code", Act::NewWorldCode));
+                        v.push(note("The old code stops working, and anyone here stays."));
+                        v.push(button("Stop sharing", Act::StopSharing));
+                    }
+                }
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::Back));
+            ("Share this world".into(), v)
+        }
+        Screen::Invite => {
+            let mut v = vec![];
+            match &focus.friends {
+                None => v.push(note("Asking the market...")),
+                Some(f) if f.friends.is_empty() => v.push(note("Your friends show here. Swap friend codes under Friends first.")),
+                Some(f) => {
+                    v.push(note("They'll see it at the top of Join a friend's world."));
+                    for p in &f.friends {
+                        v.push(button(p.name.clone(), Act::InviteFriend(p.handle.clone())));
+                    }
+                }
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenShareWorld));
+            ("Invite a friend".into(), v)
+        }
+        Screen::Friends => {
+            let mut v = vec![];
+            match &focus.friends {
+                None => v.push(note(if focus.status.is_empty() { "Asking the market...".to_string() } else { focus.status.clone() })),
+                Some(f) => {
+                    v.push(Item { label: pretty_code(&f.code), kind: Kind::Big });
+                    v.push(note(if settings.young {
+                        "Your friend code. Give it to friends you know, in person: they type it here, and a parent says OK."
+                    } else {
+                        "Your friend code. Give it to a friend in person or in a message: they type it here, and you're friends once you say yes."
+                    }));
+                    let typed = focus.fields.get("friendcode").cloned().unwrap_or_default();
+                    v.push(Item { label: "A friend's code".into(), kind: Kind::Field { key: "friendcode".into(), value: typed.clone() } });
+                    v.push(button("Send a friend request", Act::AddFriend(typed)));
+                    for a in &f.asking {
+                        v.push(note(format!("{} wants to be friends", a.name)));
+                        v.push(Item { label: "Yes".into(), kind: Kind::Chip(Act::AnswerFriend(a.id, true)) });
+                        v.push(Item { label: "No".into(), kind: Kind::Chip(Act::AnswerFriend(a.id, false)) });
+                    }
+                    if f.friends.is_empty() && f.asking.is_empty() {
+                        v.push(note("No friends here yet."));
+                    }
+                    for p in &f.friends {
+                        let playing = focus.open_worlds.iter().any(|w| w.handle == p.handle);
+                        v.push(button(if playing { format!("{}  ·  playing now", p.name) } else { p.name.clone() }, Act::OpenFriend(p.handle.clone())));
+                    }
+                    for p in &f.asked {
+                        v.push(note(format!("Waiting for {} to say yes", p.name)));
+                    }
+                    for p in &f.blocked {
+                        v.push(button(format!("Unblock {}", p.name), Act::Unblock(p.handle.clone())));
+                    }
+                    v.push(button("New friend code", Act::NewFriendCode));
+                    if !focus.status.is_empty() {
+                        v.push(note(focus.status.clone()));
+                    }
+                }
+            }
+            v.push(button("Back", Act::Back));
+            ("Friends".into(), v)
+        }
+        Screen::Friend(handle) => {
+            let name = focus.friends.as_ref().and_then(|f| f.friends.iter().find(|p| p.handle == *handle)).map(|p| p.name.clone()).unwrap_or_else(|| handle.clone());
+            let mut v = vec![note(format!("{name} (@{handle})"))];
+            if let Some(w) = focus.open_worlds.iter().find(|w| w.handle == *handle).filter(|_| settings.join_worlds) {
+                v.push(button(format!("Join {}", w.name), Act::JoinCode(w.code.clone())));
+            }
+            v.push(button("Remove friend", Act::RemoveFriend(handle.clone())));
+            v.push(button("Block", Act::BlockFriend(handle.clone())));
+            v.push(note("Blocking ends the friendship. They can't send you a request or join your worlds."));
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenFriends));
+            (name, v)
+        }
+        Screen::ParentOk(_) => {
+            let pin = focus.fields.get("okpin").cloned().unwrap_or_default();
+            let mut v = vec![
+                note("New friends for a player under 13 need a parent's OK. A parent types the PIN here."),
+                Item { label: "PIN".into(), kind: Kind::Field { key: "okpin".into(), value: pin.clone() } },
+                button("OK", Act::ParentOk(pin)),
+            ];
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenFriends));
+            ("A parent's OK".into(), v)
+        }
         Screen::Settings => {
             let field_of = |key: &str, now: &str| focus.fields.get(key).cloned().unwrap_or_else(|| now.to_string());
             let mut v = match SETTINGS_PAGES[focus.settings_page.min(SETTINGS_PAGES.len() - 1)] {
@@ -936,6 +1158,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                     Item { label: "Survival".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
                     note("Health, and blocks that run out. Off, you build with everything."),
                     button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
+                    button("Friends", Act::OpenFriends),
                     button("Link a device", Act::OpenDevices),
                 ],
                 "Controls" => vec![
@@ -957,17 +1180,25 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 "Online" => vec![
                     Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: field_of("server", &settings.server) } },
                     Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: field_of("market", &settings.market) } },
+                    toggle("Always connect through LinuxGroove", "through_relay", settings.through_relay),
+                    note(if settings.young {
+                        "For worlds shared from home. A parent decides this, in Parent settings."
+                    } else {
+                        "For worlds shared from home: friends never see your address. It can be a little slower."
+                    }),
                     Item { label: "Dev bridge for coding helpers on this computer".into(), kind: Kind::Toggle { key: "bridge".into(), value: settings.dev_bridge } },
                 ],
                 _ => {
                     let on = |b: bool| if b { "on" } else { "off" };
                     vec![
                         note(format!(
-                            "{}. Sharing creations is {}, servers from the market's list are {} and chat is {}.",
+                            "{}. Sharing creations is {}, servers from the market's list are {} and chat is {}. Sharing worlds is {} and joining friends' worlds is {}.",
                             if settings.young { "Set for a player under 13" } else { "Set for a player 13 or older" },
                             on(settings.sharing),
                             on(settings.servers),
-                            on(settings.chat)
+                            on(settings.chat),
+                            on(settings.share_worlds),
+                            on(settings.join_worlds)
                         )),
                         button("Parent settings", Act::OpenParents),
                         note(if settings.parent_pin.is_empty() { "A parent can set a PIN there, so only they can change these." } else { "Locked with a parent's PIN." }),
@@ -1039,6 +1270,11 @@ pub fn qr_image(text: &str) -> Option<Image> {
 
 pub fn pretty_code(code: &str) -> String {
     if code.len() == 8 { format!("{}-{}", &code[..4], &code[4..]) } else { code.to_string() }
+}
+
+/// A world's code as it's shown and read out: `K7F-Q2M`.
+pub fn pretty_world_code(code: &str) -> String {
+    if code.len() == 6 { format!("{}-{}", &code[..3], &code[3..]) } else { code.to_string() }
 }
 
 // ---------- menu input ----------
@@ -1278,6 +1514,8 @@ pub fn menu_input(
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
             Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
+            Screen::Invite => Some(Act::OpenShareWorld),
+            Screen::Friend(_) | Screen::ParentOk(_) => Some(Act::OpenFriends),
             Screen::Panel => Some(Act::Answer(None)),
             Screen::Map | Screen::Chat | Screen::Blocks => Some(Act::Resume),
             // putting back what was being moved, then away
@@ -1309,7 +1547,7 @@ pub fn set_field(focus: &mut Focus, settings: &mut Settings, key: &str, v: &str)
 /// A field's button with what the field says in it (Enter in a field).
 pub fn with_value(mut a: Act, v: &str) -> Act {
     match &mut a {
-        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) | Act::UnlockParents(s) | Act::SetPin(s) | Act::Say(s) | Act::RenameWaypoint(_, s) => *s = v.to_string(),
+        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) | Act::UnlockParents(s) | Act::SetPin(s) | Act::Say(s) | Act::RenameWaypoint(_, s) | Act::JoinCode(s) | Act::AddFriend(s) | Act::ParentOk(s) => *s = v.to_string(),
         _ => {}
     }
     a
@@ -1355,9 +1593,20 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("waypoint_labels", KnobValue::Toggle(b)) => settings.waypoint_labels = b,
         ("chat", KnobValue::Toggle(b)) if focus.parents_open => settings.chat = b,
         // a parent's, once unlocked
-        ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
+        ("young", KnobValue::Toggle(b)) if focus.parents_open => {
+            settings.young = b;
+            // younger players' friends never see their address
+            if b {
+                settings.through_relay = true;
+            }
+        }
         ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,
         ("servers", KnobValue::Toggle(b)) if focus.parents_open => settings.servers = b,
+        ("share_worlds", KnobValue::Toggle(b)) if focus.parents_open => settings.share_worlds = b,
+        ("join_worlds", KnobValue::Toggle(b)) if focus.parents_open => settings.join_worlds = b,
+        ("friends_ok", KnobValue::Toggle(b)) if focus.parents_open => settings.friends_ok = b,
+        // a younger player's is a parent's to change
+        ("through_relay", KnobValue::Toggle(b)) if focus.parents_open || !settings.young => settings.through_relay = b,
         _ => {}
     }
     settings.save();

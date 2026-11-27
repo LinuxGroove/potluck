@@ -44,7 +44,7 @@ pub fn look(s: &Screen) -> Look {
     match s {
         Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) => Look::Map,
         Screen::Chat => Look::Chat,
-        Screen::Library | Screen::Blocks | Screen::Backpack | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
+        Screen::Library | Screen::Blocks | Screen::Backpack | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers | Screen::ShareWorld => Look::Sheet,
         _ => Look::Air,
     }
 }

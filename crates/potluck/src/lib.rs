@@ -24,6 +24,7 @@ pub mod mesh;
 pub mod model;
 pub mod net;
 pub mod noise;
+pub mod p2p;
 pub mod photos;
 pub mod player;
 pub mod render;
@@ -81,7 +82,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .add_systems(Update, (world::stream::stream, halves::run, player::report_pockets).before(Sim))
         .add_systems(
             Update,
-            (game::host_step, net::host_net, game::reloads, game::share_results).chain().in_set(Sim),
+            (game::host_step, net::host_net, game::reloads, game::share_results, game::share_heartbeat).chain().in_set(Sim),
         )
         .add_systems(Update, chat::run.after(Sim));
     // sounds, where there's a speaker: the game, not the server

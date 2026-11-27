@@ -23,6 +23,9 @@ base64 = "0.22"
 qrcode = { version = "0.15", default-features = false, features = ["std"] }
 # the dev bridge's screenshots, as PNG (the same image crate Bevy uses)
 image = { version = "0.25", default-features = false, features = ["png"] }
+# sharing a world from home: QUIC dialled by key, through NATs, with our relay as the fallback
+iroh = "1.5"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 # type checking creations as they're made: Luau's own checker, in Rust (MIT)
 luau-analysis = "=0.739.0"
 luau-common = "=0.739.0"
@@ -59,4 +62,7 @@ test = false
 # the market itself, run in the tests that share from the game
 potluck-share = { path = "../share-service" }
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+# a relay in the tests, so sharing is tested with no internet
+iroh = { version = "1.5", features = ["test-utils"] }
+iroh-relay = { version = "1.5", features = ["server"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }

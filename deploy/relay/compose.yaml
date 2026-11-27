@@ -1,0 +1,22 @@
+# The relay for worlds shared from home, at relay.potluck.linuxgroove.com,
+# on a machine of its own with TCP 80 and 443 and UDP 7842 open. Start it
+# before the market offers it (share.toml's relay), with the same token:
+#
+#   RELAY_TOKEN=... docker compose up -d     (docs/hosting.md has the first run)
+
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    # the host's own network: QUIC address discovery has to see players'
+    # real addresses, and UDP through Docker's proxy can hide them
+    network_mode: host
+    environment:
+      IROH_RELAY_HTTP_BEARER_TOKEN: ${RELAY_TOKEN:?the token the market checks: see docs/hosting.md}
+      RUST_LOG: info
+    volumes:
+      - ./relay.toml:/etc/iroh-relay/relay.toml:ro
+      - certs:/var/lib/iroh-relay/certs
+
+volumes:
+  certs:

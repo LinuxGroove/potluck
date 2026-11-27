@@ -59,6 +59,7 @@ pub fn routes() -> Router<Shared> {
         .route("/jams/{slug}/enter", post(enter_jam))
         .route("/jams/{slug}/leave", post(leave_jam))
         .route("/servers", get(servers_page))
+        .route("/w/{code}", get(world_page))
         .route("/servers/{id}/hide", post(hide_server))
         .route("/avatar/{file}", get(avatar))
         .route("/review", get(review))
@@ -920,6 +921,34 @@ async fn maker(State(app): State<Shared>, h: HeaderMap, Path(who): Path<String>)
         @if list.is_empty() { div.empty { "Nothing on the market yet." } } @else { div.grid { @for c in &list { (card(c)) } } }
     };
     layout(&app, &p, &a.name, "", body).into_response()
+}
+
+/// Where a world code's QR code leads: what the code is and how to use it
+/// in the game, since phones don't play Potluck.
+async fn world_page(State(app): State<Shared>, h: HeaderMap, Path(code): Path<String>) -> Response {
+    let p = page(&app, &h);
+    let clean = codes::clean(&code);
+    if clean != code {
+        return Redirect::permanent(&format!("/w/{clean}")).into_response();
+    }
+    let row: Option<(String, i64, bool, String)> = {
+        let db = app.db();
+        db.query_row("SELECT w.name, w.beat, a.young, w.who FROM worlds w JOIN accounts a ON a.user_id = w.owner WHERE w.code = ?1 AND a.banned = 0", [&clean], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()
+    };
+    let Some((name, beat, young, who)) = row else { return error_page(&app, &p, 404, "No world has that code. World codes are six letters and numbers, like K7F-Q2M.") };
+    let open = beat >= now() - crate::worlds::LIVE_FOR;
+    // a younger player's world doesn't say whose it is to anyone with a phone
+    let name = if young { "A friend's world".to_string() } else { name };
+    let body = html! {
+        div.box style="max-width:620px" {
+            h1 { (name) }
+            p.code style="font-size:2.4em;letter-spacing:.12em;margin:.3em 0" { b { (crate::worlds::pretty(&clean)) } }
+            p { "In Potluck, choose " b { "Join a friend's world" } " and type this code. You play straight from their computer: the market only introduces you." }
+            @if who == "friends" { p.sub { "It's for its host's friends: swap friend codes with them first, under Friends." } }
+            p.sub { @if open { "It's open now." } @else { "It isn't open right now. It works again when its host shares it." } }
+        }
+    };
+    layout(&app, &p, "A world to join", "", body).into_response()
 }
 
 async fn signin_help(State(app): State<Shared>, h: HeaderMap) -> Response {

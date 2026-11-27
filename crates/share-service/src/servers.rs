@@ -65,6 +65,10 @@ struct PassBody {
     /// ages turn them away.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     young: bool,
+    /// For a world shared from home: the key of the player it's for, so
+    /// only the device that asked can use it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    peer: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -211,8 +215,17 @@ impl App {
     /// A pass for one server (or any, with an empty address): the market's
     /// signature over who this is, for a few minutes.
     pub fn pass(&self, me: &Account, server: &str) -> R<String> {
+        self.sign_pass(PassBody { handle: me.handle.clone(), name: me.name.clone(), aud: clip(server, 200), exp: now() + PASS_SECONDS, young: me.young, peer: String::new() })
+    }
+
+    /// A pass into a world shared from home: for the host with key `host`
+    /// (`aud` is `p2p:<host>`), and only for the player whose key is `peer`.
+    pub fn peer_pass(&self, me: &Account, host: &str, peer: &str) -> R<String> {
+        self.sign_pass(PassBody { handle: me.handle.clone(), name: me.name.clone(), aud: format!("p2p:{host}"), exp: now() + PASS_SECONDS, young: me.young, peer: peer.to_string() })
+    }
+
+    fn sign_pass(&self, body: PassBody) -> R<String> {
         use base64::Engine;
-        let body = PassBody { handle: me.handle.clone(), name: me.name.clone(), aud: clip(server, 200), exp: now() + PASS_SECONDS, young: me.young };
         let json = serde_json::to_string(&body).map_err(|e| crate::market::Fail { status: 500, message: e.to_string() })?;
         let sig = codes::sign(&self.key, &json);
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
