@@ -14,9 +14,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.9")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.9. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.10")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.10. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.9
+### `@potluck/world` 0.10
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -24,6 +24,7 @@ Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` work
   - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
   - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z.
   - `size = { w, h, d }`: the box it bumps into things with (worked out from the body if left out)
+  - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
 - `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
 - `world.top(x, z)` is the height of the highest solid block. `world.find_block(pos, radius, name)` is the nearest block of that name within `radius` (up to 16), or nil.
 - `world.players()` is a list of players; `world.nearest_player(pos, radius?)` is the nearest one, or nil. A player is `{ id, name, position }`.
@@ -162,6 +163,33 @@ function Egg:hit(player) self:become(Chick) end   -- same creature, the Chick's 
 - `self:on_ground()` is whether it's standing on something.
 - `self:become(kind)` turns it into another kind of this creation's: the new kind's body, size, speed, `rideable`, `seat` and `flies`, and its handlers from then on. Its fields and its rider stay (unless the new kind isn't rideable). `spawned` isn't called again, and it still counts toward the `count` of the kind it came as, so a sheared sheep doesn't bring another.
 - Creatures aren't kept when a server restarts (they come back by `count`); keep anything that matters, such as where a balloon is, in `@potluck/store`.
+
+Behaviours (new in 0.10): a creature can do the usual things with no code at all, and code is for what they can't do.
+
+```luau
+local Woolly = world.creature {
+	name = "Woolly",
+	home = "green",
+	behaviours = {
+		follow_food = "Wheat",       -- comes to a player holding wheat
+		follow_when_used = 20,       -- follows whoever pats it, for 20 s
+		flee_when_hit = 6,           -- runs 6 blocks from whoever bops it
+		hop_when_hit = 0.8,
+		chatter = { "Baa.", "Baa?" }, -- says one now and then, and when patted
+		sound = "bleat",             -- with a sound, and when patted or bopped
+	},
+	body = { ... },
+}
+```
+
+- `wander` (true unless it's false): wanders about its home when it has nothing else to do.
+- `follow_food`: a block's name, or a list of them. It comes to the nearest player within 10 blocks with one in their hand, stops a couple of blocks off and looks at them, and goes back to what it was doing when they put it away.
+- `follow_when_used`: seconds it follows whoever used it (true for 20, up to 300). Being hit stops it.
+- `flee_when_hit`: how far it runs from whoever hit it, straight away from them, at nearly twice its speed (true for 6, up to 16).
+- `hop_when_hit`: how high it hops when hit, as `self:hop` has it (true for 0.6, up to 3).
+- `chatter`: lines it says now and then (every 10 to 35 seconds) and when it's used, one at random, 80 letters each.
+- `sound`: one of the game's sounds (`sound.names()`), with its chatter, and when it's used or hit. It needn't `require` `@potluck/sound`.
+- Behaviours act first, each tick and when it's used or hit, and then its own handlers run, so its code has the last word: a `tick` that calls `self:walk_to` takes it somewhere else, and a `hit` that calls `self:say` says something else. A creature being ridden doesn't follow anyone. Kinds that `become` one another can share one table of behaviours, or have their own.
 
 ### `@potluck/tweak` 0.1
 
@@ -335,7 +363,7 @@ A creation's own tests, in `test.luau` beside `main.luau`. They run only when as
 
 ```luau
 local test = require("@potluck/test@0.1")
-local world = require("@potluck/world@0.9")
+local world = require("@potluck/world@0.10")
 
 test.case("a basket put down fills up into a balloon", function()
 	local p = test.player("Ada")                    -- on the Green
@@ -357,7 +385,7 @@ end)
 - `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
-- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, and `test.answer(player, choice)` for the question in front of them (choices count from 1). Placing, digging, using a block, pressing and answering pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), and `test.hold(player, block)` for what's in their hand (nil for nothing). Placing, digging, using a block, pressing and answering pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
 - Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, and `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.

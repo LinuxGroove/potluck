@@ -80,6 +80,7 @@ function test.get_off(player) ask("get_off", player) end
 function test.press(player, action) ask("press", player, action, true) end
 function test.release(player, action) ask("press", player, action, false) end
 function test.answer(player, choice) ask("answer", player, choice) end
+function test.hold(player, block) ask("hold", player, block) end
 -- looking: these only read what the harness said
 function test.kind(name)
 	seen("kind")
@@ -550,6 +551,15 @@ impl Harness {
                 }
                 self.herd.bodies.get_mut(&b).unwrap().rider = Some(p.id);
                 self.scripts.event(&mut self.voxels, &mut self.herd, b, "ridden", &p);
+                nothing
+            }
+            "hold" => {
+                let p = self.player(arg(1), "hold")?;
+                let b = match arg(2).and_then(|v| v.as_string().map(|s| s.to_string_lossy())) {
+                    None => blocks::AIR,
+                    Some(name) => blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's no block called \"{name}\"")))?,
+                };
+                self.scripts.set_held(p.id, b);
                 nothing
             }
             "get_off" => {

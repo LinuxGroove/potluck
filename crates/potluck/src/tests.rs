@@ -3990,3 +3990,78 @@ end)
     let none = crate::testing::run(&creation(BOX), &world());
     assert!(!none.passed() && none.text().contains("has no test.luau"));
 }
+
+/// world 0.10: behaviours, with no code: a creature follows food in a
+/// player's hand and whoever used it, runs from a hit, chatters with a
+/// sound, and its own handlers still have the last word; mistakes in them
+/// say what's wrong.
+#[test]
+fn behaviours_make_a_creature_with_no_code() {
+    use crate::blocks::by_name;
+    let mut voxels = world();
+    let (mid, _) = pad(&mut voxels);
+    let code = |extra: &str| {
+        format!(
+            r##"local world = require("@potluck/world@0.10")
+local Hen = world.creature {{
+	name = "Hen", count = 1, home = {{ {}, {}, {} }}, speed = 2,
+	behaviours = {{ follow_food = {{ "Wheat", "Carrots" }}, follow_when_used = 5, flee_when_hit = true, hop_when_hit = true, chatter = {{ "Cluck." }}, sound = "chirp" }},
+	body = {{ {{ "body", size = {{ 0.5, 0.5, 0.6 }}, at = {{ 0, 0.3, 0 }}, color = "#f4f1e8" }} }},
+}}
+{extra}
+"##,
+            mid.x, mid.y, mid.z
+        )
+    };
+    let hen = |scripts: &Scripts, herd: &Herd| herd.bodies.values().find(|b| b.creation == "test").cloned().unwrap_or_else(|| panic!("{:?}", scripts.vms["test"].log));
+    let flat = |a: Vec3, b: Vec3| Vec2::new(a.x - b.x, a.z - b.z).length();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&creation(&code("")), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let start = hen(&scripts, &herd).pos;
+    // someone with wheat in hand, eight blocks off: it comes, and stops short
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: start + Vec3::new(8.0, 0.0, 0.0) };
+    scripts.players = vec![ada.clone()];
+    scripts.set_held(7, by_name("Wheat").unwrap());
+    run(&mut scripts, &mut voxels, &mut herd, 6.0);
+    let d = flat(hen(&scripts, &herd).pos, ada.pos);
+    assert!((1.0..3.2).contains(&d), "came for the wheat: {d}");
+    // stone in hand, and it loses interest
+    scripts.set_held(7, by_name("Stone").unwrap());
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert!(hen(&scripts, &herd).goal.is_none_or(|g| flat(g, ada.pos) > 0.5), "stops going after them");
+    // used: it follows for its five seconds, then doesn't
+    let id = hen(&scripts, &herd).id;
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    assert_eq!(hen(&scripts, &herd).says.map(|s| s.0), Some("Cluck.".to_string()), "says one of its lines");
+    assert!(scripts.sound_changes().iter().any(|(_, p)| p.name == "chirp"), "with its sound");
+    scripts.players[0].pos = hen(&scripts, &herd).pos + Vec3::new(-5.0, 0.0, 2.0);
+    run(&mut scripts, &mut voxels, &mut herd, 4.0);
+    assert!(flat(hen(&scripts, &herd).pos, scripts.players[0].pos) < 3.2, "followed whoever used it");
+    // hit: it hops and runs, faster than it walks, and follows no more
+    let ada = scripts.players[0].clone();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let before = flat(hen(&scripts, &herd).pos, ada.pos);
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
+    assert!(hen(&scripts, &herd).vel.y > 3.0 && hen(&scripts, &herd).speed > 3.0, "hops and hurries");
+    run(&mut scripts, &mut voxels, &mut herd, 3.0);
+    assert!(flat(hen(&scripts, &herd).pos, ada.pos) > before + 4.0, "ran off");
+    run(&mut scripts, &mut voxels, &mut herd, 3.0);
+    assert_eq!(hen(&scripts, &herd).speed, 2.0, "back to its own pace");
+    // its own handler has the last word
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&creation(&code("function Hen:hit(player) self:stop() self:say(\"Hmph.\") end")), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let id = hen(&scripts, &herd).id;
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
+    let h = hen(&scripts, &herd);
+    assert!(h.goal.is_none() && h.says.map(|s| s.0) == Some("Hmph.".into()), "the code's say and stop win");
+    // mistakes say what's wrong
+    for (bad, says) in [("flee = true", "there's no behaviour called \"flee\""), ("follow_food = \"Cake\"", "no block called \"Cake\""), ("sound = \"moo\"", "no sound called \"moo\""), ("flee_when_hit = \"far\"", "flee_when_hit takes true, or a number")] {
+        let src = format!("local world = require(\"@potluck/world\")\nworld.creature {{ name = \"Hen\", behaviours = {{ {bad} }} }}\n");
+        let err = Scripts::default().start(&creation(&src), &mut Herd::default()).err().unwrap_or_default();
+        assert!(err.contains(says), "{bad}: {err}");
+    }
+}
