@@ -1064,12 +1064,21 @@ pub fn update_hud(
     }
 }
 
-/// Grabs the mouse while playing, and lets it go in menus.
-pub fn cursor(focus: Res<Focus>, mut windows: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    let Ok(mut opts) = windows.single_mut() else { return };
+/// Grabs the mouse while playing, and lets it go in menus. It asks again
+/// only when play starts, the window gets focus or a click lands in it: some
+/// desktops refuse a grab until then, and asking every frame fills the log.
+pub fn cursor(
+    focus: Res<Focus>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut windows: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
+    mut was: Local<(bool, bool)>,
+) {
+    let Ok((window, mut opts)) = windows.single_mut() else { return };
     let grab = focus.playing();
+    let ask = grab != was.0 || (window.focused && !was.1) || mouse.just_pressed(MouseButton::Left);
+    *was = (grab, window.focused);
     let mode = if grab { CursorGrabMode::Locked } else { CursorGrabMode::None };
-    if opts.grab_mode != mode {
+    if opts.grab_mode != mode && ask {
         opts.grab_mode = mode;
         opts.visible = !grab;
     }

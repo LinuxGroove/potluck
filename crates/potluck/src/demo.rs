@@ -41,6 +41,8 @@ pub struct Mem {
     /// Where to build from, and frames spent building.
     pub spot: Vec2,
     pub built: u32,
+    /// Whether the walk has reached the gap in the paddock's hay bales.
+    pub in_gap: bool,
 }
 
 pub struct Ctx<'a> {
@@ -419,6 +421,11 @@ fn script() -> Vec<Step> {
             if x.frame == 70 {
                 x.still = Some("the-green".into());
             }
+            // in through a gap in the ring of hay, not into a bale
+            if !x.mem.in_gap {
+                x.mem.in_gap = walk_to(x, Vec2::new(paddock.x - 9.0, paddock.z + 1.5), -0.06, true);
+                return false;
+            }
             walk_to(x, Vec2::new(paddock.x - 3.5, paddock.z + 1.5), -0.06, true)
         }),
         step("Mossbacks live in the paddock", 3.0, move |x| {
@@ -565,8 +572,15 @@ fn script() -> Vec<Step> {
                 x.c.place_pressed = true;
                 x.mem.placed += 1;
             }
-            if f > 20 {
+            if f > 20 && f <= 125 {
                 x.c.look.x = 0.35 * x.dt * if x.mem.placed > 4 { -1.0 } else { 1.0 };
+            }
+            if f > 125 {
+                // step back to take in what's built
+                x.c.look.y = -(-0.32 - x.me.pitch) * k;
+                if f < 160 {
+                    x.c.mv.y = -1.0;
+                }
             }
             if f == 200 {
                 x.still = Some("building".into());

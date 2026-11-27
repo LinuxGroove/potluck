@@ -292,32 +292,65 @@ fn blob(w: &mut Voxels, c: IVec3, rx: i32, ry: i32, rz: i32, id: BlockId, r: &mu
     }
 }
 
+/// Puts wood where there's air or leaves (branches push through crowns).
+fn wood(w: &mut Voxels, p: IVec3, id: BlockId) {
+    if matches!(w.get(p.x, p.y, p.z), AIR | LEAVES | BIRCH_LEAVES | TALLGRASS) {
+        w.put(p.x, p.y, p.z, id);
+    }
+}
+
+/// An oak: a trunk with branches stepping out from its top, each carrying a
+/// crown of leaves, so the canopy is several lumps rather than one ball. Big
+/// ones flare at the foot and spread wide.
 fn oak(w: &mut Voxels, x: i32, z: i32, r: &mut Rng, big: bool) {
     let y0 = w.top(x, z) + 1;
-    let h = if big { 7 } else { 4 } + (r.next() * 3.0) as i32;
+    let h = if big { 7 } else { 5 } + (r.next() * 3.0) as i32;
     for y in 0..h {
         w.put(x, y0 + y, z, LOG);
     }
     if big {
-        w.put(x + 1, y0, z, LOG);
-        w.put(x, y0, z + 1, LOG);
-        w.put(x + 2, y0 + h - 2, z, LOG);
-        w.put(x + 1, y0 + h - 3, z, LOG);
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if r.next() < 0.7 {
+                wood(w, IVec3::new(x + dx, y0, z + dz), LOG);
+            }
+        }
     }
-    let (a, b) = if big { (5, 3) } else { (3, 2) };
-    blob(w, IVec3::new(x, y0 + h, z), a, b, a, LEAVES, r, 0.25);
-    if big {
-        blob(w, IVec3::new(x + 2, y0 + h + 1, z - 1), 3, 2, 3, LEAVES, r, 0.25);
+    let branches = if big { 3 + r.range(0, 1) } else { 2 + r.range(0, 1) };
+    let turn = r.next() * std::f32::consts::TAU;
+    let mut crowns = vec![(IVec3::new(x, y0 + h, z), if big { 4 } else { 3 }, if big { 3 } else { 2 })];
+    for i in 0..branches {
+        let ang = turn + (i as f32 + r.next() * 0.5) * std::f32::consts::TAU / branches as f32;
+        let dir = Vec3::new(ang.cos(), if big { 0.5 } else { 0.7 }, ang.sin());
+        let mut p = Vec3::new(x as f32 + 0.5, (y0 + h - 2 - r.range(0, 1) - big as i32) as f32 + 0.5, z as f32 + 0.5);
+        for _ in 0..if big { 3 + r.range(0, 1) } else { 2 } {
+            p += dir;
+            wood(w, p.floor().as_ivec3(), LOG);
+        }
+        crowns.push((p.floor().as_ivec3() + IVec3::Y, if big { 3 } else { 2 }, 2));
+    }
+    for (c, a, b) in crowns {
+        blob(w, c, a, b, a, LEAVES, r, 0.35);
     }
 }
 
+/// A birch: tall and slim, with a narrow crown in two lumps.
 fn birch(w: &mut Voxels, x: i32, z: i32, r: &mut Rng) {
     let y0 = w.top(x, z) + 1;
-    let h = 6 + (r.next() * 3.0) as i32;
+    let h = 7 + (r.next() * 4.0) as i32;
     for y in 0..h {
         w.put(x, y0 + y, z, BIRCH);
     }
     blob(w, IVec3::new(x, y0 + h - 1, z), 2, 3, 2, BIRCH_LEAVES, r, 0.3);
+    let side = IVec3::new(r.range(-1, 1), y0 + h - 4, r.range(-1, 1));
+    wood(w, IVec3::new(x + side.x, side.y, z + side.z), BIRCH);
+    blob(w, IVec3::new(x + side.x * 2, side.y, z + side.z * 2), 2, 2, 2, BIRCH_LEAVES, r, 0.4);
+}
+
+/// A shrub: a knee-high lump of leaves.
+fn shrub(w: &mut Voxels, x: i32, z: i32, r: &mut Rng) {
+    let y = w.top(x, z) + 1;
+    let (a, b) = if r.next() < 0.5 { (1, 1) } else { (2, 1) };
+    blob(w, IVec3::new(x, y, z), a, b, a, LEAVES, r, 0.45);
 }
 
 fn pine(w: &mut Voxels, x: i32, z: i32, r: &mut Rng) {
@@ -361,10 +394,18 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
             let v = r.next();
             if h > 34 && h < 62 && v < 0.03 + forest * 0.03 {
                 pine(w, x, z, r);
-            } else if h <= 34 && forest > 0.55 && v < 0.035 {
-                if r.next() < 0.35 { birch(w, x, z, r) } else { oak(w, x, z, r, false) }
+            } else if h <= 34 && forest > 0.55 && v < 0.03 {
+                let k = r.next();
+                if k < 0.3 {
+                    birch(w, x, z, r)
+                } else {
+                    oak(w, x, z, r, k > 0.85)
+                }
+            } else if h <= 34 && forest > 0.45 && v < 0.05 {
+                shrub(w, x, z, r);
             } else if h <= 34 && v < 0.0035 {
-                oak(w, x, z, r, false);
+                let big = r.next() < 0.3;
+                oak(w, x, z, r, big);
             }
         }
     }
@@ -375,7 +416,9 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
     birch(w, cx + 19, cz - 5, r);
     birch(w, cx + 22, cz - 12, r);
     oak(w, cx - 27, cz - 20, r, false);
-    // grass and flowers
+    // grass, flowers in patches of one colour, and ferns and bushes under
+    // the trees (the short grass over everything is drawn, not blocks: see
+    // `mesh::ground_cover`)
     let flowers = [FLOWER_RED, FLOWER_BLUE, FLOWER_WHITE, FLOWER_VIOLET];
     for z in 4..WZ - 4 {
         for x in 4..WX - 4 {
@@ -383,12 +426,23 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
             if w.get(x, h, z) != GRASS || w.get(x, h + 1, z) != AIR {
                 continue;
             }
-            let near = (x as f32 - HILL.x).hypot(z as f32 - HILL.z) < 70.0;
-            let meadow = fbm(x as f32 / 9.0, z as f32 / 9.0, 14 + s, 5);
-            if r.next() < if near { 0.34 } else { 0.12 } * (0.4 + meadow) {
-                let id = if r.next() < 0.32 * meadow { flowers[(r.next() * 4.0) as usize % 4] } else { TALLGRASS };
-                w.put(x, h + 1, z, id);
-            }
+            let (fx, fz) = (x as f32, z as f32);
+            let near = (fx - HILL.x).hypot(fz - HILL.z) < 70.0;
+            let meadow = fbm(fx / 9.0, fz / 9.0, 14 + s, 5);
+            let patch = fbm(fx / 7.0, fz / 7.0, 15 + s, 3);
+            let forest = fbm(fx / 30.0, fz / 30.0, 12 + s, 5);
+            let shade = (1..12).any(|d| matches!(w.get(x, h + d, z), LEAVES | BIRCH_LEAVES | PINE));
+            let v = r.next();
+            let id = if (shade || forest > 0.55) && v < 0.16 {
+                if r.next() < 0.22 { BUSH } else { FERN }
+            } else if patch > 0.64 && v < 0.5 {
+                flowers[(fbm(fx / 23.0, fz / 23.0, 16 + s, 2) * 7.99) as usize % 4]
+            } else if r.next() < if near { 0.2 } else { 0.08 } * (0.4 + meadow) {
+                TALLGRASS
+            } else {
+                continue;
+            };
+            w.put(x, h + 1, z, id);
         }
     }
 }

@@ -9,6 +9,14 @@ use bevy::window::{PresentMode, WindowResolution};
 use potluck::*;
 
 fn main() {
+    // NVIDIA's driver on Wayland can lose the window a few seconds in with
+    // explicit sync ("Timeline acquire sync point set, but no buffer
+    // committed"), so it's off unless set otherwise
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
+        // SAFETY: nothing else is running yet to read the environment
+        unsafe { std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1") };
+    }
     let mut settings = settings::Settings::load();
     share::launch_ping(&settings.server);
     let args: Vec<String> = std::env::args().collect();
@@ -52,6 +60,7 @@ fn main() {
         .init_resource::<player::Me>()
         .init_resource::<mesh::ChunkEntities>()
         .init_resource::<mesh::MeshFocus>()
+        .init_resource::<mesh::Cover>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<ui::Labels>()
         .add_systems(Startup, (ui::fonts, setup, ui::spawn_hud).chain())
@@ -68,7 +77,7 @@ fn main() {
             Update,
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
-                (focus_mesh, mesh::remesh).chain(),
+                (focus_mesh, mesh::remesh, mesh::wind).chain(),
                 (render::sky, render::lanterns, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
@@ -82,6 +91,7 @@ fn main() {
         demo::add(&mut app, dir.into(), size);
     }
     // a screenshot: --shot=out.png [--after=8] [--at=x,y,z,yaw,pitch] [--time=0.5] [--screen=inside]
+    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5)
     if let Some(path) = opt("shot") {
         let after: f32 = opt("after").and_then(|v| v.parse().ok()).unwrap_or(8.0);
         let at: Option<Vec<f32>> = opt("at").map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect());
@@ -118,6 +128,7 @@ fn shot(
     mut focus: ResMut<ui::Focus>,
     mut info: ResMut<ui::WorldInfo>,
     herd: Res<creatures::Herd>,
+    voxels: Res<world::Voxels>,
     off: Option<Res<render::Offscreen>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -128,7 +139,32 @@ fn shot(
     }
     if let Some(at) = &s.at {
         if at.len() >= 5 {
-            me.pos = Vec3::new(at[0], at[1], at[2]);
+            // a height of 0 or less is above the ground there: -1.5 stands 1.5 up,
+            // moved to the nearest spot clear of trunks and leaves (forests)
+            let (mut x, mut z) = (at[0], at[2]);
+            let y = if at[1] <= 0.0 {
+                let up = (-at[1]).ceil() as i32 + 1;
+                let clear = |x: i32, z: i32| {
+                    let t = voxels.top(x, z);
+                    voxels.get(x, t, z) != blocks::LOG
+                        && (1..=up).all(|d| {
+                            let b = voxels.get(x, t + d, z);
+                            b == blocks::AIR || blocks::shape(b) == blocks::Shape::Cross
+                        })
+                };
+                let (cx, cz) = (x.floor() as i32, z.floor() as i32);
+                if let Some((dx, dz)) = (0..=6)
+                    .flat_map(|r| (-r..=r).flat_map(move |dx| (-r..=r).map(move |dz| (dx, dz))).filter(move |&(dx, dz)| dx.abs().max(dz.abs()) == r))
+                    .find(|&(dx, dz)| clear(cx + dx, cz + dz))
+                {
+                    x += dx as f32;
+                    z += dz as f32;
+                }
+                voxels.top(x.floor() as i32, z.floor() as i32) as f32 + 1.0 - at[1]
+            } else {
+                at[1]
+            };
+            me.pos = Vec3::new(x, y, z);
             me.vel = Vec3::ZERO;
             me.yaw = at[3].to_radians();
             me.pitch = at[4].to_radians();
@@ -167,6 +203,7 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut media: ResMut<Assets<ScatteringMedium>>,
     settings: Res<settings::Settings>,
     voxels: Res<world::Voxels>,
@@ -179,8 +216,11 @@ fn setup(
     commands.insert_resource(render::make_materials(&atlas, &mut mats, rt));
     commands.insert_resource(atlas);
     commands.insert_resource(rt);
+    commands.insert_resource(mesh::Cover::of(render::Tier::of(&settings.lighting)));
+    mesh::spawn_wind(&mut commands);
     let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
     render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
+    render::spawn_sea(&mut commands, &mut meshes, &mut mats);
     if let Some(off) = off {
         commands.insert_resource(off);
     }

@@ -24,6 +24,9 @@ use crate::world::Voxels;
 /// Minutes for a whole day and night.
 const DAY_MINUTES: f32 = 20.0;
 
+/// The colour the sky and fog turn towards at sunset.
+const SUNSET: Vec3 = Vec3::new(0.9, 0.58, 0.42);
+
 /// How wide and how tall the haze round the camera is, in blocks.
 const HAZE: Vec2 = Vec2::new(200.0, 90.0);
 
@@ -150,20 +153,44 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
         ..solid.clone()
     };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
-    // water reflects about 2% straight on (reflectance 0.35) and sends back
-    // little light from inside, so its colour is deep and the sky's
-    // reflection does the rest
+    // water reflects about 2% straight on (reflectance 0.35); its colour and
+    // how see-through it is come from its depth (`mesh::water_tint`), and the
+    // water tile's bumps ripple the reflections
     let water = StandardMaterial {
-        base_color: Color::srgba(0.55, 0.72, 0.8, 0.92),
-        base_color_texture: Some(atlas.color.clone()),
+        base_color: Color::WHITE,
+        normal_map_texture: Some(atlas.normal.clone()),
         alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.06,
+        perceptual_roughness: 0.07,
         reflectance: 0.35,
         double_sided: true,
         cull_mode: None,
         ..default()
     };
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow)] }
+    // under water, the corners of drawn blocks darken with depth (`mesh::UNDERWATER`);
+    // ray traced meshes carry no colours, so there the material takes the
+    // colour of a block or two of water instead of showing bare sand
+    let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)] }
+}
+
+/// The open sea round the island, out past the far end of the view: a ring of
+/// deep water at the sea's surface from the world's edge outward.
+pub fn spawn_sea(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>) {
+    use crate::world::{SEA, WX, WZ};
+    let [r, g, b, _] = crate::mesh::water_tint(8.0);
+    let sea = mats.add(StandardMaterial { base_color: LinearRgba::rgb(r, g, b).into(), perceptual_roughness: 0.07, reflectance: 0.35, ..default() });
+    let (w, d, far) = (WX as f32, WZ as f32, 1200.0);
+    let y = SEA as f32 + 0.88;
+    // north, south, west and east of the world, as (x0, z0, x1, z1)
+    for (x0, z0, x1, z1) in [(-far, -far, w + far, 0.0), (-far, d, w + far, d + far), (-far, 0.0, 0.0, d), (w, 0.0, w + far, d)] {
+        commands.spawn((
+            Mesh3d(meshes.add(Plane3d::default().mesh().size(x1 - x0, z1 - z0))),
+            MeshMaterial3d(sea.clone()),
+            Transform::from_xyz((x0 + x1) / 2.0, y, (z0 + z1) / 2.0),
+            bevy::light::NotShadowCaster,
+            NotRaytraced,
+        ));
+    }
 }
 
 /// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked
@@ -217,8 +244,9 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         MainCamera,
         Projection::Perspective(PerspectiveProjection { fov: settings.fov.clamp(70.0, 110.0).to_radians() * 0.75, near: 0.05, far: 900.0, ..default() }),
         Transform::from_xyz(0.0, 60.0, 0.0),
-        Exposure { ev100: 13.0 },
-        Tonemapping::AgX,
+        Exposure { ev100: 13.7 },
+        // keeps colours rich where AgX washed the island out to pastels
+        Tonemapping::TonyMcMapface,
         DistanceFog {
             color: Color::srgba(0.62, 0.74, 0.88, 1.0),
             directional_light_color: Color::srgba(1.0, 0.93, 0.8, 0.4),
@@ -238,26 +266,33 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         air.ground_albedo = Vec3::new(0.02, 0.07, 0.11);
         commands.spawn(air);
     }
+    // for measuring what High costs: POTLUCK_HIGH_OFF=ssao,contact,haze,taa,shadowmap
+    let off = std::env::var("POTLUCK_HIGH_OFF").unwrap_or_default();
+    let on = |what: &str| !off.split(',').any(|o| o.trim() == what);
     if high {
         // TAA in place of MSAA: SSAO and contact shadows need it, and it
         // smooths the shadow filter and the haze's ray marching too
-        commands.entity(cam).insert((
-            Msaa::Off,
-            TemporalAntiAliasing::default(),
-            ShadowFilteringMethod::Temporal,
-            ScreenSpaceAmbientOcclusion {
+        if on("taa") {
+            commands.entity(cam).insert((Msaa::Off, TemporalAntiAliasing::default(), ShadowFilteringMethod::Temporal));
+        }
+        if on("ssao") {
+            commands.entity(cam).insert(ScreenSpaceAmbientOcclusion {
                 quality_level: if ultra { ScreenSpaceAmbientOcclusionQualityLevel::Ultra } else { ScreenSpaceAmbientOcclusionQualityLevel::High },
                 ..default()
-            },
-            ContactShadows::default(),
-            VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 128 } else { 64 } },
-        ));
-        commands.spawn((
-            FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
-            Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
-            Haze,
-        ));
-        commands.insert_resource(DirectionalLightShadowMap { size: if ultra { 8192 } else { 4096 } });
+            });
+        }
+        if on("contact") {
+            commands.entity(cam).insert(ContactShadows::default());
+        }
+        if on("haze") {
+            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 128 } else { 64 } });
+            commands.spawn((
+                FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
+                Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
+                Haze,
+            ));
+        }
+        commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 2048 } else if ultra { 8192 } else { 4096 } });
     }
     let cascades = CascadeShadowConfigBuilder {
         num_cascades: if medium { 4 } else { 2 },
@@ -282,13 +317,13 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         ));
     }
     let mut sun = commands.spawn((
-        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high, illuminance: lux::RAW_SUNLIGHT, ..default() },
+        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high && on("contact"), illuminance: lux::RAW_SUNLIGHT, ..default() },
         cascades,
         SunDisk::EARTH,
         Transform::default(),
         Sun,
     ));
-    if high {
+    if high && on("haze") {
         sun.insert(VolumetricLight);
     }
     commands.insert_resource(ClearColor(Color::srgb(0.5, 0.68, 0.9)));
@@ -319,26 +354,38 @@ pub fn sky(
     } else {
         (Vec3::new(-a.cos(), -up, 0.35).normalize(), 0.0)
     };
+    let medium = Tier::of(&settings.lighting) >= Tier::Medium;
+    // how near the horizon the sun is, 1 at sunset
+    let low = 1.0 - crate::noise::smooth(0.02, 0.4, up);
     if let Ok((mut t, mut l)) = sun.single_mut() {
         *t = Transform::from_translation(Vec3::ZERO).looking_to(-dir, Vec3::Y);
-        l.illuminance = if up > -0.05 { lux::RAW_SUNLIGHT * strength.max(0.002) } else { 900.0 };
-        l.color = Color::srgb(1.0, 0.86 + 0.14 * day, 0.7 + 0.3 * day);
-        if rt.0 {
-            // the sky reddens a low sun for the other tiers; ray tracing needs telling
-            let low = 1.0 - crate::noise::smooth(0.02, 0.4, up);
-            l.color = Color::srgb(1.0, 0.86 + 0.14 * day - 0.36 * low, 0.7 + 0.3 * day - 0.52 * low);
+        if up > -0.05 {
+            // the sun fades out just before the moon takes over, so neither jumps
+            l.illuminance = lux::RAW_SUNLIGHT * strength.max(0.002) * crate::noise::smooth(-0.05, 0.06, up);
+            l.color = Color::srgb(1.0, 0.86 + 0.14 * day, 0.7 + 0.3 * day);
+            if rt.0 || !medium {
+                // the atmosphere reddens and dims a low sun for the other tiers;
+                // ray tracing and Low's flat sky need telling
+                l.color = Color::srgb(1.0, 0.86 + 0.14 * day - 0.36 * low, 0.7 + 0.3 * day - 0.52 * low);
+            }
+            if !medium {
+                l.illuminance *= 1.0 - 0.75 * low;
+            }
+        } else {
+            // moonlight: cool, and dim enough to look like night
+            l.illuminance = 400.0 * (1.0 - crate::noise::smooth(-0.2, -0.05, up));
+            l.color = Color::srgb(0.66, 0.76, 1.0);
         }
     }
-    let medium = Tier::of(&settings.lighting) >= Tier::Medium;
     if let Ok((mut t, mut v)) = haze.single_mut() {
         // the haze sits on the ground round the player, thickest at dawn and dusk
         t.translation = Vec3::new(me.pos.x, (me.pos.y - 20.0).max(0.0) + HAZE.y * 0.5, me.pos.z);
         let low_sun = 1.0 - (up.abs() * 2.5).min(1.0);
-        v.density_factor = 0.006 + 0.012 * low_sun;
+        v.density_factor = 0.0025 + 0.0055 * low_sun;
     }
     if let Ok((mut ex, mut fog, mut proj)) = cam.single_mut() {
         // eyes adjust to the dark, gently
-        ex.ev100 = 13.0 - (1.0 - day) * 5.2;
+        ex.ev100 = 13.7 - (1.0 - day).powf(0.7) * 4.4;
         if rt.0 {
             // ray traced shade has no made-up fill from everywhere, so the
             // eye opens up a little
@@ -346,15 +393,16 @@ pub fn sky(
         }
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);
-        let f = night_fog.lerp(day_fog, day);
+        let f = night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day);
         fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });
         if let Projection::Perspective(p) = &mut *proj {
             p.fov = settings.fov.clamp(70.0, 110.0).to_radians() * 0.75;
         }
     }
-    let s = Vec3::new(0.02, 0.03, 0.07).lerp(Vec3::new(0.5, 0.68, 0.9), day);
+    // Low's sky
+    let s = Vec3::new(0.02, 0.03, 0.07).lerp(Vec3::new(0.5, 0.68, 0.9), day).lerp(SUNSET, 0.4 * low * day);
     clear.0 = Color::srgb(s.x, s.y, s.z);
-    ambient.brightness = if medium { 250.0 + 1100.0 * day } else { 900.0 + 5200.0 * day };
+    ambient.brightness = if medium { 40.0 + 1310.0 * day } else { 160.0 + 5940.0 * day };
     let _ = PI;
 }
 
