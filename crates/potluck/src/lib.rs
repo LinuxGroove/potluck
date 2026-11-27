@@ -36,6 +36,7 @@ pub mod transport;
 pub mod ui;
 pub mod waypoints;
 pub mod world;
+pub mod worlds;
 
 use bevy::prelude::*;
 
@@ -89,6 +90,9 @@ pub fn sim(app: &mut App, seed: u32) {
         bridge::add(app);
         // and type checking the player's own creations as they're made
         app.add_systems(Update, check::keep_checking);
+        // and the worlds the player keeps, saved as they play
+        app.init_resource::<worlds::Current>()
+            .add_systems(Update, (worlds::acts.after(chat::acts).before(game::do_acts), worlds::autosave.after(Sim)));
     }
 }
 

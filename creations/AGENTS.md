@@ -252,7 +252,7 @@ print(store.used() .. " bytes of 65536")
 
 - `store.get(key)` is the value kept under `key`, or nil. `store.set(key, value)` keeps it; nil forgets it. Keys are 1 to 64 letters. Values are numbers, strings, true or false, vectors and tables of those (six deep); functions and creatures aren't kept.
 - `store.keys()` lists the keys; `store.used()` is the bytes they take as JSON. Each creation has 64 KB in each world, and `store.set` fails with an error past it.
-- Each world keeps its own: a server saves it with the world (`store.json`), and a world you play in the game keeps it while it's open.
+- Each world keeps its own: a server saves it with the world (`store.json`), and so does each world a player keeps in the game (Play alone's list). A friend's world keeps it on the friend's game.
 
 ### `@potluck/input` 0.1
 
