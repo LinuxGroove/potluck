@@ -15,11 +15,16 @@ fn random_bytes(n: usize) -> Vec<u8> {
 }
 
 pub fn new_code() -> String {
+    letters(LENGTH)
+}
+
+/// `n` random letters from the code alphabet.
+pub fn letters(n: usize) -> String {
     let mut out = String::new();
-    while out.len() < LENGTH {
+    while out.len() < n {
         for byte in random_bytes(16) {
             // 240 is the largest multiple of 30 below 256: no letter comes up more often
-            if byte < 240 && out.len() < LENGTH {
+            if byte < 240 && out.len() < n {
                 out.push(ALPHABET[(byte % 30) as usize] as char);
             }
         }
@@ -36,9 +41,16 @@ pub fn valid(code: &str) -> bool {
     code.len() == LENGTH && code.bytes().all(|b| ALPHABET.contains(&b))
 }
 
-/// `N8GT3WFA` as `N8GT-3WFA`, the way the game shows it.
+/// `N8GT3WFA` as `N8GT-3WFA`, the way the game shows it; longer codes in
+/// groups of five.
 pub fn pretty(code: &str) -> String {
-    if code.len() == LENGTH { format!("{}-{}", &code[..4], &code[4..]) } else { code.to_string() }
+    if code.len() == LENGTH {
+        format!("{}-{}", &code[..4], &code[4..])
+    } else if code.len() > LENGTH && code.is_ascii() {
+        code.as_bytes().chunks(5).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("-")
+    } else {
+        code.to_string()
+    }
 }
 
 /// A long random token for sessions and one-time links.

@@ -49,6 +49,8 @@ pub enum Screen {
     Report(String),
     /// A sign-in link to the market, as a QR code.
     Link,
+    /// Playing as the same account on another device.
+    Devices,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +93,12 @@ pub enum Act {
     /// A sign-in link to a market page (path, what it's for).
     Market(String, String),
     OpenUrl(String),
+    OpenDevices,
+    /// A code for another device to type.
+    MakeLinkCode,
+    /// Play as the account a link or recovery code belongs to.
+    LinkDevice(String),
+    UnlinkDevice,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +154,10 @@ pub struct Focus {
     pub link: Option<(String, String)>,
     /// Servers listed on the market.
     pub servers: Vec<crate::share::Listed>,
+    /// Who this device plays as on the market, once asked.
+    pub account: Option<crate::share::Account>,
+    /// A code for another device to type, on the Devices screen.
+    pub link_code: Option<String>,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -164,6 +176,8 @@ impl Default for Focus {
             suggestions: vec![],
             link: None,
             servers: vec![],
+            account: None,
+            link_code: None,
             qr: None,
         }
     }
@@ -388,6 +402,32 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::Back));
             (title, v)
         }
+        Screen::Devices => {
+            let mut v = vec![];
+            match &focus.account {
+                Some(a) if a.linked => v.push(note(format!("This device plays as {} (@{}), linked from another device.", a.name, a.handle))),
+                Some(a) => v.push(note(format!("This device plays as {} (@{}).", a.name, a.handle))),
+                None => {}
+            }
+            v.push(note("Play as you on another device too: your name, your block head and what you've shared come along."));
+            if let Some(code) = &focus.link_code {
+                v.push(Item { label: code.clone(), kind: Kind::Big });
+                v.push(note("On the other device, choose Settings, then Link a device, and type this in the next ten minutes. It works once."));
+            }
+            v.push(button(if focus.link_code.is_some() { "Make another code" } else { "Make a code for another device" }, Act::MakeLinkCode));
+            let typed = focus.fields.get("link").cloned().unwrap_or_default();
+            v.push(Item { label: "A code from another device, or a recovery code".into(), kind: Kind::Field { key: "link".into(), value: typed.clone() } });
+            v.push(button("Play as that account here", Act::LinkDevice(typed)));
+            if focus.account.as_ref().is_some_and(|a| a.linked) {
+                v.push(button("Unlink this device", Act::UnlinkDevice));
+            }
+            v.push(button("Your devices and recovery code on the market", Act::Market("/me/devices".into(), "Your devices".into())));
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenSettings));
+            ("Link a device".into(), v)
+        }
         Screen::Join => {
             let mut v = vec![];
             if focus.lan.is_empty() {
@@ -477,6 +517,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
+                button("Link a device", Act::OpenDevices),
                 Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
                 Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
                 button("Back", Act::Back),
@@ -657,7 +698,7 @@ pub fn menu_input(
                     let mut a = a.clone();
                     let v = focus.fields.get(key).cloned().unwrap_or_default();
                     match &mut a {
-                        Act::JoinAddress(s) | Act::LoadCode(s) => *s = v,
+                        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) => *s = v,
                         _ => {}
                     }
                     acts.0.push(a);
@@ -671,6 +712,7 @@ pub fn menu_input(
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
+            Screen::Devices => Some(Act::OpenSettings),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {

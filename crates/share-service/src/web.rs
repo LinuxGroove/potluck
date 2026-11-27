@@ -49,6 +49,10 @@ pub fn routes() -> Router<Shared> {
         .route("/me/profile", get(profile).post(save_profile))
         .route("/me/servers", get(my_servers).post(add_server))
         .route("/me/servers/{id}/remove", post(remove_server))
+        .route("/me/devices", get(my_devices))
+        .route("/me/devices/code", post(device_code))
+        .route("/me/devices/{id}/unlink", post(unlink_device))
+        .route("/me/recovery", post(make_recovery))
         .route("/servers", get(servers_page))
         .route("/servers/{id}/hide", post(hide_server))
         .route("/avatar/{file}", get(avatar))
@@ -816,6 +820,7 @@ async fn me(State(app): State<Shared>, h: HeaderMap, Query(q): Query<MeQ>) -> Re
             }
             div.acts {
                 a.btn.pri href="/me/profile" { "Edit your profile" }
+                a.btn href="/me/devices" { "Your devices" }
                 a.btn href="/me/servers" { "Your servers" }
                 form.inline method="post" action="/signout" { button.btn type="submit" { "Sign out" } }
             }
@@ -1431,6 +1436,132 @@ async fn hide_server(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64
     };
     match app.hide_server(&me, id, true) {
         Ok(()) => Redirect::to("/servers").into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+// ---------- devices ----------
+
+/// What the devices page has just made, to show once.
+enum Made {
+    Nothing,
+    Unlinked,
+    LinkCode(String),
+    Recovery(String),
+}
+
+async fn my_devices(State(app): State<Shared>, h: HeaderMap, Query(q): Query<MeQ>) -> Response {
+    let p = page(&app, &h);
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    devices_page(&app, &p, &me, if q.done == "unlinked" { Made::Unlinked } else { Made::Nothing })
+}
+
+/// Your devices: the first, the ones linked since, a code to link another
+/// and the recovery code. New codes are shown on this page only.
+fn devices_page(app: &App, p: &Page, me: &Account, made: Made) -> Response {
+    let (list, recovery) = match (app.devices(me), app.recovery_made(me)) {
+        (Ok(l), Ok(r)) => (l, r),
+        (Err(e), _) | (_, Err(e)) => return fail_page(app, p, e),
+    };
+    let body = html! {
+        h1 { "Your devices" }
+        p.sub { "Play as you on every device: your name, your block head and what you've shared come along. Nobody needs an email or a password." }
+        @match &made {
+            Made::Unlinked => { div.note.ok { "Unlinked. That device starts an account of its own next time it plays." } }
+            Made::LinkCode(code) => {
+                div.note.ok {
+                    p { "On the new device, in Potluck, choose Settings, then Link a device, and type:" }
+                    p { span.bigcode { (pretty(code)) } }
+                    p { "It works once, in the next ten minutes." }
+                }
+            }
+            Made::Recovery(code) => {
+                div.note.ok {
+                    p { "Your recovery code, shown only this once. Write it down and keep it somewhere safe:" }
+                    p { span.bigcode { (pretty(code)) } }
+                    p { "If you lose every device, type it in Potluck under Settings, then Link a device. It works once, and making a new one stops this one working." }
+                }
+            }
+            Made::Nothing => {}
+        }
+        ul.rows {
+            li {
+                b { "The first device" }
+                span.sub { "started this account " (ago(me.created)) }
+                span.tag { "always yours" }
+            }
+            @for d in &list {
+                li {
+                    b { @if d.label.is_empty() { "A device" } @else { (d.label) } }
+                    span.sub { "linked " (ago(d.linked)) }
+                    span.when { "last here " (ago(d.seen)) }
+                    form.inline method="post" action={ "/me/devices/" (d.id) "/unlink" } { button.btn type="submit" { "Unlink" } }
+                }
+            }
+        }
+        div.two {
+            div.box {
+                h4 { "Link a device" }
+                p.sub { "Make a code here, or in Potluck on a device that's already yours, and type it on the new one under Settings, then Link a device." }
+                form method="post" action="/me/devices/code" { button.btn.pri type="submit" { "Make a code" } }
+            }
+            div.box {
+                h4 { "Recovery code" }
+                @match recovery {
+                    Some(at) => p.sub { "You made one " (ago(at)) ". If every device is lost, it brings your account to a new one." },
+                    None => p.sub { "If every device is lost, a recovery code brings your account to a new one. Make one and keep it somewhere safe." },
+                }
+                form method="post" action="/me/recovery" { button.btn type="submit" { @if recovery.is_some() { "Make a new one" } @else { "Make a recovery code" } } }
+            }
+        }
+    };
+    layout(app, p, "Your devices", "", body).into_response()
+}
+
+async fn device_code(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.link_code(&me) {
+        Ok(code) => devices_page(&app, &p, &me, Made::LinkCode(code)),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn make_recovery(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.recovery_code(&me) {
+        Ok(code) => devices_page(&app, &p, &me, Made::Recovery(code)),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn unlink_device(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.unlink(&me, id) {
+        Ok(()) => Redirect::to("/me/devices?done=unlinked").into_response(),
         Err(e) => fail_page(&app, &p, e),
     }
 }

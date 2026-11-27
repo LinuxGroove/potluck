@@ -607,6 +607,102 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     assert_eq!((scores[0]["name"].as_str(), scores[0]["server"].as_str(), scores[1]["value"].as_f64()), (Some("Cy"), Some("Riverbend"), Some(12.5)), "best first, with the server it was on: {v}");
 }
 
+fn failed(jobs: &crate::share::ShareJobs, what: &str) -> String {
+    let start = Instant::now();
+    loop {
+        if let Some(d) = jobs.poll().into_iter().next() {
+            match d {
+                crate::share::Done::Failed(e) => return e,
+                _ => panic!("{what} should have failed"),
+            }
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "{what} took too long");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// One account on several devices, with no email or password: Ada makes a
+/// code on her first device and types it on her Steam Deck, which then
+/// plays as her, servers included. A code works once, a device with things
+/// of its own on the market can't be swallowed, a recovery code from the
+/// web brings her account to a new device once, and unlinking (from the
+/// device or the web) gives a device back its own account.
+#[test]
+fn another_device_plays_as_you_with_a_code() {
+    use crate::share::{Done, ShareJobs, Who};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let server = fake_game_server();
+    // each device signs in to the game server as itself, with jobs of its own
+    let device = |id: &str, name: &str| (Who { server: server.clone(), market: market.clone(), device: format!("{id}-{run}"), name: format!("{name} {run}") }, ShareJobs::default());
+    let (ada, deck, phone, bo, tablet) = (device("ada", "Ada"), device("adadeck", "Deck"), device("adaphone", "Phone"), device("bo", "Bo"), device("adatablet", "Tablet"));
+    let account = |(w, jobs): &(Who, ShareJobs)| {
+        jobs.account(w);
+        let Done::Account(a) = done(jobs, "who this device is") else { panic!("not an account") };
+        a
+    };
+    let first = account(&ada);
+    assert!(!first.linked);
+    let deck_own = account(&deck);
+    assert_ne!(deck_own.handle, first.handle, "the Deck starts out as itself");
+
+    ada.1.link_code(&ada.0);
+    let Done::LinkCode(code) = done(&ada.1, "a link code") else { panic!("not a code") };
+    assert_eq!(crate::share::clean_code(&code).len(), 8, "{code}");
+    deck.1.link_device(&deck.0, &code.to_lowercase());
+    let Done::Linked { name, handle, recovery } = done(&deck.1, "the Deck links") else { panic!("not linked") };
+    assert_eq!((name.as_str(), handle.as_str(), recovery), (ada.0.name.as_str(), first.handle.as_str(), false));
+    let on_deck = account(&deck);
+    assert!(on_deck.linked && on_deck.handle == first.handle, "the Deck plays as Ada: {on_deck:?}");
+    assert!(potluck_share::db::account_by_handle(&mkt.db(), &deck_own.handle).unwrap().is_none(), "and its empty account is gone");
+    phone.1.link_device(&phone.0, &code);
+    assert!(failed(&phone.1, "the same code again").contains("run out"), "a code works once");
+
+    // a server's pass from the Deck names Ada
+    deck.1.pass(&deck.0, "ws://riverbend.example.org");
+    let Done::Pass { pass: Some(pass), .. } = done(&deck.1, "the Deck's pass") else { panic!("no pass") };
+    use base64::Engine;
+    let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(pass.split('.').next().unwrap()).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["handle"].as_str(), Some(first.handle.as_str()), "{body}");
+
+    // Bo's device has a server of its own on the market, so it can't join Ada
+    let bo_account = account(&bo);
+    let bo_row = potluck_share::db::account_by_handle(&mkt.db(), &bo_account.handle).unwrap().unwrap();
+    mkt.add_server(&bo_row, "Bo's").unwrap();
+    ada.1.link_code(&ada.0);
+    let Done::LinkCode(code) = done(&ada.1, "another link code") else { panic!("not a code") };
+    bo.1.link_device(&bo.0, &code);
+    assert!(failed(&bo.1, "Bo links").contains("left behind"));
+    assert_eq!(account(&bo).handle, bo_account.handle, "Bo is still Bo");
+
+    // a recovery code from the web, typed the way it was shown
+    let ada_row = potluck_share::db::account_by_handle(&mkt.db(), &first.handle).unwrap().unwrap();
+    let recovery_code = potluck_share::codes::pretty(&mkt.recovery_code(&ada_row).unwrap());
+    assert_eq!(recovery_code.len(), 23, "{recovery_code}");
+    phone.1.link_device(&phone.0, &recovery_code);
+    let Done::Linked { recovery, .. } = done(&phone.1, "the phone recovers") else { panic!("not linked") };
+    assert!(recovery);
+    assert!(account(&phone).linked);
+    tablet.1.link_device(&tablet.0, &recovery_code);
+    assert!(failed(&tablet.1, "the recovery code again").contains("run out"), "a recovery code works once");
+    assert_eq!(mkt.recovery_made(&ada_row).unwrap(), None, "and it's gone from her page");
+
+    // the Deck leaves; the web unlinks the phone
+    let listed = mkt.devices(&ada_row).unwrap();
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    assert!(listed.iter().all(|d| d.label == crate::share::device_label()));
+    deck.1.unlink(&deck.0);
+    let Done::Unlinked = done(&deck.1, "the Deck leaves") else { panic!("not unlinked") };
+    let after = account(&deck);
+    assert!(!after.linked && after.handle != first.handle, "the Deck has an account of its own again: {after:?}");
+    mkt.unlink(&ada_row, mkt.devices(&ada_row).unwrap()[0].id).unwrap();
+    assert!(!account(&phone).linked);
+    assert!(mkt.devices(&ada_row).unwrap().is_empty());
+    assert_eq!(account(&ada).handle, first.handle, "the first device is always hers");
+}
+
 /// `@potluck/game`: a creation keeps a board of each player's best and
 /// sends players on to servers this one links to, and nothing else.
 #[test]
