@@ -23,7 +23,8 @@ fn main() {
         primary_window: Some(Window {
             title: "Potluck".into(),
             resolution: WindowResolution::new(size.x, size.y),
-            present_mode: PresentMode::AutoVsync,
+            // --no-vsync to see how fast a card really draws
+            present_mode: if args.iter().any(|a| a == "--no-vsync") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
             ..default()
         }),
         ..default()
@@ -78,7 +79,7 @@ fn main() {
         let at: Option<Vec<f32>> = opt("at").map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect());
         let tod: Option<f32> = opt("time").and_then(|v| v.parse().ok());
         let screen = opt("screen");
-        app.insert_resource(Shot { path, after, at, tod, screen, done: false });
+        app.insert_resource(Shot { path, after, at, tod, screen, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
     }
     app.run();
@@ -92,6 +93,8 @@ struct Shot {
     tod: Option<f32>,
     screen: Option<String>,
     done: bool,
+    /// Frames drawn in the last three seconds before the picture, for the frame rate.
+    frames: u32,
 }
 
 fn shot(
@@ -133,8 +136,12 @@ fn shot(
             });
         }
     }
+    if t > s.after - 3.0 && !s.done {
+        s.frames += 1;
+    }
     if t > s.after && !s.done {
         s.done = true;
+        info!("Shot: {:.0} frames a second over the last 3 s", s.frames as f32 / 3.0);
         let path = s.path.clone();
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
