@@ -261,6 +261,7 @@ impl Offscreen {
         let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
         // screenshots copy out of it
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        image.texture_descriptor.label = Some("offscreen shot");
         Self { image: images.add(image), size }
     }
 
@@ -447,6 +448,11 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
     ));
     if high && on("haze") {
         sun.insert(VolumetricLight);
+    }
+    // no point light casts a shadow (lanterns are many and near), but Bevy
+    // keeps a cube of shadow map for them anyway: 24 MB at its 1024
+    if std::env::var("POTLUCK_OFF").unwrap_or_default().split(',').all(|o| o.trim() != "cube") {
+        commands.insert_resource(bevy::light::PointLightShadowMap { size: 16 });
     }
     commands.insert_resource(ClearColor(Color::srgb(0.5, 0.68, 0.9)));
     commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.75, 0.82, 1.0), brightness: if medium { 1200.0 } else { 6000.0 }, ..default() });

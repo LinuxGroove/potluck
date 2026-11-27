@@ -192,6 +192,7 @@ fn image(data: Vec<u8>, format: TextureFormat) -> Image {
         format,
         RenderAssetUsages::RENDER_WORLD,
     );
+    img.texture_descriptor.label = Some("creature skin");
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,

@@ -659,7 +659,7 @@ fn cell_texels(src: &[[f32; 4]], full: usize, level: u32, srgb: bool) -> (Vec<u8
 
 /// Builds one atlas image from tiles `full` px square, with each tile's
 /// mips made from that tile alone, down to 8 px (whose gutter is one texel).
-fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool) -> Image {
+fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool, label: &'static str) -> Image {
     let mips = mips(full);
     let mut data = Vec::new();
     for level in 0..mips {
@@ -681,6 +681,8 @@ fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool) -> Image {
     let size = ((full + 2 * (full / GUTTER)) * GRID) as u32;
     let mut image = Image::new_uninit(Extent3d { width: size, height: size, depth_or_array_layers: 1 }, TextureDimension::D2, format, RenderAssetUsages::RENDER_WORLD);
     image.texture_descriptor.mip_level_count = mips;
+    // named for the memory report
+    image.texture_descriptor.label = Some(label);
     image.data = Some(data);
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         mipmap_filter: bevy::image::ImageFilterMode::Linear,
@@ -701,6 +703,7 @@ fn icon_image(rgba: &[[f32; 4]], full: usize) -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
+    image.texture_descriptor.label = Some("block icon");
     image.sampler = ImageSampler::nearest();
     image
 }
@@ -849,10 +852,10 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         }
     }
     BlockAtlas {
-        color: images.add(atlas_image(&colors, full, true)),
-        normal: images.add(atlas_image(&normals, full, false)),
-        rough: images.add(atlas_image(&roughs, full, false)),
-        glow: images.add(atlas_image(&glows, full, true)),
+        color: images.add(atlas_image(&colors, full, true, "block colour atlas")),
+        normal: images.add(atlas_image(&normals, full, false, "block normal atlas")),
+        rough: images.add(atlas_image(&roughs, full, false, "block roughness atlas")),
+        glow: images.add(atlas_image(&glows, full, true, "block glow atlas")),
         sky: images.add(sky_image()),
         tiles,
         icons,

@@ -48,13 +48,15 @@ pub struct Off {
     /// Leaves in the ray traced scene as the solid blocks they're drawn
     /// with, in place of the porous stand-in (`porous_leaves`)
     pub rtsolid: bool,
+    /// Chunk meshes at full size on the graphics card (`pack`)
+    pub pack: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid"), pack: has("pack") }
     }
 }
 
@@ -283,6 +285,24 @@ impl MeshData {
             m.set_morph_targets(t);
         }
         m.with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tan).with_inserted_indices(Indices::U32(self.idx))
+    }
+}
+
+/// Packs a chunk mesh smaller for the graphics card, half the bytes a
+/// vertex: normals and tangents as two 16-bit numbers each, UVs as 16-bit
+/// fractions, colours as half floats (grass tints go past 1), and 16-bit
+/// indices where they fit. Bevy's shaders unpack them. Positions stay full
+/// floats, so the edges of neighbouring chunks meet exactly. The ray tracer
+/// reads meshes itself, so the ones it sees stay as they are.
+pub fn pack(mesh: &mut Mesh) {
+    use bevy::mesh::{AttributeQuantization, MeshAttributeCompressionFlags as F, MeshCompressionArgs};
+    let args = MeshCompressionArgs {
+        compress_indices: true,
+        quantize_attributes: (&[(Mesh::ATTRIBUTE_COLOR.id, AttributeQuantization::Float16)]).into(),
+        compress_attributes: F::COMPRESS_NORMAL | F::COMPRESS_TANGENT | F::COMPRESS_UV0 | F::COMPRESS_UV1,
+    };
+    if let Err(e) = mesh.compress_mesh(&args) {
+        warn!("Couldn't pack a chunk mesh: {e:?}");
     }
 }
 
@@ -954,6 +974,27 @@ pub struct ChunkEntities {
     pub meshed: usize,
     /// The detail each chunk with grass, leaves or plants was meshed with.
     pub detail: HashMap<IVec3, Detail>,
+    /// Each chunk's layers' sizes on the graphics card, for the memory
+    /// report: vertices, and bytes of vertices, indices and wind targets.
+    pub sizes: HashMap<IVec3, [[u64; 4]; LAYERS]>,
+}
+
+/// What each layer of a chunk holds, for the memory report.
+pub const LAYER_NAMES: [&str; LAYERS] = ["solid blocks", "leaves and glass", "water", "plants", "glowing blocks", "ground cover", "under water"];
+
+impl ChunkEntities {
+    /// Every chunk's sizes added up, by layer (see `sizes`).
+    pub fn totals(&self) -> [[u64; 4]; LAYERS] {
+        let mut out = [[0; 4]; LAYERS];
+        for layers in self.sizes.values() {
+            for (o, l) in out.iter_mut().zip(layers) {
+                for k in 0..4 {
+                    o[k] += l[k];
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Component)]
@@ -1026,6 +1067,7 @@ pub fn remesh(
         } else {
             chunks.detail.remove(&c);
         }
+        let mut sizes = [[0u64; 4]; LAYERS];
         let slot = chunks.map.entry(c).or_insert([None; LAYERS]);
         for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
@@ -1038,8 +1080,19 @@ pub fn remesh(
             if rt.0 && apart && i != 2 {
                 data.face_normals();
             }
-            let mesh = data.into_mesh(rt.0 && !apart);
+            let traced = rt.0 && !apart;
+            let mut mesh = data.into_mesh(traced);
+            if !traced && !cover.off.pack {
+                pack(&mut mesh);
+            }
             let sways = mesh.has_morph_targets();
+            let verts = mesh.count_vertices() as u64;
+            sizes[i] = [
+                verts,
+                verts * mesh.get_vertex_size(),
+                mesh.indices().map_or(0, |x| x.len() as u64 * 4),
+                mesh.morph_targets().map_or(0, |t| (t.len() * std::mem::size_of::<MorphAttributes>()) as u64),
+            ];
             let mut e = commands.spawn((
                 // water and plants stay out of the ray traced scene, so they keep their colours
                 Mesh3d(meshes.add(mesh)),
@@ -1083,5 +1136,6 @@ pub fn remesh(
             }
             slot[i] = Some(e.id());
         }
+        chunks.sizes.insert(c, sizes);
     }
 }

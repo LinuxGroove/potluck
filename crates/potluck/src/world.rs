@@ -77,6 +77,11 @@ impl Voxels {
     }
 
     #[inline]
+    /// Bytes the blocks take, for the memory report.
+    pub fn bytes(&self) -> usize {
+        self.data.len() * std::mem::size_of::<BlockId>()
+    }
+
     pub fn inside(x: i32, y: i32, z: i32) -> bool {
         x >= 0 && y >= 0 && z >= 0 && x < WX && y < WY && z < WZ
     }
