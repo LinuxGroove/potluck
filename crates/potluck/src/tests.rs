@@ -1739,6 +1739,28 @@ fn clouds_keep_their_mesh_to_recolour() {
 }
 
 #[test]
+fn lows_sky_meets_the_fog_and_burns_toward_a_low_sun() {
+    use crate::render::{dome, fog_colour, sun_now, Clock};
+    // recoloured as the sun moves, like the clouds
+    assert!(dome::mesh().asset_usage.contains(bevy::asset::RenderAssetUsages::MAIN_WORLD));
+    let (sun, day, low) = sun_now(&Clock { time: 0.735, running: false });
+    let flat = Vec3::new(sun.x, 0.0, sun.z).normalize();
+    // at the horizon away from the sun it's the fog the far hills fade into
+    let away = dome::colour(-flat, sun, day, low);
+    assert!((away - fog_colour(day, low)).length() < 0.02, "{away} against the fog's {}", fog_colour(day, low));
+    // toward the sun it's gold, overhead it's blue
+    let toward = dome::colour(flat, sun, day, low);
+    assert!(toward.x > away.x + 0.15 && toward.x > toward.z + 0.3, "sunset {toward}");
+    let up = dome::colour(Vec3::Y, sun, day, low);
+    assert!(up.z > up.x + 0.2, "overhead {up}");
+    // and at night it's dark everywhere
+    let (sun, day, low) = sun_now(&Clock { time: 0.95, running: false });
+    for d in [Vec3::Y, Vec3::X, -Vec3::X, Vec3::Z] {
+        assert!(dome::colour(d, sun, day, low).max_element() < 0.12);
+    }
+}
+
+#[test]
 fn a_creation_talks_to_its_client_half_on_each_players_game() {
     use bevy::ecs::system::RunSystemOnce;
     use crate::game::{Action, Actions};
