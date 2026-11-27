@@ -600,15 +600,15 @@ pub fn draw_menu(
                             p.spawn((Text::new(item.label.clone()), TextFont { font: tf.clone().into(), font_size: FontSize::Px(60.0), weight: FontWeight(600), ..default() }, TextColor(MINT)));
                         }
                         _ => {
+                            // how full a slider's bar is (drawn, since the fonts have no block characters)
+                            let bar = match &item.kind {
+                                Kind::Slider { value, min, max, .. } => Some(((value - min) / (max - min)).clamp(0.0, 1.0) as f32),
+                                _ => None,
+                            };
                             let (label, right) = match &item.kind {
-                                Kind::Slider { value, min, max, .. } => {
-                                    let n = 16;
-                                    let f = ((value - min) / (max - min)).clamp(0.0, 1.0);
-                                    let filled = (f * n as f64).round() as usize;
-                                    (item.label.clone(), format!("{}{}  {}", "■".repeat(filled), "□".repeat(n - filled), trim_num(*value)))
-                                }
+                                Kind::Slider { value, .. } => (item.label.clone(), trim_num(*value)),
                                 Kind::Toggle { value, .. } => (item.label.clone(), if *value { "On".into() } else { "Off".into() }),
-                                Kind::Swatch { value, .. } => (item.label.clone(), format!("◀ {value} ▶")),
+                                Kind::Swatch { value, .. } => (item.label.clone(), format!("< {value} >")),
                                 Kind::Field { value, .. } => (item.label.clone(), format!("{value}{}", if picked { "|" } else { "" })),
                                 _ => (item.label.clone(), String::new()),
                             };
@@ -633,8 +633,19 @@ pub fn draw_menu(
                                 if let Some(col) = swatch {
                                     b.spawn((Node { width: px(56), height: px(22), border_radius: BorderRadius::all(px(6)), ..default() }, BackgroundColor(col)));
                                 }
+                                if let Some(f) = bar {
+                                    b.spawn((
+                                        Node { width: px(170), height: px(8), margin: UiRect::left(Val::Auto), border_radius: BorderRadius::all(px(4)), ..default() },
+                                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)),
+                                    ))
+                                    .with_child((Node { width: percent(f * 100.0), height: percent(100), border_radius: BorderRadius::all(px(4)), ..default() }, BackgroundColor(MINT)));
+                                }
                                 if !right.is_empty() {
-                                    b.spawn((Text::new(right), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(MINT)));
+                                    let mut t = b.spawn((Text::new(right), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(MINT)));
+                                    if bar.is_some() {
+                                        // numbers take the same room, so the bars line up
+                                        t.insert((Node { min_width: px(40), ..default() }, TextLayout::justify(Justify::Right)));
+                                    }
                                 }
                             });
                         }
