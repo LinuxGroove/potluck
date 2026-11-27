@@ -70,12 +70,26 @@ pub enum Screen {
     Chat,
     /// Every block, to put one in your hand (creative).
     Blocks,
+    /// The worlds the player keeps, to play (or host, when true).
+    Worlds(bool),
+    /// One kept world: rename it or delete it.
+    Forget(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     Resume,
+    /// Into the world as it is (the title's own, which isn't kept): `--play`.
     PlayAlone,
+    /// The kept worlds, to play alone or (true) to host for friends.
+    OpenWorlds(bool),
+    /// A new kept world, played (or hosted) straight away.
+    NewWorld(bool),
+    PlayWorld(String, bool),
+    /// A kept world's own page: rename it, delete it.
+    OpenForget(String),
+    ForgetWorld(String),
+    RenameWorld(String),
     Host,
     JoinAddress(String),
     OpenJoin,
@@ -245,6 +259,8 @@ pub struct Focus {
     pub link: Option<(String, String)>,
     /// Servers listed on the market.
     pub servers: Vec<crate::share::Listed>,
+    /// The kept worlds, as the Worlds screen lists them.
+    pub worlds: Vec<crate::worlds::Kept>,
     /// Who this device plays as on the market, once asked.
     pub account: Option<crate::share::Account>,
     /// The jam running now, once the market's said.
@@ -295,6 +311,7 @@ impl Default for Focus {
             suggestions: vec![],
             link: None,
             servers: vec![],
+            worlds: vec![],
             account: None,
             jam: None,
             rebinding: None,
@@ -450,8 +467,8 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             "Potluck".into(),
             vec![
                 note("A block world where everything is made by someone you know."),
-                button("Play alone", Act::PlayAlone),
-                button("Host a world for friends", Act::Host),
+                button("Play alone", Act::OpenWorlds(false)),
+                button("Host a world for friends", Act::OpenWorlds(true)),
                 button("Join a friend's world", Act::OpenJoin),
                 button("Load a creation from a code", Act::OpenCode),
                 button("Creations", Act::OpenLibrary),
@@ -745,6 +762,43 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             }
             v.push(button("Back", Act::Back));
             ("Servers".into(), v)
+        }
+        Screen::Worlds(host) => {
+            let host = *host;
+            let mut v = vec![];
+            if host {
+                v.push(note("Friends on this network can join, or anyone you give the address to."));
+            }
+            v.push(button("A new world", Act::NewWorld(host)));
+            for k in &focus.worlds {
+                v.push(button(format!("{}  \u{b7}  {}", k.name, crate::worlds::ago(k.played)), Act::PlayWorld(k.id.clone(), host)));
+            }
+            if !focus.worlds.is_empty() {
+                v.push(note("Each world saves as you play."));
+                v.push(button("Rename or delete a world", Act::OpenForget(String::new())));
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::Back));
+            ((if host { "Host a world" } else { "Your worlds" }).into(), v)
+        }
+        Screen::Forget(id) if id.is_empty() => {
+            let mut v: Vec<Item> = focus.worlds.iter().map(|k| button(k.name.clone(), Act::OpenForget(k.id.clone()))).collect();
+            v.push(button("Back", Act::OpenWorlds(false)));
+            ("Which world?".into(), v)
+        }
+        Screen::Forget(id) => {
+            let Some(k) = focus.worlds.iter().find(|k| k.id == *id) else { return ("Gone".into(), vec![button("Back", Act::OpenWorlds(false))]) };
+            let name = focus.fields.get("world_name").cloned().unwrap_or_else(|| k.name.clone());
+            let mut v = vec![field("Name", "world_name", name), button("Rename it", Act::RenameWorld(id.clone()))];
+            v.push(note("Deleting a world is for good: everything built in it goes too."));
+            v.push(button(format!("Delete {} for good", k.name), Act::ForgetWorld(id.clone())));
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenWorlds(false)));
+            (k.name.clone(), v)
         }
         Screen::Code => {
             let code = focus.fields.get("code").cloned().unwrap_or_default();

@@ -878,7 +878,8 @@ pub fn do_acts(
                 me.pieces.clear();
                 me.panel = None;
                 net.leave();
-                *voxels = crate::world::generate(voxels.seed);
+                // the title's own island again (a kept world saved first, `worlds::acts`)
+                *voxels = crate::world::generate(crate::SEED);
                 herd.bodies.clear();
                 // what creations kept was the old world's, which is gone
                 scripts.shared.lock().unwrap().store = Default::default();

@@ -385,6 +385,7 @@ fn shot(
                 "blocks" => ui::Screen::Blocks,
                 "market" => ui::Screen::Link,
                 "question" => ui::Screen::Panel,
+                "worlds" => ui::Screen::Worlds(false),
                 _ => ui::Screen::Playing,
             });
             focus.settings_page = page;
@@ -393,6 +394,10 @@ fn shot(
             if sc == "market" {
                 // what the market would send: a sign-in link for the phone
                 focus.link = Some(("https://potluck.linuxgroove.com/in/7QK2-M9XD-PL4F-W2HZ".into(), "The market".into()));
+            }
+            if sc == "worlds" {
+                // the worlds kept in POTLUCK_HOME
+                focus.worlds = potluck::worlds::list();
             }
             if sc == "question" {
                 // as a creation asks: through Me, which keeps it open

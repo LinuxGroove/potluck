@@ -157,6 +157,101 @@ fn a_creation_that_never_stops_is_stopped() {
 }
 
 #[test]
+fn worlds_are_kept_with_what_you_carry_and_where_you_stood() {
+    use crate::ui::{Act, Acts, Focus, Screen, WorldInfo};
+    use crate::worlds::{self, Current};
+    home();
+    let mut app = App::new();
+    app.insert_resource(Library::load())
+        .insert_resource(Scripts::default())
+        .insert_resource(Herd::default())
+        .insert_resource(crate::net::Net::default())
+        .insert_resource(crate::ui::Toasts::default())
+        .insert_resource(crate::settings::Settings::default())
+        .insert_resource(crate::player::Me::default())
+        .insert_resource(world())
+        .insert_resource(WorldInfo::default())
+        .insert_resource(Focus::default())
+        .init_resource::<Acts>()
+        .init_resource::<Current>()
+        .add_systems(Update, worlds::acts);
+    let act = |app: &mut App, a: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(a);
+        app.update();
+        app.update();
+        // what's left is `game::do_acts`'s, which this test hasn't got
+        app.world_mut().resource_mut::<Acts>().0.clear();
+    };
+    // a new world, played straight away, from a seed of its own
+    act(&mut app, Act::NewWorld(false));
+    let id = app.world().resource::<Current>().id.clone().expect("it's being played");
+    assert!(app.world().resource::<WorldInfo>().in_world);
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing);
+    let kept = worlds::list().into_iter().find(|k| k.id == id).expect("it's listed");
+    assert!(kept.name.starts_with("World "), "{}", kept.name);
+    assert_eq!(app.world().resource::<Voxels>().seed, kept.seed, "its own island");
+    assert!(!app.world().resource::<Scripts>().vms.is_empty(), "the base game runs in it");
+    // build, carry, move and get hurt
+    let spot = IVec3::new(200, 70, 200);
+    let planks = crate::blocks::by_name("Planks").unwrap();
+    {
+        let w = app.world_mut();
+        w.resource_mut::<Voxels>().set(spot, planks);
+        let mut me = w.resource_mut::<crate::player::Me>();
+        me.hotbar[2] = planks;
+        me.counts[2] = 17;
+        me.slot = 2;
+        me.pos = Vec3::new(205.5, 71.0, 190.5);
+        me.yaw = 1.25;
+        me.health = 13.0;
+    }
+    // the store is the world's own
+    app.world().resource::<Scripts>().shared.lock().unwrap().store.set("test", "note", Some(serde_json::json!("kept"))).unwrap();
+    act(&mut app, Act::Leave);
+    assert!(app.world().resource::<Current>().id.is_none());
+    // the title's island and a fresh player, as after leaving
+    {
+        let w = app.world_mut();
+        *w.resource_mut::<Voxels>() = world();
+        *w.resource_mut::<crate::player::Me>() = crate::player::Me::default();
+        w.resource::<Scripts>().shared.lock().unwrap().store = Default::default();
+        w.resource_mut::<WorldInfo>().in_world = false;
+    }
+    act(&mut app, Act::OpenWorlds(false));
+    assert!(app.world().resource::<Focus>().worlds.iter().any(|k| k.id == id), "the list has it");
+    {
+        let w = app.world();
+        let (title, items) = crate::ui::menu_items(w.resource::<Focus>(), w.resource::<Library>(), w.resource::<Scripts>(), w.resource::<crate::settings::Settings>(), w.resource::<WorldInfo>());
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(title, "Your worlds");
+        assert_eq!(labels[0], "A new world");
+        assert!(labels.iter().any(|l| l.starts_with(&format!("{}  \u{b7}  ", kept.name))), "{labels:?}");
+        assert!(labels.contains(&"Back"));
+    }
+    act(&mut app, Act::PlayWorld(id.clone(), false));
+    {
+        let w = app.world();
+        assert_eq!(w.resource::<Voxels>().at(spot), planks, "what was built is still there");
+        let me = w.resource::<crate::player::Me>();
+        assert_eq!((me.hotbar[2], me.counts[2], me.slot), (planks, 17, 2), "and what was carried");
+        assert!(me.pos.distance(Vec3::new(205.5, 71.0, 190.5)) < 0.01 && (me.yaw - 1.25).abs() < 1e-4, "where they stood: {:?}", me.pos);
+        assert_eq!(me.health, 13.0);
+        assert_eq!(w.resource::<Scripts>().shared.lock().unwrap().store.get("test", "note").cloned(), Some(serde_json::json!("kept")));
+    }
+    // an open world can't be deleted; renamed, it keeps its folder
+    act(&mut app, Act::ForgetWorld(id.clone()));
+    assert!(worlds::list().iter().any(|k| k.id == id), "still there while it's open");
+    act(&mut app, Act::Leave);
+    app.world_mut().resource_mut::<Focus>().fields.insert("world_name".into(), "  Ada's island  ".into());
+    act(&mut app, Act::RenameWorld(id.clone()));
+    assert_eq!(worlds::list().iter().find(|k| k.id == id).map(|k| k.name.as_str()), Some("Ada's island"));
+    act(&mut app, Act::ForgetWorld(id.clone()));
+    assert!(!worlds::list().iter().any(|k| k.id == id), "deleted for good");
+    // nothing outside the worlds folder can be named
+    assert!(worlds::forget("../creations").is_err() && worlds::load("a/b").is_err());
+}
+
+#[test]
 fn time_the_machine_gives_to_others_isnt_held_against_a_creation() {
     use crate::script::Slice;
     let ms = Duration::from_millis;
