@@ -17,6 +17,7 @@ pub mod input;
 pub mod keyboard;
 pub mod map;
 pub mod mesh;
+pub mod model;
 pub mod net;
 pub mod noise;
 pub mod photos;

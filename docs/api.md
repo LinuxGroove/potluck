@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.10")
+local world = require("@potluck/world@0.11")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.10"
+world = "0.11"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.10 | Blocks and lights, creatures (walking or flying, changing kind, and behaviours that need no code), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.11 | Blocks and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -72,6 +72,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Each tick (ten a second): its timers, world events and every creature's handlers together | 15 ms |
 | Creatures at once | 64 |
 | Kinds of creature | 16 |
+| A body | 64 boxes (a Blockbench model's cubes past 64 are left out), each up to 6 blocks a side and within 8 blocks of the creature's middle |
 | Timers waiting at once | 64 |
 | Shortest timer | 0.1 s, the length of a tick |
 | World event, input and message handlers (`world.on`, `input.on`, `net.on`) | 32 |
@@ -101,6 +102,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.11**: `world.model`, a Blockbench model (a `.bbmodel` in the creation's folder) as the list of boxes a body is, 16 pixels to a block, coloured from its texture, with `head`, `leg` and `glow` from its cubes' and groups' names; and `body = "file.bbmodel"` for `world.creature` as short for it. Creations may carry `.bbmodel` files.
 - **0.10**: `behaviours` for `world.creature`, what a creature does with no code: `wander`, `follow_food`, `follow_when_used`, `flee_when_hit`, `hop_when_hit`, `chatter` and `sound`. They act before its own handlers, which have the last word.
 - **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields, and still counting toward the `count` of the kind it came as). `world.spawn` puts a creature wider than a block that's set down beside a wall just clear of it.
 - **0.8**: `world.held` (what's in a player's hand), `world.kind` (what a block is made of) and `world.digging` (a thing held breaks some kinds of block faster, 0 to 10 times; creations' speeds multiply). Tools and swords are things to hold, never put down: `world.set_block` with one is an error.

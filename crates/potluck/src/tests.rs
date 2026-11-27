@@ -1711,6 +1711,96 @@ end)
     assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
 
+/// A Blockbench model is a body (world 0.11): its cubes are parts, sized 16
+/// pixels to a block, coloured from its texture, with head and leg from its
+/// groups' names; what can't be a part is said in the log.
+#[test]
+fn a_blockbench_model_is_a_body() {
+    use crate::model::{read, MAX_PARTS};
+    home();
+    // a red pixel picture, 2 by 2, for a texture
+    let png = {
+        let mut img = image::RgbaImage::new(2, 2);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([200, 30, 30, 255]);
+        }
+        img.put_pixel(1, 1, image::Rgba([10, 10, 200, 255]));
+        let mut bytes = std::io::Cursor::new(vec![]);
+        img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    };
+    let model = format!(
+        r#"{{
+        "resolution": {{"width": 16, "height": 16}},
+        "elements": [
+            {{"name": "body", "from": [-4, 2, -4], "to": [4, 10, 4], "uuid": "b", "color": 3,
+              "faces": {{"north": {{"uv": [0, 0, 16, 16], "texture": 0}}, "up": {{"uv": [0, 0, 8, 8], "texture": 0}}}}}},
+            {{"name": "snout", "from": [-1, 6, -8], "to": [1, 8, -4], "uuid": "s", "rotation": [0, 22.5, 0], "inflate": 0.5, "color": 1}},
+            {{"name": "paw", "from": [-3, 0, -3], "to": [-1, 2, -1], "uuid": "p"}},
+            {{"name": "tail", "type": "mesh", "uuid": "t"}},
+            {{"name": "ghost", "from": [0, 0, 0], "to": [1, 1, 1], "uuid": "g"}}
+        ],
+        "outliner": [
+            "b",
+            {{"uuid": "h", "children": ["s"]}},
+            {{"name": "Front legs", "children": ["p"]}},
+            {{"name": "hidden", "visibility": false, "children": ["g"]}}
+        ],
+        "groups": [{{"uuid": "h", "name": "Head"}}],
+        "textures": [{{"name": "skin", "uv_width": 16, "uv_height": 16, "source": "data:image/png;base64,{png}"}}]
+    }}"#
+    );
+    let (parts, notes) = read("m.bbmodel", &model, 1.0).unwrap();
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["body", "snout", "paw"], "cubes only, and nothing hidden");
+    let (body, snout, paw) = (&parts[0], &parts[1], &parts[2]);
+    assert_eq!((body.size, body.at), (Vec3::splat(0.5), Vec3::new(0.0, 0.375, 0.0)), "16 pixels to a block, at its middle");
+    assert_eq!(body.color, [200, 30, 30], "the most common colour on its faces");
+    assert!(snout.head && !snout.leg && paw.leg && !paw.head && !body.head, "head and legs from the groups' names, new and old style");
+    assert_eq!(snout.size, Vec3::new(3.0, 3.0, 5.0) / 16.0, "inflate grows it on every side");
+    assert_eq!((snout.color, paw.color), ([0xf2, 0xd1, 0x5b], [0x89, 0xc6, 0xe8]), "no texture: its marker colour");
+    assert!(notes.iter().any(|n| n.contains("1 turned cubes are drawn upright")) && notes.iter().any(|n| n.contains("1 meshes are left out")), "{notes:?}");
+    let (big, _) = read("m.bbmodel", &model, 2.0).unwrap();
+    assert_eq!(big[0].size, Vec3::ONE, "scaled");
+    // mistakes, in plain words
+    assert!(read("m.bbmodel", "{ nope", 1.0).unwrap_err().starts_with("m.bbmodel isn't a Blockbench model"));
+    assert!(read("m.bbmodel", "{}", 1.0).unwrap_err().contains("has no cubes"));
+    assert!(read("m.bbmodel", r#"{"elements": [{"type": "mesh"}]}"#, 1.0).unwrap_err().contains("no cubes in it to make a body"));
+    let many: Vec<String> = (0..70).map(|i| format!(r#"{{"name": "c{i}", "from": [0, 0, 0], "to": [1, 1, 1]}}"#)).collect();
+    let (parts, notes) = read("m.bbmodel", &format!(r#"{{"elements": [{}]}}"#, many.join(",")), 1.0).unwrap();
+    assert!(parts.len() == MAX_PARTS && notes.iter().any(|n| n.contains("6 are left out")), "{notes:?}");
+
+    // in a creation: body = "file" is short for world.model, and code can change the parts first
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let mut c = creation(
+        r##"
+local world = require("@potluck/world@0.11")
+local body = world.model("models/m.bbmodel")
+body[1].color = "#00ff00"
+world.creature { name = "Changed", count = 1, home = "paddock", body = body }
+world.creature { name = "Plain", count = 1, home = "paddock", body = "models/m.bbmodel" }
+for _, bad in { "models/none.bbmodel", "main.luau" } do
+    local ok, err = pcall(world.model, bad)
+    print(err)
+end
+"##,
+    );
+    c.files.insert("models/m.bbmodel".into(), model.clone());
+    scripts.start(&c, &mut herd).unwrap();
+    let mut voxels = world();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let of = |kind: &str| herd.bodies.values().find(|b| b.kind == kind).unwrap_or_else(|| panic!("a {kind}"));
+    let (changed, plain) = (of("Changed"), of("Plain"));
+    assert_eq!(plain.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["body", "snout", "paw"]);
+    assert!(plain.parts[1].head && plain.parts[2].leg && (plain.parts[0].color[0] - 200.0 / 255.0).abs() < 0.01, "{:?}", plain.parts);
+    assert!(changed.parts[0].color[1] > 0.99 && changed.parts[0].color[0] < 0.01, "the code's colour: {:?}", changed.parts[0].color);
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("drawn upright"), "notes go to the log: {log}");
+    assert!(log.contains("there's no file called models/none.bbmodel") && log.contains("reads Blockbench models (.bbmodel), not main.luau"), "{log}");
+}
+
 /// sound 0.2: a creation's own sounds, made from numbers in its
 /// potluck.toml, the same on every game; played by name before the game's,
 /// by behaviours too; and mistakes in them say what's wrong.

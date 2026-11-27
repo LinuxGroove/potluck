@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 10), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 11), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -943,6 +943,39 @@ pub(crate) fn from_json(lua: &Lua, j: &serde_json::Value) -> mlua::Result<Value>
 
 const RESERVED: &[&str] = &["id", "position", "rider", "kind"];
 
+/// `world.model(file, scale)`: a Blockbench model in the creation's folder as
+/// a body, the same list of boxes `world.creature`'s `body` takes, so code can
+/// change it before using it. What was left out goes to the log.
+fn model_body(lua: &Lua, models: &BTreeMap<String, String>, file: &str, scale: f32) -> mlua::Result<Table> {
+    let file = file.trim_start_matches("./");
+    if !file.ends_with(".bbmodel") {
+        return Err(bad(format!("world.model reads Blockbench models (.bbmodel), not {file}")));
+    }
+    let text = models.get(file).ok_or_else(|| bad(format!("there's no file called {file} in this creation")))?;
+    let (parts, notes) = crate::model::read(file, text, scale).map_err(bad)?;
+    if !notes.is_empty() {
+        let print: mlua::Function = lua.globals().get("print")?;
+        for n in notes {
+            print.call::<()>(n)?;
+        }
+    }
+    let body = lua.create_table()?;
+    for p in parts {
+        let t = lua.create_table()?;
+        t.set(1, p.name)?;
+        t.set("size", vector(p.size))?;
+        t.set("at", vector(p.at))?;
+        t.set("color", format!("#{:02x}{:02x}{:02x}", p.color[0], p.color[1], p.color[2]))?;
+        for (key, on) in [("head", p.head), ("leg", p.leg), ("glow", p.glow)] {
+            if on {
+                t.set(key, true)?;
+            }
+        }
+        body.push(t)?;
+    }
+    Ok(body)
+}
+
 fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
     let name: String = def.get::<Option<String>>("name")?.ok_or_else(|| bad("a creature needs a name"))?;
     let mut parts = Vec::new();
@@ -963,7 +996,7 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
                 head: part.get::<Option<bool>>("head")?.unwrap_or(false),
                 glow,
             });
-            if parts.len() >= 64 {
+            if parts.len() >= crate::model::MAX_PARTS {
                 break;
             }
         }
@@ -1065,14 +1098,26 @@ impl Vm {
             let base = lua.create_table()?;
             let base_mt = lua.create_table()?;
             base_mt.set("__index", base.clone())?;
+            // world 0.11: Blockbench models as bodies
+            let models: Arc<BTreeMap<String, String>> = Arc::new(creation.files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).map(|(n, t)| (n.clone(), t.clone())).collect());
+            {
+                let models = models.clone();
+                world.set("model", lua.create_function(move |lua, (file, scale): (String, Option<f32>)| model_body(lua, &models, &file, scale.unwrap_or(1.0)))?)?;
+            }
             // world.creature: define a kind of creature
             {
                 let st = state.clone();
                 let base_mt = base_mt.clone();
                 let own = own.clone();
+                let models = models.clone();
                 world.set(
                     "creature",
-                    lua.create_function(move |_, def: Table| {
+                    lua.create_function(move |lua, def: Table| {
+                        // body = "frog.bbmodel" is short for world.model("frog.bbmodel")
+                        if let Value::String(file) = def.get::<Value>("body")? {
+                            let body = model_body(lua, &models, &file.to_str()?, 1.0)?;
+                            def.set("body", body)?;
+                        }
                         let kind = parse_kind(&def, &own)?;
                         def.set_metatable(Some(base_mt.clone()))?;
                         let mut s = st.lock().unwrap();

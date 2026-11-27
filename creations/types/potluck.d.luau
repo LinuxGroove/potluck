@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.10, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.1, @potluck/test 0.2
+-- @potluck/world 0.11, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.1, @potluck/test 0.2
 
 export type Position = vector | { number }
 
@@ -22,7 +22,8 @@ export type Part = {
 
 export type CreatureDef = {
 	name: string,
-	body: { Part }?,
+	-- a list of boxes, or (0.11) a Blockbench model in the creation's folder: "hedgehog.bbmodel"
+	body: ({ Part } | string)?,
 	size: { number }?,
 	speed: number?,
 	count: number?,
@@ -66,6 +67,8 @@ export type Creature = {
 
 export type World = {
 	creature: (def: CreatureDef) -> any,
+	-- 0.11: a Blockbench model (.bbmodel in the creation's folder) as a body, 16 pixels to a block times scale
+	model: (file: string, scale: number?) -> { Part },
 	block: (pos: Position) -> string,
 	set_block: (pos: Position, name: string) -> boolean,
 	top: (x: number, z: number) -> number,
