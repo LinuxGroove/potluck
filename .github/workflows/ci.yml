@@ -25,3 +25,5 @@ jobs:
         run: cargo build --locked --bins
       - name: Run tests
         run: cargo test --locked
+      - name: Build the game with ray tracing
+        run: cargo build --locked --bin potluck --features raytracing
