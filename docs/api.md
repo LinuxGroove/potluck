@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.4")
+local world = require("@potluck/world@0.5")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.4"
+world = "0.5"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.4 | Blocks and lights, creatures, players, their health and the blocks they carry, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.5 | Blocks and lights, creatures, players, their health and the blocks they carry, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -76,11 +76,12 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | World event, input and message handlers (`world.on`, `input.on`, `net.on`) | 32 |
 | Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
 | Lines on screens (`ui.show`) | 8 at once (different ids), each up to 60 letters |
-| Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds |
+| Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds, until they use one of its creatures or a block it hears `block_used` for |
 | Sounds | 10 a second; heard within 40 blocks |
 | Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
 | Looking for blocks (`world.find_block`, `world.find_light`) | 16 blocks away |
+| Block events (`block_placed`, `block_broken`, `block_used`) | 64 heard a tick; past 512 waiting, the rest are dropped |
 | Messages to client halves (`net.send`) | 30 a second from a creation, 10 a second from each player's half; a topic of 32 letters and a value of 4 KB as JSON |
 | A client half | 16 MB, 300 ms to load, and 4 ms of each frame on its player's game |
 | Boards | 16, of 100 players each |
@@ -95,6 +96,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.5**: `world.on` for `"block_placed"`, `"block_broken"` and `"block_used"`: a player put down, broke or used (Interact on) a block, with the player, the middle of the block and its name.
 - **0.4**: `world.daytime` and `world.daylight` (the time of day), `world.find_light` (the nearest lantern, brazier, candle or other block that gives light), and `world.hurt` and `world.heal` for survival players' health. A client half has `daytime` and `daylight` too.
 - **0.3**: `world.pockets`, `world.has`, `world.take` and `world.give`, for the blocks players carry in survival.
 - **0.2**: `world.after`, `world.every` and `world.cancel` (timers), and `world.on` for `"player_joined"` and `"player_left"`. A creation with no creatures can now run code every tick.

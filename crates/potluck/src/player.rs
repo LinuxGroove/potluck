@@ -77,6 +77,9 @@ pub struct Me {
     /// Hurts (less than 0) and heals creations sent, for `walk` to apply
     /// in survival.
     pub health_due: f32,
+    /// Blocks this player placed and broke since the host last looked:
+    /// (where, what it was, what it is now), for creations' block events.
+    pub built: Vec<(IVec3, BlockId, BlockId)>,
     /// Blocks walked since the last step's sound.
     stride: f32,
     regen: f32,
@@ -117,6 +120,7 @@ impl Default for Me {
             notes: vec![],
             pockets_seen: 0,
             health_due: 0.0,
+            built: vec![],
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
@@ -196,6 +200,13 @@ impl Me {
                 self.counts[i] -= n;
                 left -= n;
             }
+        }
+    }
+
+    /// Notes a block this player changed, for the host to tell creations.
+    fn note_built(&mut self, at: IVec3, old: BlockId, new: BlockId) {
+        if self.built.len() < 256 {
+            self.built.push((at, old, new));
         }
     }
 
@@ -501,7 +512,9 @@ pub fn build(
                     _ => dt / hardness.max(0.05),
                 };
                 if progress >= 1.0 {
-                    voxels.set(hit.block, AIR);
+                    if voxels.set(hit.block, AIR) {
+                        me.note_built(hit.block, hit.id, AIR);
+                    }
                     me.give(hit.id);
                     me.breaking = None;
                     if let Some(n) = stuff.breaks() {
@@ -521,7 +534,9 @@ pub fn build(
             } else {
                 me.repeat -= dt;
                 if c.break_pressed || me.repeat <= 0.0 {
-                    voxels.set(hit.block, AIR);
+                    if voxels.set(hit.block, AIR) {
+                        me.note_built(hit.block, hit.id, AIR);
+                    }
                     me.repeat = 0.22;
                     if let Some(n) = stuff.breaks() {
                         heard.game(n, centre, 0.6, 1.0);
@@ -563,6 +578,7 @@ pub fn build(
             return;
         }
         if voxels.set(at, id) {
+            me.note_built(at, here, id);
             heard.game("place", at.as_vec3() + Vec3::splat(0.5), 0.6, crate::sound::material(id).knock());
             if settings.survival {
                 let s = me.slot;

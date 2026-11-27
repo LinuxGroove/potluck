@@ -1070,7 +1070,8 @@ fn every_base_creation_runs_and_answers_players() {
     scripts.set_pockets(7, true, &[], 0);
     run(&mut scripts, &mut voxels, &mut herd, 2.0);
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
-    for c in base.iter().filter(|c| c.id != "gloomlings") {
+    // everything but the Gloomlings (only near survival players at night) and mods with no bodies
+    for c in base.iter().filter(|c| c.id != "gloomlings" && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -2318,4 +2319,220 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
     run(&mut scripts, &mut voxels, &mut herd, 10.0);
     assert_eq!(count(&herd), 0);
     assert_eq!(scripts.vms["gloomlings"].error, None, "{}", log(&scripts));
+}
+
+const HEARS_BLOCKS: &str = r#"
+local world = require("@potluck/world@0.5")
+for _, e in { "block_placed", "block_broken", "block_used" } do
+	world.on(e, function(player, at, block)
+		print(string.format("%s %s %s %.1f %.1f %.1f", e, player.name, block, at.x, at.y, at.z))
+	end)
+end
+"#;
+
+/// world 0.5: creations hear players place, break and use blocks, from the
+/// host's own player, from Interact (within reach) and from a friend over
+/// the network.
+#[test]
+fn creations_hear_players_place_break_and_use_blocks() {
+    use crate::blocks::{by_name, AIR, PLANKS, STONE, WATER};
+    use crate::game::{Action, Actions};
+    use crate::net::{self, decode, frame_msg, Event, Msg};
+    use crate::player::Me;
+    use bevy::ecs::system::RunSystemOnce;
+    home();
+    let table = by_name("Table").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    scripts.start(&creation(HEARS_BLOCKS), &mut herd).unwrap();
+    let at = IVec3::new(10, 50, 12);
+    scripts.player_block(7, at, AIR, PLANKS);
+    scripts.player_block(7, at, PLANKS, AIR);
+    scripts.player_block(7, at, STONE, WATER);
+    scripts.use_block(7, at, table);
+    // not events: nothing changed, water running in or out, using air, someone who isn't here
+    scripts.player_block(7, at, PLANKS, PLANKS);
+    scripts.player_block(7, at, WATER, AIR);
+    scripts.player_block(7, at, AIR, WATER);
+    scripts.use_block(7, at, AIR);
+    scripts.player_block(9, at, AIR, PLANKS);
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let log = scripts.vms["test"].log.clone();
+    assert_eq!(scripts.vms["test"].error, None, "{log:?}");
+    let heard: Vec<&String> = log.iter().filter(|l| l.contains("block_")).collect();
+    let want = ["block_placed Ada Planks 10.5 50.5 12.5", "block_broken Ada Planks 10.5 50.5 12.5", "block_broken Ada Stone 10.5 50.5 12.5", "block_used Ada Table 10.5 50.5 12.5"];
+    assert_eq!(heard.len(), want.len(), "{heard:?}");
+    for (h, w) in heard.iter().zip(want) {
+        assert!(h.contains(w), "{w}: {heard:?}");
+    }
+
+    // a flood of them waits its turn, 64 a tick, and a few hundred at most wait
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    let count = "local world = require(\"@potluck/world@0.5\")\nlocal n = 0\nworld.on(\"block_placed\", function() n += 1 if n % 64 == 0 then print(\"heard \" .. n) end end)";
+    scripts.start(&creation(count), &mut herd).unwrap();
+    for i in 0..600 {
+        scripts.player_block(7, at + IVec3::X * i, AIR, PLANKS);
+    }
+    scripts.tick(&mut voxels, &mut herd, 0.1);
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("heard 64") && !log.contains("heard 128"), "{log}");
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("heard 512") && !log.contains("heard 576"), "{log}");
+
+    // the host's own player: blocks they built, and Interact on a block near them (not far off)
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken".into(), ..default() }).insert_resource(Me::default());
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&creation(HEARS_BLOCKS), &mut herd).unwrap();
+    });
+    let me = app.world().resource::<Me>().pos.floor().as_ivec3();
+    let (near, far) = (me + IVec3::new(2, 0, 0), me + IVec3::new(40, 0, 0));
+    app.world_mut().resource_mut::<Voxels>().set(near, table);
+    app.world_mut().resource_mut::<Voxels>().set(far, table);
+    let my_id = app.world().resource::<net::Net>().my_id;
+    app.world_mut().resource_mut::<Me>().built.push((me + IVec3::Y * 3, AIR, PLANKS));
+    app.world_mut().resource_mut::<Actions>().0.extend([(my_id, Action::UseBlock(near.to_array())), (my_id, Action::UseBlock(far.to_array()))]);
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert!(app.world().resource::<Me>().built.is_empty(), "the host has heard them");
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        w.resource_scope(|w, mut v: Mut<Voxels>| {
+            let mut h = w.resource_mut::<Herd>();
+            s.tick(&mut v, &mut h, 0.2);
+        })
+    });
+    let log = app.world().resource::<Scripts>().vms["test"].log.join("\n");
+    assert!(log.contains("block_placed Ken Planks"), "{log}");
+    assert_eq!(log.matches("block_used Ken Table").count(), 1, "only the one in reach: {log}");
+    assert!(log.contains(&format!("block_used Ken Table {:.1}", near.x as f32 + 0.5)), "{log}");
+
+    // what goes between devices
+    let m = Msg::Act(Action::UseBlock([1, -2, 3]));
+    let Some(Event::Msg(_, back)) = decode(transport::Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+
+    // a friend building in a hosted world
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken's world".into(), ..Default::default() });
+    app.update();
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&creation(HEARS_BLOCKS), &mut herd).unwrap();
+    });
+    let port = free_port();
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
+    let (tx, rx) = channel();
+    let to_host = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
+    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None })).unwrap();
+    let spot = IVec3::new(world::GREEN.x as i32 + 3, 100, world::GREEN.z as i32 + 3);
+    let (mut welcomed, mut heard) = (false, false);
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(20) && !heard {
+        app.update();
+        std::thread::sleep(Duration::from_millis(10));
+        for w in rx.try_iter() {
+            if let Some(Event::Msg(_, Msg::Welcome { .. })) = net::decode(w) {
+                welcomed = true;
+                to_host.send(net::frame_msg(&Msg::Blocks(vec![(spot.x, spot.y, spot.z, PLANKS)]))).unwrap();
+            }
+        }
+        heard = app.world().resource::<Scripts>().vms["test"].log.iter().any(|l| l.contains("block_placed Drew Planks"));
+    }
+    assert!(welcomed, "Drew's in");
+    assert!(heard, "{:?}", app.world().resource::<Scripts>().vms["test"].log);
+}
+
+/// The Workbench: Interact on any table to make things from what you carry.
+#[test]
+fn a_table_is_a_workbench_for_survival_players() {
+    use crate::blocks::{by_name, PLANKS, STONE};
+    home();
+    let bench = Library::load().list.remove("workbench").expect("the base game has the workbench");
+    let b = |n: &str| by_name(n).unwrap();
+    let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(oak, 2), (glass, 1), (cobble, 2)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&bench, &mut herd).unwrap();
+    let at = IVec3::new(5, 60, 5);
+    let asked = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.panels.get(&pid).and_then(|q| q.front().cloned());
+    let items = |scripts: &Scripts| scripts.shared.lock().unwrap().pockets[&7].items.clone();
+    let mut answer = |scripts: &mut Scripts, voxels: &mut Voxels, herd: &mut Herd, choice: Option<u32>| {
+        let panel = asked(scripts, 7).expect("a question for Ada");
+        scripts.answer(7, panel.ask, choice);
+        run(scripts, voxels, herd, 0.2);
+        asked(scripts, 7)
+    };
+    // anything but a table is just a block
+    scripts.use_block(7, at, STONE);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(asked(&scripts, 7).is_none());
+    scripts.use_block(7, at, table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let panel = asked(&scripts, 7).expect("the table asks what to make");
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm"]);
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
+    assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
+    // it asks again with how it went, so making several is quick
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).expect("asks again");
+    assert!(panel.text.starts_with("Made 4 Planks."), "{}", panel.text);
+    let have = items(&scripts);
+    assert_eq!((have.get(&oak).copied(), have.get(&PLANKS).copied()), (Some(1), Some(4)), "{have:?}");
+    // closing it and using the table again opens it at once
+    assert!(answer(&mut scripts, &mut voxels, &mut herd, None).is_none());
+    scripts.use_block(7, at, table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(asked(&scripts, 7).is_some(), "using the table again asks again");
+    // a choice too long to fit says what it takes in the question
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
+    assert_eq!(panel.choices[1], "1 Lantern", "{:?}", panel.choices);
+    assert!(panel.text.contains("1 Lantern takes 1 Glass and 2 Cobblestone."), "{}", panel.text);
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(1)).unwrap();
+    assert!(panel.text.starts_with("Made 1 Lantern."), "{}", panel.text);
+    let have = items(&scripts);
+    assert_eq!((have.get(&b("Lantern")).copied(), have.get(&glass).copied(), have.get(&cobble).copied()), (Some(1), Some(0), Some(0)), "{have:?}");
+    // one she can't pay for takes nothing
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
+    assert!(panel.text.starts_with("You'll need 1 Oak log and 4 Cobblestone for that."), "{}", panel.text);
+    assert_eq!(items(&scripts).get(&oak).copied(), Some(1));
+    answer(&mut scripts, &mut voxels, &mut herd, None);
+    // in creative there's nothing to make
+    scripts.use_block(8, at, table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let panel = asked(&scripts, 8).unwrap();
+    assert!(panel.text.contains("creative"), "{}", panel.text);
+
+    // every recipe makes what it says, with enough to hand
+    let inputs = [
+        vec!["Oak log", "Birch log", "Sand", "Stone"],
+        vec!["Planks"],
+        vec!["Hay", "Glass", "Cobblestone", "Oak log"],
+        vec!["Planks", "Dirt", "Wheat"],
+    ];
+    for (kind, want) in inputs.iter().enumerate() {
+        scripts.pocket_changes();
+        let carry: Vec<_> = want.iter().map(|n| (b(n), 64)).collect();
+        scripts.set_pockets(7, true, &carry, 1000);
+        scripts.use_block(7, at, table);
+        run(&mut scripts, &mut voxels, &mut herd, 0.2);
+        let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
+        assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
+        for i in 0..panel.choices.len() {
+            let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap();
+            assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
+        }
+        answer(&mut scripts, &mut voxels, &mut herd, None);
+    }
+    assert_eq!(scripts.vms["workbench"].error, None, "{:?}", scripts.vms["workbench"].log);
 }

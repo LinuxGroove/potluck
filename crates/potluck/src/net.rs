@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 10;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -541,10 +541,13 @@ pub fn host_net(
                         let few = list.len() <= 8;
                         for (x, y, z, b) in list {
                             let p = IVec3::new(x, y, z);
+                            let old = voxels.at(p);
                             if few {
-                                block_sound(&mut heard, p, voxels.at(p), b);
+                                block_sound(&mut heard, p, old, b);
                             }
-                            voxels.set(p, b);
+                            if voxels.set(p, b) {
+                                scripts.player_block(id, p, old, b);
+                            }
                         }
                     } else {
                         undo.push((id, list.iter().map(|&(x, y, z, _)| (x, y, z, voxels.at(IVec3::new(x, y, z)))).collect()));
