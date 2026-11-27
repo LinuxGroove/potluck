@@ -1,6 +1,7 @@
 //! The base game's block textures, drawn from code at 32 px: albedo, a normal
 //! map from each texture's height, and glow. They go into one atlas with its
-//! own mip levels, made tile by tile so neighbours never bleed together.
+//! own mip levels, made tile by tile so neighbours never bleed together, each
+//! tile in a gutter of itself wrapped round (see `GUTTER`).
 //!
 //! Blocks baked by `tools/blocks.py` (in `assets/blocks`, built in by
 //! build.rs) take the place of the drawn ones, with their own normal,
@@ -21,6 +22,12 @@ use crate::noise::{seed_of, tfbm, tnoise, Rng};
 pub const TILE: usize = 32;
 pub const GRID: usize = 8; // 8 x 8 tiles
 pub const SIZE: usize = TILE * GRID;
+/// Each tile sits in a cell with a gutter a tile's width over this all round,
+/// filled with the tile wrapped round. Multisampling shades a pixel that only
+/// touches a face's edge as if at the pixel's middle, a little past the face,
+/// and there it finds more of the same texture rather than the next tile
+/// (which showed as seams along block edges and specks on far hills).
+const GUTTER: usize = 8;
 /// How rough drawn blocks are (0 is a mirror).
 const ROUGH: f32 = 0.92;
 
@@ -52,13 +59,12 @@ impl BlockAtlas {
         *self.tiles.get(name).unwrap_or(&0)
     }
 
-    /// The UV rectangle of a tile: `(u0, v0, u1, v1)`.
+    /// The UV rectangle of a tile: `(u0, v0, u1, v1)`, inside its gutter.
     pub fn uv(tile: u16) -> [f32; 4] {
         let (tx, ty) = ((tile as usize % GRID) as f32, (tile as usize / GRID) as f32);
         let s = 1.0 / GRID as f32;
-        // a hair inside the tile, so the edge texel never samples the next tile
-        let e = 0.02 / SIZE as f32;
-        [tx * s + e, ty * s + e, (tx + 1.0) * s - e, (ty + 1.0) * s - e]
+        let g = s / (GUTTER + 2) as f32;
+        [tx * s + g, ty * s + g, (tx + 1.0) * s - g, (ty + 1.0) * s - g]
     }
 }
 
@@ -113,7 +119,7 @@ fn make_lum(name: &str, bump: f32, mut f: impl FnMut(f32, f32, &mut Rng) -> [f32
 const GRASS: &[u32] = &[0x2a5a24, 0x376f2a, 0x4a8731, 0x5f9c39, 0x78b146];
 const DIRT: &[u32] = &[0x4a3020, 0x664330, 0x7d563b, 0x936948];
 const STONE: &[u32] = &[0x55595f, 0x6b7077, 0x80868c, 0x979ca1, 0xaeb2b5];
-const SAND: &[u32] = &[0xc9b27a, 0xd9c38a, 0xe6d29c, 0xf0e0b0];
+const SAND: &[u32] = &[0xb19d6b, 0xbfac7a, 0xcab989, 0xd3c59b];
 const GRAVEL: &[u32] = &[0x6c6a66, 0x86817a, 0x9e978d, 0xb8b0a3];
 const BARK: &[u32] = &[0x3b2a1c, 0x4e3824, 0x634830, 0x7a5a3c];
 const RING: &[u32] = &[0x9c7a4c, 0xb48f5a, 0xc9a46b, 0xdcb97e];
@@ -317,17 +323,19 @@ fn normal_of(t: &Tex) -> Vec<[f32; 4]> {
 }
 
 /// Builds one atlas image from tiles `full` px square, with each tile's
-/// mips made from that tile alone, down to 4 px.
+/// mips made from that tile alone, down to 8 px (whose gutter is one texel).
 fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool) -> Image {
-    let mips = full.trailing_zeros() - 1;
+    let mips = full.trailing_zeros() - 2;
     let mut data = Vec::new();
     for level in 0..mips {
         let tile = full >> level;
-        let size = full * GRID >> level;
+        let pad = tile / GUTTER;
+        let cell = tile + 2 * pad;
+        let size = cell * GRID;
         let mut img = vec![0u8; size * size * 4];
+        let mut small = vec![[0u8; 4]; tile * tile];
+        let step = 1 << level;
         for (i, src) in tiles.iter().enumerate() {
-            let (ox, oy) = ((i % GRID) * tile, (i / GRID) * tile);
-            let step = 1 << level;
             for y in 0..tile {
                 for x in 0..tile {
                     // average the block of full-size texels, weighting colour by alpha
@@ -344,20 +352,28 @@ fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool) -> Image {
                             w += 1.0;
                         }
                     }
-                    let o = ((oy + y) * size + ox + x) * 4;
+                    let o = &mut small[y * tile + x];
                     for j in 0..3 {
                         let v = if a > 0.0 { c[j] / a } else { 0.0 };
                         let v = if srgb { v.powf(1.0 / 2.2) } else { v };
-                        img[o + j] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+                        o[j] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
                     }
-                    img[o + 3] = ((a / w) * 255.0).round() as u8;
+                    o[3] = ((a / w) * 255.0).round() as u8;
+                }
+            }
+            let (ox, oy) = ((i % GRID) * cell, (i / GRID) * cell);
+            for y in 0..cell {
+                for x in 0..cell {
+                    let p = small[((y + tile - pad) % tile) * tile + (x + tile - pad) % tile];
+                    let o = ((oy + y) * size + ox + x) * 4;
+                    img[o..o + 4].copy_from_slice(&p);
                 }
             }
         }
         data.extend(img);
     }
     let format = if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm };
-    let size = (full * GRID) as u32;
+    let size = ((full + 2 * (full / GUTTER)) * GRID) as u32;
     let mut image = Image::new_uninit(Extent3d { width: size, height: size, depth_or_array_layers: 1 }, TextureDimension::D2, format, RenderAssetUsages::RENDER_WORLD);
     image.texture_descriptor.mip_level_count = mips;
     image.data = Some(data);
@@ -455,8 +471,8 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         info!("Block textures at {full} px ({} baked)", drawn.iter().filter(|(n, t)| !t.glow && baked.contains_key(*n)).count());
     }
     // Glowing tiles go at the far end of the atlas with empty tiles beside
-    // them: at a distance, a face's edge can sample its neighbour in the
-    // atlas, and a lantern's glow there shows as sparks on far hills.
+    // them: past the smallest mip, a far face's edge can still reach its
+    // neighbour in the atlas, and a lantern's glow there shows as sparks.
     let mut slots: Vec<Option<usize>> = vec![None; GRID * GRID];
     let (mut next, mut far) = (0, GRID * GRID - 1);
     for (i, (_, t)) in drawn.iter().enumerate() {
