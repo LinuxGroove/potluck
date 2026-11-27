@@ -529,16 +529,17 @@ fn sandstone_bricks() -> Tex {
 
 /// Fluted stone: shallow grooves running up, each with a lit edge.
 fn flutes(x: f32, y: f32, s: u32) -> Px {
-    let u = (x - 12.0).rem_euclid(5.0);
-    let m = fbm(x, y, 8, 2, s);
+    let u = (x - 12.0).rem_euclid(8.0);
+    let m = fbm(x, y, 4, 3, s);
     let groove = match u as i32 {
-        0 => 0.18,
-        1 => -0.05,
-        2 => -0.15,
-        3 => -0.08,
-        _ => 0.05,
+        0 => 0.1,
+        1 | 2 => 0.04,
+        3 => -0.04,
+        4 => -0.08,
+        5 => -0.05,
+        _ => 0.0,
     };
-    px(0, 0.6 + groove + 0.12 * (m - 0.5), 0.6 + groove * 1.5, 0.6)
+    px(0, 0.68 + groove + 0.14 * (m - 0.5), 0.6 + groove * 2.5, 0.55)
 }
 
 /// A column from the side: capital, fluted shaft, base.

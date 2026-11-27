@@ -297,12 +297,13 @@ fn villa(w: &mut Voxels, ground: &dyn Fn(i32, i32) -> i32) {
     for z in (hz0..=hz1).step_by(3) {
         fill(w, cx..=cx, fy..=top, z..=z, COLUMN);
     }
-    // in the colonnade: a table with a candle, stools, pots and a barrel
+    // in the colonnade, before the library's door: a table with a candle,
+    // stools, pots and a barrel
     let mid = (hz0 + hz1) / 2;
-    w.put(cx + 2, fy, mid - 3, TABLE);
-    w.put(cx + 2, fy + 1, mid - 3, CANDLE);
-    w.put(cx + 2, fy, mid - 2, STOOL);
-    w.put(cx + 2, fy, mid - 4, STOOL);
+    w.put(cx + 2, fy, mid, TABLE);
+    w.put(cx + 2, fy + 1, mid, CANDLE);
+    w.put(cx + 2, fy, mid - 1, STOOL);
+    w.put(cx + 2, fy, mid + 1, STOOL);
     for z in [hz0 + 1, hz1 - 1] {
         w.put(cx + 1, fy, z, POT);
         w.put(cx + 3, fy, z, POT);

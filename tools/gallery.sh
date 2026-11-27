@@ -24,7 +24,7 @@ views="1-rooftop-sunset:58,33.6,212,80,-6:0.735
 2-misty-forest:200,-1.7,142,0,4:0.3
 3-camp-meadow:291,-1.7,328,90,2:0.47
 4-camp-above:300,-44,360,40,-22:0.72
-5-balcony-dusk:45.5,27.4,206,75,2:0.76
+5-balcony-dusk:46.4,27.4,207.2,82,-3:0.745
 6-library:61,27.6,206,90,4:0.6
 7-farm-night:241,-1.7,309,90,8:0.93"
 for tier in $tiers; do

@@ -99,6 +99,8 @@ fn main() {
         let screen = opt("screen");
         app.insert_resource(Shot { path, after, at, tod, screen, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
+        // no outline round the block in the crosshair
+        app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
     }
     app.run();
 }
