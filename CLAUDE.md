@@ -12,6 +12,7 @@ cargo run --bin potluck --features raytracing -- --play --lighting=ultra   # Ult
 cargo run --bin potluck-server -- --port=47126 [--tls-port=47443 --cert=fullchain.pem --key=privkey.pem]
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1280x720x24" target/debug/potluck --demo=/tmp/demo --size=1280x720   # scripted play-through, recorded (about 1.5 s a frame on 4 CPUs)
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1600x900x24" target/debug/potluck --shot=/tmp/a.png --after=8 [--at=x,y,z,yaw,pitch] [--time=0.8] [--screen=play|inside|tweak|pause|title] [--lighting=low|medium|high|ultra] [--no-vsync]   # logs the frame rate too
+tools/tiers.sh [out=/tmp/potluck-tiers] [size=2560x1440] [binary]   # every lighting tier from four places, with frame rates (on a real graphics card)
 tools/server-snap.sh build/potluck-server && (cd build/potluck-server && snapcraft pack)   # the server snap
 CYCLES_DEVICE=OPTIX python tools/blocks.py -- assets/blocks 256 [only=grass_top,dirt]   # bake block textures (bpy wheel in a venv; drop CYCLES_DEVICE without a GPU)
 ```

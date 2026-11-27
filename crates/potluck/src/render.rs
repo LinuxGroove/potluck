@@ -93,7 +93,9 @@ impl Raytraced {
         if Tier::of(&settings.lighting) == Tier::Ultra {
             let need = bevy::solari::SolariPlugins::required_wgpu_features();
             let can = device.is_some_and(|d| d.features().contains(need));
-            if !can {
+            if can {
+                info!("Ultra lighting ray traced");
+            } else {
                 info!("Ultra lighting without ray tracing: this graphics card can't ray trace");
             }
             return Raytraced(can);
