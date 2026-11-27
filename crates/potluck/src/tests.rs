@@ -779,6 +779,42 @@ fn younger_players_share_with_friends_and_play_where_its_for_all_ages() {
     assert!(acts(&focus, &settings).iter().any(|a| matches!(a, Act::UnlockParents(_))), "locked until the PIN");
 }
 
+/// The first time anything would go online, the game asks who's playing,
+/// then does what the player picked; it never asks again.
+#[test]
+fn the_age_question_comes_once_before_going_online() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{Act, Acts, Focus, Screen};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    let mut run = |app: &mut App, act: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(act);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+        // what an act asks for runs on the next frame
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+
+    // playing alone asks nothing
+    run(&mut app, Act::OpenSettings);
+    assert!(!matches!(app.world().resource::<Focus>().screen, Screen::Age(_)), "nothing online yet");
+
+    // the server list waits for the answer, then opens
+    run(&mut app, Act::OpenServers);
+    assert!(matches!(&app.world().resource::<Focus>().screen, Screen::Age(next) if **next == Act::OpenServers), "asked first");
+    run(&mut app, Act::SetAge(true));
+    let settings = app.world().resource::<Settings>();
+    assert!(settings.age_asked && settings.young);
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::Servers), "then the servers");
+
+    // and not again
+    run(&mut app, Act::OpenDevices);
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::Devices), "asked once");
+}
+
 /// `@potluck/game`: a creation keeps a board of each player's best and
 /// sends players on to servers this one links to, and nothing else.
 #[test]
