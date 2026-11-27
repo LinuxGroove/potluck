@@ -9,7 +9,8 @@
 # Defaults: /tmp/potluck-gallery, 2560x1440, target/release/potluck (build it
 # with `cargo build --release --bin potluck --features raytracing`), and
 # "low medium high ultra". Runs in a scratch world. Writes <view>-<tier>.png
-# and fps.txt. A height of 0 or less in --at is that far above the ground.
+# and fps.txt (with each one's RAM and graphics memory). A height of 0 or
+# less in --at is that far above the ground.
 set -eu
 out=${1:-/tmp/potluck-gallery}
 size=${2:-2560x1440}
@@ -33,6 +34,8 @@ for tier in $tiers; do
         "$bin" --shot="$out/$name-$tier.png" --after=14 --at="$at" --time="$tod" --size="$size" --lighting="$tier" --screen=play --no-vsync > "$log" 2>&1 || true
         fps=$(grep -o '[0-9]* frames a second' "$log" | head -1)
         rt=$(grep -o 'lighting ray traced\|without ray tracing' "$log" | head -1)
-        echo "$name $tier: ${fps:-no frame rate} ${rt}" | tee -a "$out/fps.txt"
+        # what it held, from the memory report it logs on quitting
+        mem=$(grep -o 'Memory: .*' "$log" | tail -1 | sed -E 's/^Memory: RAM ([0-9]+ MB).*GPU ([0-9]+ MB) in [0-9]+ allocations \(([0-9]+ MB) reserved.*/RAM \1, GPU \2 (\3 reserved)/')
+        echo "$name $tier: ${fps:-no frame rate} ${rt}${mem:+, $mem}" | tee -a "$out/fps.txt"
     done
 done

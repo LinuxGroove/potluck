@@ -954,6 +954,27 @@ pub struct ChunkEntities {
     pub meshed: usize,
     /// The detail each chunk with grass, leaves or plants was meshed with.
     pub detail: HashMap<IVec3, Detail>,
+    /// Each chunk's layers' sizes on the graphics card, for the memory
+    /// report: vertices, and bytes of vertices, indices and wind targets.
+    pub sizes: HashMap<IVec3, [[u64; 4]; LAYERS]>,
+}
+
+/// What each layer of a chunk holds, for the memory report.
+pub const LAYER_NAMES: [&str; LAYERS] = ["solid blocks", "leaves and glass", "water", "plants", "glowing blocks", "ground cover", "under water"];
+
+impl ChunkEntities {
+    /// Every chunk's sizes added up, by layer (see `sizes`).
+    pub fn totals(&self) -> [[u64; 4]; LAYERS] {
+        let mut out = [[0; 4]; LAYERS];
+        for layers in self.sizes.values() {
+            for (o, l) in out.iter_mut().zip(layers) {
+                for k in 0..4 {
+                    o[k] += l[k];
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Component)]
@@ -1026,6 +1047,7 @@ pub fn remesh(
         } else {
             chunks.detail.remove(&c);
         }
+        let mut sizes = [[0u64; 4]; LAYERS];
         let slot = chunks.map.entry(c).or_insert([None; LAYERS]);
         for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
@@ -1040,6 +1062,13 @@ pub fn remesh(
             }
             let mesh = data.into_mesh(rt.0 && !apart);
             let sways = mesh.has_morph_targets();
+            let verts = mesh.count_vertices() as u64;
+            sizes[i] = [
+                verts,
+                verts * mesh.get_vertex_size(),
+                mesh.indices().map_or(0, |x| x.len() as u64 * 4),
+                mesh.morph_targets().map_or(0, |t| (t.len() * std::mem::size_of::<MorphAttributes>()) as u64),
+            ];
             let mut e = commands.spawn((
                 // water and plants stay out of the ray traced scene, so they keep their colours
                 Mesh3d(meshes.add(mesh)),
@@ -1083,5 +1112,6 @@ pub fn remesh(
             }
             slot[i] = Some(e.id());
         }
+        chunks.sizes.insert(c, sizes);
     }
 }

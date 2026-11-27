@@ -910,6 +910,7 @@ pub fn client_net(
                         }
                     }
                     chunks.meshed = 0;
+                    chunks.sizes.clear();
                     me.respawn(&voxels, None);
                     info.in_world = true;
                     focus.go(Screen::Playing);

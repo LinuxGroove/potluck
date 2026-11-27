@@ -22,18 +22,30 @@ const MB: f64 = 1024.0 * 1024.0;
 /// How many of the largest kinds of graphics allocation the full report lists.
 const LISTED: usize = 24;
 
-/// The process's resident memory now and at its peak, in bytes.
+/// The process's resident memory now and at its peak, in bytes, and what
+/// it's made of now: its own heap and stacks, files mapped in (the program
+/// and its libraries), and shared memory (where lavapipe keeps its
+/// "graphics" memory).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Process {
     pub resident: u64,
     pub peak: u64,
+    pub anon: u64,
+    pub file: u64,
+    pub shared: u64,
 }
 
 /// Reads /proc/self/status (Linux only).
 pub fn process() -> Option<Process> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
     let kb = |key: &str| s.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()).map(|k| k * 1024);
-    Some(Process { resident: kb("VmRSS:")?, peak: kb("VmHWM:").unwrap_or(0) })
+    Some(Process {
+        resident: kb("VmRSS:")?,
+        peak: kb("VmHWM:").unwrap_or(0),
+        anon: kb("RssAnon:").unwrap_or(0),
+        file: kb("RssFile:").unwrap_or(0),
+        shared: kb("RssShmem:").unwrap_or(0),
+    })
 }
 
 /// What the graphics driver holds for this process, by memory region
@@ -135,7 +147,7 @@ fn mb(b: u64) -> String {
 pub fn summary(device: Option<&RenderDevice>) -> String {
     let mut s = String::from("Memory:");
     if let Some(p) = process() {
-        s += &format!(" RAM {} (peak {})", mb(p.resident), mb(p.peak));
+        s += &format!(" RAM {} (peak {}; heap {}, files {}, shared {})", mb(p.resident), mb(p.peak), mb(p.anon), mb(p.file), mb(p.shared));
     }
     if let Some(g) = device.and_then(gpu) {
         s += &format!(", GPU {} in {} allocations ({} reserved in {} blocks)", mb(g.allocated), g.allocations, mb(g.reserved), g.blocks.len());
@@ -152,7 +164,7 @@ pub fn summary(device: Option<&RenderDevice>) -> String {
 
 /// The summary, then the largest kinds of graphics allocation and what the
 /// world and creations hold in RAM.
-pub fn report(device: Option<&RenderDevice>, extra: &[(&str, u64)]) {
+pub fn report(device: Option<&RenderDevice>, extra: &[(&str, u64)], chunks: Option<&crate::mesh::ChunkEntities>) {
     info!("{}", summary(device));
     if let Some(g) = device.and_then(gpu) {
         for (name, count, bytes) in g.by_name.iter().take(LISTED) {
@@ -165,6 +177,23 @@ pub fn report(device: Option<&RenderDevice>, extra: &[(&str, u64)]) {
         // blocks part used are memory the card gives the game and nobody uses
         let blocks: Vec<String> = g.blocks.iter().map(|(size, used)| format!("{} ({:.0}% used)", mb(*size), 100.0 * *used as f64 / (*size).max(1) as f64)).collect();
         info!("GPU memory blocks: {}", blocks.join(", "));
+    }
+    if let Some(c) = chunks {
+        let t = c.totals();
+        let sum = |k: usize| t.iter().map(|l| l[k]).sum::<u64>();
+        info!(
+            "Chunk meshes: {} chunks, {:.1} M vertices, {:.1} MB of vertices, {:.1} MB of indices, {:.1} MB of wind targets",
+            c.sizes.len(),
+            sum(0) as f64 / 1e6,
+            sum(1) as f64 / MB,
+            sum(2) as f64 / MB,
+            sum(3) as f64 / MB
+        );
+        for (name, l) in crate::mesh::LAYER_NAMES.iter().zip(t) {
+            if l[0] > 0 {
+                info!("Chunk meshes: {:>7.1} MB  {:.2} M vertices of {name} ({:.0} B each){}", (l[1] + l[2] + l[3]) as f64 / MB, l[0] as f64 / 1e6, l[1] as f64 / l[0] as f64, if l[3] > 0 { format!(", {:.1} MB of it wind", l[3] as f64 / MB) } else { String::new() });
+            }
+        }
     }
     for (what, bytes) in extra {
         info!("RAM: {:>7.1} MB  {what}", *bytes as f64 / MB);
@@ -201,6 +230,7 @@ fn at_exit(
     device: Option<Res<RenderDevice>>,
     voxels: Option<Res<crate::world::Voxels>>,
     scripts: Option<Res<crate::script::Scripts>>,
+    chunks: Option<Res<crate::mesh::ChunkEntities>>,
     mut done: Local<bool>,
 ) {
     if exits.read().count() == 0 || *done {
@@ -214,7 +244,7 @@ fn at_exit(
     if let Some(s) = scripts {
         extra.push(("creations' Luau", s.memory() as u64));
     }
-    report(device.as_deref(), &extra);
+    report(device.as_deref(), &extra, chunks.as_deref());
 }
 
 #[cfg(test)]
