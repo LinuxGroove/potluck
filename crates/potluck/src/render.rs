@@ -341,7 +341,9 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
             commands.entity(cam).insert(ContactShadows::default());
         }
         if on("haze") {
-            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 32 } else { 16 } });
+            // POTLUCK_HAZE_STEPS=n tries another number of steps, for measuring
+            let steps = std::env::var("POTLUCK_HAZE_STEPS").ok().and_then(|n| n.parse().ok()).unwrap_or(if ultra { 32 } else { 16 });
+            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: steps });
             commands.spawn((
                 FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
                 Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
@@ -398,7 +400,8 @@ pub fn sky(
     time: Res<Time>,
     mut clock: ResMut<Clock>,
     settings: Res<Settings>,
-    mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
+    mut commands: Commands,
+    mut sun: Query<(Entity, &mut Transform, &mut DirectionalLight, Has<VolumetricLight>), With<Sun>>,
     mut cam: Query<(&mut Exposure, &mut DistanceFog, &mut Projection, &mut bevy::render::view::ColorGrading), With<MainCamera>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
@@ -433,7 +436,18 @@ pub fn sky(
     let medium = Tier::of(&settings.lighting) >= Tier::Medium;
     // how near the horizon the sun is, 1 at sunset
     let low = 1.0 - crate::noise::smooth(0.02, 0.4, up);
-    if let Ok((mut t, mut l)) = sun.single_mut() {
+    // the haze only shows in sunlight, so it thins away as the moon takes
+    // over and isn't drawn at all in the dead of night (on High that's a
+    // sixth of the frame)
+    let haze_lit = crate::noise::smooth(-0.3, -0.12, up);
+    if let Ok((e, mut t, mut l, shafts)) = sun.single_mut() {
+        if !haze.is_empty() && shafts != (haze_lit > 0.0) {
+            if shafts {
+                commands.entity(e).remove::<VolumetricLight>();
+            } else {
+                commands.entity(e).insert(VolumetricLight);
+            }
+        }
         *t = Transform::from_translation(Vec3::ZERO).looking_to(-dir, Vec3::Y);
         if up > -0.05 {
             // the sun fades out just before the moon takes over, so neither jumps
@@ -457,7 +471,7 @@ pub fn sky(
         // the haze sits on the ground round the player, thickest at dawn and dusk
         t.translation = Vec3::new(me.pos.x, (me.pos.y - 20.0).max(0.0) + HAZE.y * 0.5, me.pos.z);
         let low_sun = 1.0 - (up.abs() * 2.5).min(1.0);
-        v.density_factor = 0.0025 + 0.0055 * low_sun;
+        v.density_factor = (0.0025 + 0.0055 * low_sun) * haze_lit;
     }
     if let Ok((mut ex, mut fog, mut proj, mut grade)) = cam.single_mut() {
         // the day's grade: golden and a little richer as the sun goes down,
