@@ -132,7 +132,7 @@ macro_rules! base {
     };
 }
 
-pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau"];
+pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau", "storage" + "test.luau"];
 
 pub const POTLUCK: &str = "potluck";
 

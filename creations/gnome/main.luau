@@ -63,7 +63,7 @@ local TOPICS = {
 -- for survival players, in place of the last
 local GETTING_BY = {
 	"Getting by",
-	"Break blocks to gather them. Any table is a workbench: Interact on it to make planks, lights, tools, even a hot air balloon.\n\nInteract on grass to dig farmland, and plant wheat or carrots. Keep food with you, and a lantern by your door: Gloomlings can't bear light.",
+	"Break blocks to gather them. Any table is a workbench: Interact on it to make planks, lights, tools, even a hot air balloon. Crates keep your things.\n\nInteract on grass to dig farmland, and plant wheat or carrots. Keep food with you, and a lantern by your door: Gloomlings can't bear light.",
 }
 
 local function ask(gnome, player)
