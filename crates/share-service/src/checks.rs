@@ -29,6 +29,9 @@ pub struct Toml {
     /// Sounds of its own (`@potluck/sound` 0.2): `[sounds.moo]`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub sounds: BTreeMap<String, toml::Value>,
+    /// Blocks of its own (world 0.12): `[blocks.marble]`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub blocks: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -192,9 +195,97 @@ pub fn sound_problems(sounds: &BTreeMap<String, toml::Value>) -> Vec<String> {
     out
 }
 
+/// The most blocks a creation can make, and the most boxes in one (the
+/// game's `made`).
+pub const MAX_BLOCKS: usize = 16;
+const MAX_BLOCK_BOXES: usize = 16;
+
+/// A block's picture: rows of letters, as one string of lines or a list.
+fn picture_rows(v: &toml::Value) -> Option<Vec<String>> {
+    match v {
+        toml::Value::String(s) => Some(s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()),
+        toml::Value::Array(a) => a.iter().map(|l| l.as_str().map(|l| l.trim().to_string())).collect(),
+        _ => None,
+    }
+}
+
+/// What players see a block called: its `name`, or its key as the game
+/// reads it (`red_bricks` is "Red bricks").
+pub fn block_name(key: &str, b: &toml::Value) -> String {
+    if let Some(n) = b.get("name").and_then(|n| n.as_str()) {
+        return n.to_string();
+    }
+    let words = key.replace('_', " ");
+    let mut c = words.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// What's wrong with a creation's own blocks, read as the game reads them
+/// (the game says more when it starts one).
+pub fn block_problems(blocks: &BTreeMap<String, toml::Value>) -> Vec<String> {
+    let mut out = vec![];
+    if blocks.len() > MAX_BLOCKS {
+        out.push(format!("it makes {} blocks, and the most is {MAX_BLOCKS}", blocks.len()));
+    }
+    for (key, v) in blocks {
+        if key.is_empty() || key.len() > 24 || !key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            out.push(format!("a block's name in potluck.toml is 1 to 24 small letters, numbers or _ (not \"{key}\")"));
+            continue;
+        }
+        let what = format!("block {key}");
+        let Some(t) = v.as_table() else {
+            out.push(format!("{what} is a table, [blocks.{key}]"));
+            continue;
+        };
+        let colors: Vec<char> = match t.get("colors").and_then(|c| c.as_table()) {
+            Some(c) => {
+                for (letter, hex) in c {
+                    let h = hex.as_str().and_then(|h| h.strip_prefix('#')).unwrap_or("");
+                    if letter.chars().count() != 1 || letter == "." || !(h.len() == 3 || h.len() == 6) || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+                        out.push(format!("{what}'s colors are one letter each, and a colour like \"#c86432\""));
+                        break;
+                    }
+                }
+                c.keys().filter_map(|k| k.chars().next()).collect()
+            }
+            None => {
+                out.push(format!("{what} needs colors, a colour for each letter in its pictures"));
+                continue;
+            }
+        };
+        let faces: Vec<&str> = ["picture", "top", "side", "bottom"].into_iter().filter(|f| t.contains_key(*f)).collect();
+        if !faces.contains(&"picture") && faces.len() < 3 {
+            out.push(format!("{what} needs a picture (or a top, a side and a bottom)"));
+        }
+        for face in faces {
+            let Some(rows) = picture_rows(&t[face]) else {
+                out.push(format!("{what}'s {face} is rows of letters"));
+                continue;
+            };
+            let n = rows.len();
+            if ![8, 16, 32, 64].contains(&n) || rows.iter().any(|r| r.chars().count() != n) {
+                out.push(format!("{what}'s {face} isn't square, 8, 16, 32 or 64 pixels across"));
+            } else if let Some(c) = rows.iter().flat_map(|r| r.chars()).find(|c| *c != '.' && !colors.contains(c)) {
+                out.push(format!("{what}'s {face} uses \"{c}\", which colors doesn't give a colour"));
+            }
+        }
+        if let Some(b) = t.get("boxes") {
+            let ok = b.as_array().is_some_and(|a| {
+                !a.is_empty()
+                    && a.len() <= MAX_BLOCK_BOXES
+                    && a.iter().all(|b| b.as_array().is_some_and(|n| n.len() == 6 && n.iter().all(|v| v.as_integer().is_some_and(|v| (0..=16).contains(&v)))))
+            });
+            if !ok {
+                out.push(format!("{what}'s boxes are 1 to {MAX_BLOCK_BOXES} lists of six sixteenths, [x, y, z, x, y, z]"));
+            }
+        }
+    }
+    out
+}
+
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.11"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.1"), ("test", "0.2")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.12"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.1"), ("test", "0.2")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -465,6 +556,15 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         });
     }
 
+    // Its own blocks (world 0.12)
+    if let Some(m) = manifest.as_ref().filter(|m| !m.blocks.is_empty()) {
+        let problems = block_problems(&m.blocks);
+        out.push(match problems.is_empty() {
+            true => Check::new("Blocks", "pass", format!("makes {} block{} of its own", m.blocks.len(), if m.blocks.len() == 1 { "" } else { "s" })),
+            false => Check::new("Blocks", "fail", problems.join("; ")),
+        });
+    }
+
     // Its Blockbench models (world 0.11), read as the game reads them
     let models: Vec<_> = files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).collect();
     if !models.is_empty() {
@@ -513,6 +613,15 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
             shown.extend(words.find(&m.by));
         }
         let mut in_code = Vec::new();
+        // what players see its blocks called
+        if let Some(m) = &manifest {
+            for (key, b) in &m.blocks {
+                in_code.extend(words.find(key));
+                if let Some(n) = b.get("name").and_then(|n| n.as_str()) {
+                    in_code.extend(words.find(n));
+                }
+            }
+        }
         for (name, text) in files {
             let t = if name.ends_with(".luau") || name.ends_with(".lua") {
                 strings_in(text)
@@ -622,6 +731,36 @@ mod tests {
         let many: Vec<String> = (0..70).map(|_| cube.to_string()).collect();
         assert_eq!(find(&with(&format!(r#"{{"elements": [{}]}}"#, many.join(","))), "Models").result, "warn");
         assert_eq!(model_cubes(&format!(r#"{{"elements": [{cube}, {{"name": "x", "from": [0, 0, 0], "to": [1, 1, 1], "visibility": false}}]}}"#)), Ok(1));
+    }
+
+    #[test]
+    fn a_creations_own_blocks_are_checked_and_their_names_read() {
+        let words = Words::parse("grumble\n");
+        let with = |blocks: &str| {
+            let mut f = creation("local world = require(\"@potluck/world@0.12\")\n");
+            let toml = f["potluck.toml"].replace("[needs]", &format!("{blocks}\n[needs]"));
+            f.insert("potluck.toml".into(), toml);
+            let (_, checks) = run(&f, &words, &|_| false);
+            checks
+        };
+        let find = |checks: &[Check], name: &str| checks.iter().find(|c| c.name == name).cloned().unwrap_or_else(|| panic!("a {name} check: {checks:?}"));
+        let eight = format!("picture = [{}]", vec!["\"aaaaaaaa\""; 8].join(", "));
+        let good = with(&format!("[blocks.marble]\ncolors = {{ a = \"#f0ece4\" }}\n{eight}\n[blocks.slab]\nboxes = [[0, 0, 0, 16, 8, 16]]\ncolors = {{ a = \"#fff\" }}\n{eight}\n"));
+        let b = find(&good, "Blocks");
+        assert_eq!((b.result.as_str(), b.note.as_str()), ("pass", "makes 2 blocks of its own"), "{b:?}");
+        assert_eq!(find(&good, "Words").result, "pass");
+        assert_eq!(find(&with(&format!("[blocks.marble]\nname = \"Grumble stone\"\ncolors = {{ a = \"#fff\" }}\n{eight}\n")), "Words").result, "warn", "what players see it called is read");
+        for bad in [
+            format!("[blocks.Marble]\ncolors = {{ a = \"#fff\" }}\n{eight}"),
+            format!("[blocks.marble]\n{eight}"),
+            format!("[blocks.marble]\ncolors = {{ a = \"white\" }}\n{eight}"),
+            format!("[blocks.marble]\ncolors = {{ b = \"#fff\" }}\n{eight}"),
+            "[blocks.marble]\ncolors = { a = \"#fff\" }\npicture = [\"aaa\"]".to_string(),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\ntop = [\"aaaaaaaa\"]"),
+            format!("[blocks.marble]\nboxes = [[0, 0, 0, 16, 8]]\ncolors = {{ a = \"#fff\" }}\n{eight}"),
+        ] {
+            assert_eq!(find(&with(&bad), "Blocks").result, "fail", "{bad}");
+        }
     }
 
     #[test]

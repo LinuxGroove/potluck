@@ -1,9 +1,16 @@
 //! The base game's blocks: what each looks like and how it behaves.
 //!
 //! Block ids are bytes, stored in chunks and sent over the network, so never
-//! renumber one; add new blocks at the end.
+//! renumber one; add new blocks at the end. Ids from `FIRST_MADE` up are
+//! blocks creations made (`made`), given out by each world.
+
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub type BlockId = u8;
+
+/// Blocks creations make (`[blocks.marble]` in potluck.toml) take ids from
+/// here up, as their creations first run in a world.
+pub const FIRST_MADE: BlockId = 128;
 
 pub const AIR: BlockId = 0;
 pub const GRASS: BlockId = 1;
@@ -312,7 +319,37 @@ pub static BLOCKS: &[Block] = &[
     m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
 ];
 
+/// The blocks creations made, by id less `FIRST_MADE`. Only `set_made`
+/// stores here, and only blocks it leaked, which are never freed; looking
+/// one up is one load, as meshing does it for every block.
+static MADE: [AtomicPtr<Block>; 128] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 128];
+
+/// A made block's id that no creation here has given a block (a guest's
+/// copy of a world before the host's list comes).
+static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false, item: false };
+
+/// Gives a made block's id its block, or takes it away (`made` only).
+pub(crate) fn set_made(id: BlockId, b: Option<&'static Block>) {
+    if id >= FIRST_MADE {
+        let p = b.map(|b| b as *const Block as *mut Block).unwrap_or(std::ptr::null_mut());
+        MADE[(id - FIRST_MADE) as usize].store(p, Ordering::Release);
+    }
+}
+
+/// The block a creation made with this id, if one did.
+pub fn made(id: BlockId) -> Option<&'static Block> {
+    if id < FIRST_MADE {
+        return None;
+    }
+    let p = MADE[(id - FIRST_MADE) as usize].load(Ordering::Acquire);
+    // SAFETY: `set_made` only stores pointers to leaked blocks, never freed
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
 pub fn block(id: BlockId) -> &'static Block {
+    if id >= FIRST_MADE {
+        return made(id).unwrap_or(&UNKNOWN);
+    }
     BLOCKS.get(id as usize).unwrap_or(&BLOCKS[0])
 }
 
@@ -342,9 +379,17 @@ pub const STARTER_HOTBAR: [BlockId; 9] =
 
 /// Looks a block up by its name (as creations write it), ignoring case and
 /// spaces: "mossy brick", "Mossy_Brick" and "mossybrick" all match.
+/// Blocks creations made are found after the game's own.
 pub fn by_name(name: &str) -> Option<BlockId> {
-    let key: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
-    BLOCKS.iter().position(|b| {
-        b.name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase() == key
-    }).map(|i| i as BlockId)
+    let key = squash(name);
+    BLOCKS
+        .iter()
+        .position(|b| squash(b.name) == key)
+        .map(|i| i as BlockId)
+        .or_else(|| (FIRST_MADE..=BlockId::MAX).find(|&id| made(id).is_some_and(|b| squash(b.name) == key)))
+}
+
+/// A name as `by_name` compares it: letters and digits, lowercase.
+pub fn squash(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
 }

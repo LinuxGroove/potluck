@@ -2807,10 +2807,11 @@ fn a_table_is_a_workbench_for_survival_players() {
     assert!(panel.text.contains("creative"), "{}", panel.text);
 
     // every recipe makes what it says, with enough to hand
+    // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
-        vec!["Oak log", "Birch log", "Sand", "Stone"],
+        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone"],
         vec!["Planks"],
-        vec!["Hay", "Glass", "Cobblestone", "Oak log"],
+        vec!["Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat"],
         vec!["Planks", "Cobblestone"],
         vec!["Planks", "Cobblestone"],
@@ -4445,4 +4446,274 @@ local Hen = world.creature {{
         let err = Scripts::default().start(&creation(&src), &mut Herd::default()).err().unwrap_or_default();
         assert!(err.contains(says), "{bad}: {err}");
     }
+}
+
+/// A creation's own blocks: `[blocks.marble]`, its picture in letters.
+const MADE_TOML: &str = r##"
+name = "Masonry"
+by = "Tests"
+kind = "mod"
+main = "main.luau"
+
+[blocks.marble]
+kind = "hard"
+hardness = 2
+colors = { w = "#f0ece4", g = "#c8c2b8" }
+picture = """
+wwwwwwww
+wgwwwwgw
+wwwwwwww
+wwwgwwww
+wwwwwwww
+wgwwwwww
+wwwwwgww
+wwwwwwww
+"""
+
+[blocks.paper_lantern]
+name = "Test lantern"
+light = true
+glow = "y"
+boxes = [[4, 0, 4, 12, 10, 12]]
+colors = { r = "#b83a2c", y = "#ffd27a" }
+side = ["rrrrrrrr", "ryyyyyyr", "ryyyyyyr", "ryyyyyyr", "ryyyyyyr", "ryyyyyyr", "ryyyyyyr", "rrrrrrrr"]
+top = ["rrrrrrrr", "r......r", "r......r", "r......r", "r......r", "r......r", "r......r", "rrrrrrrr"]
+bottom = ["rrrrrrrr", "rrrrrrrr", "rrrrrrrr", "rrrrrrrr", "rrrrrrrr", "rrrrrrrr", "rrrrrrrr", "rrrrrrrr"]
+"##;
+
+#[test]
+fn creations_make_blocks_of_their_own() {
+    use crate::{blocks, made};
+    let spec = |t: &str| -> serde_json::Value { serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()).unwrap() };
+    let row = "aaaaaaaa";
+    let eight = format!("picture = [{}]", vec![format!("\"{row}\""); 8].join(", "));
+    // what's wrong is said plainly
+    for (bad, says) in [
+        (format!("colors = {{ a = \"#fff\" }}\n{}", eight.replace("aaaaaaaa\"]", "aaaaaaa\"]")), "row 8 has 7 pixels"),
+        (format!("colors = {{ a = \"#fff\" }}\npicture = [\"aaa\"]"), "8, 16, 32 or 64"),
+        (format!("colors = {{ b = \"#fff\" }}\n{eight}"), "colors doesn't give"),
+        (format!("colors = {{ a = \"white\" }}\n{eight}"), "a colour like"),
+        (format!("colors = {{ a = \"#fff\" }}\n{}", eight.replacen("aaaaaaaa", "aaaa.aaa", 1)), "see-through"),
+        (format!("name = \"Stone\"\ncolors = {{ a = \"#fff\" }}\n{eight}"), "has a block called Stone"),
+        (format!("shape = \"round\"\ncolors = {{ a = \"#fff\" }}\n{eight}"), "shape is"),
+        (format!("boxes = [[0, 0, 0, 16, 17, 16]]\ncolors = {{ a = \"#fff\" }}\n{eight}"), "box 1"),
+        (format!("hardness = -1\ncolors = {{ a = \"#fff\" }}\n{eight}"), "hardness"),
+        (format!("kind = \"metal\"\ncolors = {{ a = \"#fff\" }}\n{eight}"), "kind is one of"),
+        (format!("colour = \"#fff\"\n{eight}"), "there's no colour for a block"),
+        ("colors = { a = \"#fff\" }".to_string(), "needs a picture"),
+    ] {
+        let e = made::read("thing", &spec(&bad)).err().unwrap_or_else(|| panic!("{bad} should be refused"));
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    assert!(made::read("Thing", &spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}"))).is_err(), "names in potluck.toml are lowercase");
+    let def = made::read("tall_marble", &spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}"))).unwrap();
+    assert_eq!(def.name, "Tall marble");
+    assert_eq!((def.shape, def.hardness, def.same), (blocks::Shape::Solid, 1.0, [0, 0, 0]), "one picture for every side");
+    assert_eq!(def.faces[0].rgba[0], [255, 255, 255, 255]);
+
+    // a creation's blocks get ids from 128 up, and keep them
+    let mut c = creation("local world = require(\"@potluck/world@0.12\")\nprint(world.kind(\"Marble\"))\nworld.after(0, function()\n  world.set_block({ 3, 90, 3 }, \"Marble\")\n  print(world.block({ 3, 90, 3 }))\nend)");
+    c.id = "test-masonry".into();
+    c.manifest = toml::from_str(MADE_TOML).unwrap();
+    let ids = made::register(&c.id, &c.manifest.blocks).unwrap();
+    assert!(ids.iter().all(|&id| id >= blocks::FIRST_MADE), "{ids:?}");
+    assert_eq!(made::register(&c.id, &c.manifest.blocks).unwrap(), ids, "the same ids the second time");
+    let (marble, lantern) = (ids[0], ids[1]);
+    assert_eq!(blocks::by_name("marble"), Some(marble));
+    assert_eq!(blocks::by_name("Test Lantern"), Some(lantern));
+    let b = blocks::block(lantern);
+    assert_eq!((b.shape, b.solid, b.light, b.model.len()), (blocks::Shape::Model, true, true, 1));
+    assert_eq!(b.faces, ["test-masonry/paper_lantern/top", "test-masonry/paper_lantern/side", "test-masonry/paper_lantern/bottom"]);
+    assert_eq!(blocks::block(marble).faces, ["test-masonry/marble/top"; 3], "one tile for one picture");
+    assert!(blocks::is_solid(marble) && blocks::is_opaque(marble) && !blocks::is_opaque(lantern));
+    assert_eq!(crate::sound::material(marble), crate::sound::Material::Hard, "kind says how it sounds");
+    let glow = made::read("paper_lantern", &c.manifest.blocks["paper_lantern"]).unwrap();
+    assert!(glow.faces[1].glow[9] && !glow.faces[1].glow[0], "the letters in glow glow");
+    assert_eq!(glow.faces[0].rgba[9][3], 0, "and . is see-through");
+    assert_eq!(made::color(marble).map(|c| c[0] > 200), Some(true), "the map's colour from the top");
+    assert!(made::register("too-many", &(0..17).map(|i| (format!("b{i}"), spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}")))).collect()).is_err());
+
+    // its code uses them by name, as soon as it starts
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&c, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+    let vm = &scripts.vms["test-masonry"];
+    assert_eq!(vm.error, None);
+    assert!(vm.log.iter().any(|l| l == "hard") && vm.log.iter().any(|l| l == "Marble"), "{:?}", vm.log);
+    assert_eq!(voxels.at(IVec3::new(3, 90, 3)), marble);
+
+    // a changed picture keeps the id
+    let mut changed = c.manifest.blocks.clone();
+    changed.get_mut("marble").unwrap()["colors"]["w"] = "#ffffff".into();
+    let before = made::generation();
+    assert_eq!(made::register(&c.id, &changed).unwrap(), ids);
+    assert!(made::generation() > before, "and the game draws it again");
+
+    // the world saves its made blocks with it, and takes them back
+    voxels.set(IVec3::new(4, 90, 3), lantern);
+    let saved = made::world_bytes(&voxels);
+    assert!(saved.starts_with(b"POTLUCKW2"));
+    let back = made::read_world(&saved).unwrap();
+    assert_eq!((back.at(IVec3::new(3, 90, 3)), back.at(IVec3::new(4, 90, 3))), (marble, lantern));
+    assert!(back.lanterns.contains(&IVec3::new(4, 90, 3)), "a made light is a light");
+    let mut old = b"POTLUCKW1".to_vec();
+    old.extend_from_slice(&voxels.seed.to_le_bytes());
+    old.extend_from_slice(&world().encode());
+    assert!(made::read_world(&old).is_some(), "worlds saved before still load");
+    assert!(made::read_world(&saved[..40]).is_none(), "a damaged world is refused");
+
+    // a saved block whose id something else has here moves
+    let mut moved = made::table().into_iter().find(|e| e.id == marble).unwrap();
+    moved.creation = "test-elsewhere".into();
+    let to = made::restore(&[moved.clone()]).expect("a new id");
+    let new = to[marble as usize];
+    assert!(new != marble && new >= blocks::FIRST_MADE);
+    assert_eq!(made::table().iter().find(|e| e.creation == "test-elsewhere").map(|e| e.id), Some(new));
+    let mut v = world();
+    v.set(IVec3::new(5, 90, 5), marble);
+    v.renumber(&to);
+    assert_eq!(v.at(IVec3::new(5, 90, 5)), new);
+
+    // a guest takes the host's ids as they are
+    let mut guest = made::table().into_iter().find(|e| e.creation == "test-elsewhere").unwrap();
+    guest.id = 250;
+    made::adopt(&[guest]);
+    assert!(blocks::made(new).is_none(), "the old place is free again");
+    assert_eq!(blocks::block(250).name, "Marble");
+    assert_eq!(blocks::block(251).name, "Unknown block", "an id nobody gave a block shows that it's missing");
+}
+
+#[test]
+fn made_blocks_are_drawn_into_the_atlas() {
+    let mut images = Assets::<Image>::default();
+    let mut atlas = crate::textures::build(&mut images);
+    let red = vec![[200u8, 40, 40, 255]; 16 * 16];
+    let slot = atlas.put(&mut images, "test/red/top", &red, 16, &vec![false; 256]).expect("room in the atlas");
+    assert_eq!(atlas.tile("test/red/top"), slot);
+    assert!(atlas.icons.contains_key("test/red/top"), "an icon for the hotbar");
+    // every mip level of all four maps, each a whole cell inside its image
+    let full = images.get(&atlas.icons["test/red/top"]).unwrap().width() as usize;
+    let levels = full.trailing_zeros() as usize - 2;
+    assert_eq!(atlas.writes.len(), 4 * levels);
+    for w in &atlas.writes {
+        let tile = full >> w.level;
+        assert_eq!(w.size as usize, tile + 2 * (tile / 8));
+        assert_eq!(w.data.len(), (w.size * w.size * 4) as usize);
+        assert!((w.x + w.size) as usize <= w.size as usize * crate::textures::GRID && (w.y + w.size) as usize <= w.size as usize * crate::textures::GRID);
+    }
+    let colour = atlas.writes.iter().find(|w| w.image == atlas.color.id() && w.level == 0).unwrap();
+    assert_eq!(&colour.data[..4], &[200, 40, 40, 255]);
+    // drawing it again reuses its tile; glowing ones go at the far end
+    atlas.writes.clear();
+    assert_eq!(atlas.put(&mut images, "test/red/top", &red, 16, &vec![false; 256]), Some(slot));
+    let lit = atlas.put(&mut images, "test/lit/top", &red, 16, &vec![true; 256]).unwrap();
+    assert!(lit > slot + crate::textures::GRID as u16, "{lit} {slot}");
+    let glow = atlas.writes.iter().rev().find(|w| w.image == atlas.glow.id() && w.level == 0).unwrap();
+    assert_eq!(&glow.data[..3], &[200, 40, 40]);
+    // and it fills up, refusing what doesn't fit
+    let mut n = 0;
+    while atlas.put(&mut images, Box::leak(format!("test/fill{n}").into_boxed_str()), &red, 16, &vec![false; 256]).is_some() {
+        n += 1;
+        assert!(n < 256);
+    }
+    assert!(n > 40, "room for plenty of made blocks: {n}");
+}
+
+#[test]
+fn creative_has_every_block_to_choose_from() {
+    use crate::blocks::{self, BlockId};
+    use crate::input::Controls;
+    use crate::settings::Settings;
+    use crate::ui::{block_shelf, menu_items, pages, Act, Acts, Focus, Kind, Screen, Toasts, WorldInfo, BLOCK_PAGES};
+    use bevy::ecs::system::RunSystemOnce;
+    // every block of the game's own on one page, and never air, bedrock or a tool
+    let mut seen: Vec<BlockId> = BLOCK_PAGES[..3].iter().flat_map(|p| block_shelf(p)).collect();
+    let n = seen.len();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), n, "each on one page");
+    for id in 1..blocks::BLOCKS.len() as BlockId {
+        let b = blocks::block(id);
+        let shown = seen.contains(&id);
+        assert_eq!(shown, b.shape != blocks::Shape::Air && !b.item && id != blocks::BEDROCK, "{}", b.name);
+    }
+    for (page, id) in [("Building", blocks::GLASS), ("Building", blocks::PLANKS), ("Nature", blocks::GRASS), ("Nature", blocks::FLOWER_RED), ("Nature", blocks::WATER), ("Things", blocks::LANTERN), ("Things", blocks::TABLE)] {
+        assert!(block_shelf(page).contains(&id), "{} on {page}", blocks::block(id).name);
+    }
+    // a creation's blocks have a page of their own
+    let tile = serde_json::json!({ "name": "Picker test tile", "colors": { "a": "#c86432" }, "picture": vec!["aaaaaaaa"; 8] });
+    let made = crate::made::register("picker-test", &BTreeMap::from([("tile".to_string(), tile)])).unwrap();
+    assert!(block_shelf("From creations").contains(&made[0]));
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    let act = |app: &mut App, a: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(a);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    let press = |app: &mut App, f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        app.insert_resource(c);
+        app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    };
+    // it opens on the block in your hand, on its page
+    app.world_mut().resource_mut::<crate::player::Me>().slot = 4;
+    let held = app.world().resource::<crate::player::Me>().hotbar[4];
+    act(&mut app, Act::OpenBlocks);
+    let f = app.world().resource::<Focus>();
+    assert_eq!(f.screen, Screen::Blocks);
+    let info = app.world().resource::<WorldInfo>();
+    let (page, _) = pages(f, info).map(|(list, n)| (list[n], n)).unwrap();
+    assert!(block_shelf(page).contains(&held), "{page}");
+    let (title, items) = menu_items(f, app.world().resource::<Library>(), app.world().resource::<Scripts>(), app.world().resource::<Settings>(), info);
+    assert_eq!(title, "Blocks");
+    assert_eq!(items[f.sel].kind, Kind::Tile(held));
+    // along the row and A: the next one goes in your hand, in the slot chosen
+    app.world_mut().resource_mut::<Focus>().cols = 6;
+    press(&mut app, &|c| c.right = true);
+    let sel = app.world().resource::<Focus>().sel;
+    let Kind::Tile(next) = items[sel].kind else { panic!("a block") };
+    press(&mut app, &|c| c.accept = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Hold(next)]);
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!((me.hotbar[4], me.slot), (next, 4));
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing, "and back to the world");
+    // one already in the hotbar: that slot is chosen instead
+    let first = me.hotbar[0];
+    act(&mut app, Act::Hold(first));
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!((me.slot, me.hotbar[4]), (0, next));
+    // tools and the unknown aren't put in a hand
+    act(&mut app, Act::Hold(blocks::WOODEN_PICKAXE));
+    assert!(!app.world().resource::<crate::player::Me>().hotbar.contains(&blocks::WOODEN_PICKAXE));
+    // the middle button puts the block aimed at in your hand
+    app.world_mut().resource_mut::<crate::player::Me>().target = Some(crate::player::Hit { block: IVec3::new(3, 40, 3), normal: IVec3::Y, id: blocks::SAND });
+    let mut c = Controls::default();
+    c.pick = true;
+    app.insert_resource(c);
+    app.world_mut().run_system_once(crate::game::interact).unwrap();
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!(me.hotbar[me.slot], blocks::SAND);
+    // B or the key that opened it close it
+    act(&mut app, Act::OpenBlocks);
+    press(&mut app, &|c| c.back = true);
+    press(&mut app, &|c| c.blocks = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Resume, Act::Resume]);
+    app.world_mut().resource_mut::<Acts>().0.clear();
+    // in survival there's no such sheet: what you carry is what you have
+    app.world_mut().resource_mut::<Focus>().go(Screen::Playing);
+    app.world_mut().resource_mut::<Settings>().survival = true;
+    act(&mut app, Act::OpenBlocks);
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing);
+    assert!(app.world().resource::<Toasts>().0.iter().any(|(t, _)| t.contains("make more at a table")));
+    act(&mut app, Act::Hold(blocks::STONE));
+    assert!(!app.world().resource::<crate::player::Me>().hotbar.contains(&blocks::STONE), "nothing new in survival");
 }

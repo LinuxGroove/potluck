@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 16;
+pub const PROTOCOL: u32 = 17;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -90,6 +90,9 @@ pub enum Msg {
     Refused(String),
     Creation(Payload),
     Stop(String),
+    /// Every block creations made in this world (`made`), by id: in the
+    /// welcome, and again when it changes.
+    Made(Vec<crate::made::Entry>),
     Blocks(Vec<(i32, i32, i32, u8)>),
     Me { pos: [f32; 3], yaw: f32 },
     /// Players near you that moved, and those gone from view.
@@ -483,6 +486,7 @@ pub fn host_net(
     mut info: ResMut<WorldInfo>,
     ticks: Res<crate::hosting::TickTimes>,
     mut heard: ResMut<crate::sound::Heard>,
+    mut made_sent: Local<u64>,
 ) {
     let pending = std::mem::take(&mut net.pending);
     let Role::Host(_) = &net.role else {
@@ -492,6 +496,11 @@ pub fn host_net(
         }
         return;
     };
+    // blocks creations made go before anything built with them
+    if crate::made::generation() != *made_sent {
+        *made_sent = crate::made::generation();
+        net.broadcast(&Msg::Made(crate::made::table()));
+    }
     for m in &pending {
         net.broadcast(m);
     }
@@ -554,6 +563,9 @@ pub fn host_net(
                     let world = frame_world(&voxels.encode());
                     let mut sent = world.len();
                     let _ = out.send(frame_msg(&Msg::Welcome { id, seed: voxels.seed, time: clock.time, host: h.name.clone(), teleport: rules.teleport, chat: rules.chat }));
+                    let made = frame_msg(&Msg::Made(crate::made::table()));
+                    sent += made.len();
+                    let _ = out.send(made);
                     let _ = out.send(world);
                     for cid in &lib.running {
                         if let Some(c) = lib.list.get(cid) {
@@ -1047,6 +1059,7 @@ pub fn client_net(
             }
             Event::Joined(..) => {}
             Event::Msg(_, m) => match m {
+                Msg::Made(list) => crate::made::adopt(&list),
                 Msg::Welcome { id, seed, time, host, teleport, chat } => {
                     net.my_id = id;
                     voxels.seed = seed;

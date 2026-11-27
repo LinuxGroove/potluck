@@ -68,6 +68,8 @@ pub enum Screen {
     Shared(u64),
     /// Saying something, and the last lines (`chat`).
     Chat,
+    /// Every block, to put one in your hand (creative).
+    Blocks,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -166,6 +168,11 @@ pub enum Act {
     Say(String),
     /// Share where you are in chat.
     SharePlace,
+    /// Every block to choose from (creative); in survival, a word on where
+    /// blocks come from.
+    OpenBlocks,
+    /// Put a block in your hand from Blocks.
+    Hold(blocks::BlockId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +196,8 @@ pub enum Kind {
     Card(Act),
     /// One of a few choices, turned with left and right (the act moves it on).
     Choice { act: Act, value: String },
+    /// A block on the Blocks sheet, as its picture; A puts it in your hand.
+    Tile(blocks::BlockId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -262,6 +271,8 @@ pub struct Focus {
     pub settings_page: usize,
     /// The shelf of Creations open (`shelves`).
     pub shelf: usize,
+    /// The page of Blocks open (`BLOCK_PAGES`).
+    pub blocks_page: usize,
     /// How many cards a row of the Creations sheet holds, as last drawn.
     pub cols: usize,
     /// The first item drawn, when a menu is taller than the window.
@@ -296,6 +307,7 @@ impl Default for Focus {
             made: (String::new(), vec![]),
             settings_page: 0,
             shelf: 0,
+            blocks_page: 0,
             cols: 4,
             first: 0,
             qr: None,
@@ -317,6 +329,7 @@ impl Focus {
         match self.screen {
             Screen::Settings => Some(&mut self.settings_page),
             Screen::Library => Some(&mut self.shelf),
+            Screen::Blocks => Some(&mut self.blocks_page),
             _ => None,
         }
     }
@@ -334,6 +347,36 @@ pub fn shelves(in_world: bool) -> &'static [&'static str] {
     }
 }
 
+/// The pages of Blocks.
+pub const BLOCK_PAGES: &[&str] = &["Building", "Nature", "Things", "From creations"];
+
+/// The blocks on a page of Blocks: the game's own by what they're for, or
+/// those creations here made. Never air, bedrock or what's only held.
+pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
+    use blocks::Shape;
+    if page == "From creations" {
+        return crate::made::table().iter().map(|e| e.id).collect();
+    }
+    let ground = [blocks::GRASS, blocks::DIRT, blocks::SAND, blocks::GRAVEL, blocks::SNOW, blocks::FARMLAND];
+    (1..blocks::BLOCKS.len() as blocks::BlockId)
+        .filter(|&id| {
+            let b = blocks::block(id);
+            b.shape != Shape::Air && !b.item && id != blocks::BEDROCK
+        })
+        .filter(|&id| {
+            let b = blocks::block(id);
+            let on = if b.shape == Shape::Model || b.light {
+                "Things"
+            } else if matches!(b.shape, Shape::Cross | Shape::Water) || b.shape == Shape::Cutout && id != blocks::GLASS || ground.contains(&id) {
+                "Nature"
+            } else {
+                "Building"
+            };
+            on == page
+        })
+        .collect()
+}
+
 /// A screen's pages (LB and RB, or Tab), and the one open.
 pub fn pages(focus: &Focus, info: &WorldInfo) -> Option<(&'static [&'static str], usize)> {
     match focus.screen {
@@ -342,6 +385,7 @@ pub fn pages(focus: &Focus, info: &WorldInfo) -> Option<(&'static [&'static str]
             let list = shelves(info.in_world);
             Some((list, focus.shelf.min(list.len() - 1)))
         }
+        Screen::Blocks => Some((BLOCK_PAGES, focus.blocks_page.min(BLOCK_PAGES.len() - 1))),
         _ => None,
     }
 }
@@ -737,6 +781,14 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             }
             ("Creations".into(), v)
         }
+        Screen::Blocks => {
+            let page = pages(focus, info).map(|(list, n)| list[n]).unwrap_or("Building");
+            let mut v: Vec<Item> = block_shelf(page).into_iter().map(|id| Item { label: blocks::block(id).name.to_string(), kind: Kind::Tile(id) }).collect();
+            if v.is_empty() {
+                v.push(note("No creation here makes blocks of its own yet. Brickworks does: bring it in from Creations, or remix it to draw your own."));
+            }
+            ("Blocks".into(), v)
+        }
         Screen::Controls => {
             let mut v = vec![];
             if let Some((cid, aid)) = &focus.rebinding {
@@ -973,7 +1025,9 @@ pub fn menu_input(
     let selectable: Vec<usize> = items.iter().enumerate().filter(|(_, i)| i.selectable()).map(|(n, _)| n).collect();
     if selectable.is_empty() {
         // an empty shelf still goes back
-        if c.back || prompt == Some(MenuPrompt::Back) {
+        if focus.screen == Screen::Blocks && (c.back || c.blocks || prompt == Some(MenuPrompt::Back)) {
+            acts.0.push(Act::Resume);
+        } else if c.back || prompt == Some(MenuPrompt::Back) {
             acts.0.push(Act::Back);
         }
         return;
@@ -1000,7 +1054,7 @@ pub fn menu_input(
     }
     // small buttons side by side: left and right go along them too
     let chip = matches!(items.get(focus.sel).map(|i| &i.kind), Some(Kind::Chip(_)));
-    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_))) {
+    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_) | Kind::Tile(_))) {
         // cards in rows: left and right along a row, up and down a row at a time
         let cols = focus.cols.max(1) as i32;
         let last = selectable.len() as i32 - 1;
@@ -1040,6 +1094,12 @@ pub fn menu_input(
             if let (Act::Inside(id), true, true) = (act, interact, info.in_world) {
                 heard.click();
                 acts.0.push(if lib.running.contains(id) { Act::Stop(id.clone()) } else { Act::Run(id.clone()) });
+            }
+        }
+        Kind::Tile(id) => {
+            if accept {
+                heard.click();
+                acts.0.push(Act::Hold(*id));
             }
         }
         Kind::Choice { act, .. } => {
@@ -1105,14 +1165,16 @@ pub fn menu_input(
         }
         _ => {}
     }
-    if (c.back || prompt == Some(MenuPrompt::Back)) && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
+    // the key that opened Blocks closes it
+    let shut = focus.screen == Screen::Blocks && c.blocks;
+    if (c.back || shut || prompt == Some(MenuPrompt::Back)) && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
         let back = match &focus.screen {
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
             Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
             Screen::Panel => Some(Act::Answer(None)),
-            Screen::Map | Screen::Chat => Some(Act::Resume),
+            Screen::Map | Screen::Chat | Screen::Blocks => Some(Act::Resume),
             Screen::Waypoint(_) | Screen::Shared(_) => Some(Act::OpenMap),
             _ => Some(Act::Back),
         };
@@ -1152,6 +1214,7 @@ pub fn menu_owns(focus: Res<Focus>, mut c: ResMut<Controls>) {
     c.jump_pressed = false;
     c.interact = false;
     c.look_inside = false;
+    c.blocks = false;
     c.share = false;
     c.place_pressed = false;
     c.break_pressed = false;

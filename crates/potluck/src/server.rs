@@ -208,15 +208,12 @@ fn main() {
     sim(&mut app, cfg.seed);
     // a world kept from before
     if let Ok(bytes) = std::fs::read(world_file()) {
-        if bytes.len() > 13 && &bytes[..9] == b"POTLUCKW1" {
-            let seed = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
-            match world::Voxels::decode(seed, &bytes[13..]) {
-                Some(v) => {
-                    info!("Loaded the world from {}", world_file().display());
-                    app.insert_resource(v);
-                }
-                None => warn!("{} is damaged; starting a new world", world_file().display()),
+        match made::read_world(&bytes) {
+            Some(v) => {
+                info!("Loaded the world from {}", world_file().display());
+                app.insert_resource(v);
             }
+            None => warn!("{} is damaged; starting a new world", world_file().display()),
         }
     }
     let mut s = settings::Settings::default();
@@ -403,9 +400,7 @@ fn autosave(time: Res<Time>, mut saving: ResMut<Saving>, voxels: Res<world::Voxe
 }
 
 fn save(voxels: &world::Voxels, lib: &Library) {
-    let mut bytes = b"POTLUCKW1".to_vec();
-    bytes.extend_from_slice(&voxels.seed.to_le_bytes());
-    bytes.extend_from_slice(&voxels.encode());
+    let bytes = made::world_bytes(voxels);
     let tmp = world_file().with_extension("tmp");
     if std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, world_file())).is_err() {
         warn!("Couldn't save the world to {}", world_file().display());

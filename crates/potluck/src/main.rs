@@ -163,7 +163,7 @@ fn main() {
         ..default()
     }));
     sim(&mut app, SEED);
-    app.add_plugins(MaterialPlugin::<render::WaterMaterial>::default());
+    app.add_plugins((MaterialPlugin::<render::WaterMaterial>::default(), made::MadePlugin));
     render::add_menu_blur(&mut app);
     if offscreen {
         app.insert_resource(OffscreenSize(size));
@@ -382,12 +382,14 @@ fn shot(
                 "chat" | "keyboard" => ui::Screen::Chat,
                 "settings" => ui::Screen::Settings,
                 "creations" => ui::Screen::Library,
+                "blocks" => ui::Screen::Blocks,
                 "market" => ui::Screen::Link,
                 "question" => ui::Screen::Panel,
                 _ => ui::Screen::Playing,
             });
             focus.settings_page = page;
             focus.shelf = page;
+            focus.blocks_page = page;
             if sc == "market" {
                 // what the market would send: a sign-in link for the phone
                 focus.link = Some(("https://potluck.linuxgroove.com/in/7QK2-M9XD-PL4F-W2HZ".into(), "The market".into()));

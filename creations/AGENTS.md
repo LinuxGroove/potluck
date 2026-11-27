@@ -6,7 +6,7 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 | File | What |
 |---|---|
-| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.3"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.2"` for sounds (and `[sounds]` of its own), `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
+| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.3"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.2"` for sounds (and `[sounds]` of its own), `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, its `[blocks]` if it makes any (world 0.12), and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
 | `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder. It runs on the world's host, the only place the world changes |
 | `client.luau` | Only if it has a client half (`client = "client.luau"` in potluck.toml): code that runs on each player's own game, for what only they see. See `@potluck/net` |
 | `*.bbmodel` | Blockbench models, for creatures' bodies (`world.model`). Make them in Blockbench (any format; save the project, File > Save Model, with the texture kept inside it) |
@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.11")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.11. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.12")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.12. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.11
+### `@potluck/world` 0.12
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -192,6 +192,35 @@ local Woolly = world.creature {
 - `chatter`: lines it says now and then (every 10 to 35 seconds) and when it's used, one at random, 80 letters each.
 - `sound`: one of the game's sounds or the creation's own (`sound.names()`), with its chatter, and when it's used or hit. It needn't `require` `@potluck/sound`.
 - Behaviours act first, each tick and when it's used or hit, and then its own handlers run, so its code has the last word: a `tick` that calls `self:walk_to` takes it somewhere else, and a `hit` that calls `self:say` says something else. A creature being ridden doesn't follow anyone. Kinds that `become` one another can share one table of behaviours, or have their own.
+
+#### Blocks of its own (0.12)
+
+A creation makes blocks in `potluck.toml`, one table each, drawn in letters: each letter in a picture is one pixel, coloured by `colors`, and `.` is see-through. Players and code use them by name like the game's own (`world.set_block(at, "Red bricks")`, `world.give`, `follow_food`), and they stay in the world as long as it lasts, even if the creation goes. Require `@potluck/world@0.12` so an older game says it needs updating instead of running the code without its blocks.
+
+```toml
+[blocks.red_bricks]
+name = "Red bricks"   # what players see it called (default: the key, "Red bricks")
+kind = "hard"         # how it sounds and which tools dig it: soft, hard, wood, plant or glass (default: by its name)
+hardness = 1.5        # seconds to break by hand, 0 to 20 (default 1)
+colors = { m = "#cdc3b3", a = "#a4432f", b = "#b24f37" }
+picture = """
+aaaaaaam
+aaaaaaam
+mmmmmmmm
+aaamaaaa
+aaamaaaa
+mmmmmmmm
+aaaaaaam
+mmmmmmmm
+"""
+```
+
+- A picture is 8, 16, 32 or 64 pixels square: a string of lines, or a list of strings. `picture` is every side; `top`, `side` and `bottom` give one side each.
+- `shape`: `"solid"` (the default), `"see-through"` (glass and leaves: `.` pixels show what's behind) or `"plant"` (two crossed pictures, like flowers, that bodies walk through).
+- `boxes` makes a block of boxes instead: up to 16 of `[x, y, z, x, y, z]` in sixteenths of a block, from 0 to 16 (a slab is `[[0, 0, 0, 16, 8, 16]]`). Each side of a box shows the part of the picture it covers, so draw the side as the block looks from the side. `solid = false` lets bodies through.
+- `light = true` lights up what's round it, and the letters in `glow` (`glow = "yo"`) shine; a light with no `glow` shines in its brightest pixels.
+- Up to 16 blocks, 24 colours each. A block's name in `potluck.toml` is lowercase letters, digits and `_`; what players see it called can't be one of the game's blocks. Names are shared by every creation in a world, so pick one nobody else has.
+- Change a colour or a row and save, and the world shows it. Each world gives a creation's blocks their ids the first time it runs there and keeps them.
 
 ### `@potluck/tweak` 0.1
 
@@ -405,7 +434,7 @@ A creation's own tests, in `test.luau` beside `main.luau`. They run only when as
 
 ```luau
 local test = require("@potluck/test@0.2")
-local world = require("@potluck/world@0.11")
+local world = require("@potluck/world@0.12")
 
 test.case("a basket put down fills up into a balloon", function()
 	local p = test.player("Ada")                    -- on the Green

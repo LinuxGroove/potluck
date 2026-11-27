@@ -44,6 +44,10 @@ pub struct Manifest {
     /// pitch and a length (`sound::recipe` reads them).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub sounds: BTreeMap<String, serde_json::Value>,
+    /// Blocks of its own, drawn in letters: `[blocks.marble]` with its
+    /// colours and pictures (`made::read` reads them).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub blocks: BTreeMap<String, serde_json::Value>,
 }
 
 /// One of a creation's actions: what players see it called, and the pad
@@ -96,6 +100,7 @@ impl Default for Manifest {
             actions: BTreeMap::new(),
             client: None,
             sounds: BTreeMap::new(),
+            blocks: BTreeMap::new(),
         }
     }
 }
@@ -233,7 +238,7 @@ macro_rules! base {
     };
 }
 
-const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau", "storage" + "test.luau"];
+const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau", "storage" + "test.luau", "brickworks" + "test.luau"];
 
 pub const AGENTS_MD: &str = include_str!("../../../creations/AGENTS.md");
 pub const TYPES: &str = include_str!("../../../creations/types/potluck.d.luau");
