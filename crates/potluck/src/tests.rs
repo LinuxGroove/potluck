@@ -2536,3 +2536,96 @@ fn a_table_is_a_workbench_for_survival_players() {
     }
     assert_eq!(scripts.vms["workbench"].error, None, "{:?}", scripts.vms["workbench"].log);
 }
+
+/// Farming: dig farmland, plant, wait, harvest more than you sowed.
+#[test]
+fn crops_planted_on_farmland_grow_and_give_more_back() {
+    use crate::blocks::{by_name, AIR, WATER};
+    home();
+    let mut farming = Library::load().list.remove("farming").expect("the base game has farming");
+    farming.knobs.insert("minutes".into(), KnobValue::Number(1.0));
+    let b = |n: &str| by_name(n).unwrap();
+    let (grass, soil, wheat, carrots, shoot, fern) = (b("Grass"), b("Farmland"), b("Wheat"), b("Carrots"), b("Tall grass"), b("Fern"));
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(wheat, 3), (carrots, 1)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.set_day(0.5);
+    scripts.start(&farming, &mut herd).unwrap();
+    // a strip of grass up in the air, dry but for water by its east end
+    let at = |i: i32| IVec3::new(40 + i * 3, 110, 40);
+    for i in 0..5 {
+        voxels.set(at(i), grass);
+    }
+    voxels.set(at(4) + IVec3::X * 2, WATER);
+    let up = IVec3::Y;
+    let carried = |scripts: &Scripts, block| scripts.shared.lock().unwrap().pockets[&7].items.get(&block).copied().unwrap_or(0);
+    let plant = |scripts: &mut Scripts, voxels: &mut Voxels, i: i32, crop| {
+        voxels.set(at(i) + up, crop);
+        scripts.player_block(7, at(i) + up, AIR, crop);
+    };
+    let harvest = |scripts: &mut Scripts, voxels: &mut Voxels, i: i32| {
+        let was = voxels.at(at(i) + up);
+        voxels.set(at(i) + up, AIR);
+        scripts.player_block(7, at(i) + up, was, AIR);
+    };
+
+    // Interact digs farmland, in survival only
+    for i in 0..5 {
+        scripts.use_block(7, at(i), grass);
+    }
+    scripts.use_block(8, at(0) + IVec3::Z, grass);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!((0..5).all(|i| voxels.at(at(i)) == soil), "farmland");
+    // planting turns a crop into its shoots; wheat on grass is just wheat
+    plant(&mut scripts, &mut voxels, 0, wheat);
+    plant(&mut scripts, &mut voxels, 1, wheat);
+    plant(&mut scripts, &mut voxels, 4, carrots);
+    voxels.set(at(0) + IVec3::Z * 2, grass);
+    voxels.set(at(0) + IVec3::Z * 2 + up, wheat);
+    scripts.player_block(7, at(0) + IVec3::Z * 2 + up, AIR, wheat);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!([0, 1, 4].map(|i| voxels.at(at(i) + up)), [shoot, shoot, fern]);
+    assert_eq!(voxels.at(at(0) + IVec3::Z * 2 + up), wheat);
+    // a shoot broken too soon gives the seed back
+    harvest(&mut scripts, &mut voxels, 1);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!(carried(&scripts, wheat), 4);
+    // near water they're ready in two thirds of the time
+    run(&mut scripts, &mut voxels, &mut herd, 44.0);
+    assert_eq!([voxels.at(at(0) + up), voxels.at(at(4) + up)], [shoot, carrots], "the carrots by the water are ripe first");
+    run(&mut scripts, &mut voxels, &mut herd, 20.0);
+    assert_eq!(voxels.at(at(0) + up), wheat, "a minute by day");
+    // a ripe crop gives two more than the one the game gives
+    harvest(&mut scripts, &mut voxels, 0);
+    harvest(&mut scripts, &mut voxels, 4);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!((carried(&scripts, wheat), carried(&scripts, carrots)), (6, 3));
+    // at night, half as fast; and kept with the world, so it grows on after a restart
+    scripts.set_day(0.0);
+    plant(&mut scripts, &mut voxels, 2, wheat);
+    run(&mut scripts, &mut voxels, &mut herd, 65.0);
+    assert_eq!(voxels.at(at(2) + up), shoot, "not ripe after a minute at night");
+    let kept = scripts.shared.lock().unwrap().store.clone();
+    assert!(kept.data["farming"]["crops"].as_object().is_some_and(|c| c.len() == 1), "{:?}", kept.data);
+    let mut again = Scripts::default();
+    again.players = scripts.players.clone();
+    again.shared.lock().unwrap().store = kept;
+    again.set_day(0.5);
+    again.start(&farming, &mut herd).unwrap();
+    run(&mut again, &mut voxels, &mut herd, 35.0);
+    assert_eq!(voxels.at(at(2) + up), wheat, "it picked up where it left off");
+    // digging up the farmland takes the crop on it out of the list
+    plant(&mut again, &mut voxels, 3, wheat);
+    run(&mut again, &mut voxels, &mut herd, 0.5);
+    voxels.set(at(3), AIR);
+    voxels.set(at(3) + up, AIR);
+    again.player_block(7, at(3), soil, AIR);
+    run(&mut again, &mut voxels, &mut herd, 6.0);
+    let crops = again.shared.lock().unwrap().store.data["farming"]["crops"].clone();
+    assert!(crops.as_object().is_some_and(|c| c.keys().all(|k| k != &format!("{},{},{}", at(3).x, at(3).y + 1, at(3).z))), "{crops}");
+    assert_eq!(again.vms["farming"].error, None, "{:?}", again.vms["farming"].log);
+    assert_eq!(scripts.vms["farming"].error, None, "{:?}", scripts.vms["farming"].log);
+}
