@@ -38,7 +38,7 @@ pub const TEST_MODULE: &str = r#"
 local test = {}
 -- what the harness and the module share: the cases, and what the harness
 -- says about the world before each part of a case runs
-local h = { cases = {}, running = false, kinds = {}, bodies = {}, health = {}, shown = {}, asked = {} }
+local h = { cases = {}, running = false, kinds = {}, bodies = {}, health = {}, shown = {}, asked = {}, heard = {} }
 local function ask(op, ...)
 	if not h.running or not coroutine.isyieldable() then
 		error("test." .. op .. " works only in a case, while the creation's tests run", 3)
@@ -111,6 +111,13 @@ end
 function test.asked(player)
 	seen("asked")
 	return h.asked[pid(player, "asked")]
+end
+function test.heard(name)
+	seen("heard")
+	if type(name) ~= "string" then
+		error("test.heard needs a sound's name", 2)
+	end
+	return h.heard[name] or 0
 end
 function test.check(ok, message)
 	if not ok then
@@ -215,6 +222,9 @@ struct Harness {
     played: f32,
     /// Test players' health, which survival players' games keep in play.
     health: BTreeMap<u32, f32>,
+    /// The sounds the creation played since the case began, by the names it
+    /// plays them by (`test.heard`).
+    heard: BTreeMap<String, u32>,
 }
 
 /// Why a case stops early.
@@ -225,7 +235,7 @@ enum Stop {
 
 impl Harness {
     fn new(creation: &Creation, voxels: Voxels, src: &str) -> Result<Harness, String> {
-        let mut h = Harness { id: creation.id.clone(), voxels, herd: Herd::default(), scripts: Scripts::default(), rng: Rng::new(7), played: 0.0, health: BTreeMap::new() };
+        let mut h = Harness { id: creation.id.clone(), voxels, herd: Herd::default(), scripts: Scripts::default(), rng: Rng::new(7), played: 0.0, health: BTreeMap::new(), heard: BTreeMap::new() };
         h.scripts.start(creation, &mut h.herd).map_err(|e| format!("it didn't start: {e}"))?;
         let Harness { scripts, voxels, herd, id, .. } = &mut h;
         let vm = scripts.vms.get_mut(id.as_str()).ok_or("it didn't start")?;
@@ -258,6 +268,7 @@ impl Harness {
         // themselves are there
         self.pass(0.1);
         self.played = 0.0;
+        self.heard.clear();
         let log_from = self.scripts.vms[&self.id].log.len();
         self.scripts.vms.get_mut(&self.id).expect("the creation runs").error = None;
         let mut reply = MultiValue::new();
@@ -316,7 +327,18 @@ impl Harness {
 
     /// Tells the module what the world's like now, for `test.kind`,
     /// `test.creature`, `test.shown` and the rest, which only read it.
+    /// Counts the sounds played since it last looked, as the game would
+    /// send them to players.
+    fn listen(&mut self) {
+        let mine = format!("{}/", self.id);
+        for (_, p) in std::mem::take(&mut self.scripts.shared.lock().unwrap().sounds) {
+            let name = p.name.strip_prefix(&mine).unwrap_or(&p.name).to_string();
+            *self.heard.entry(name).or_default() += 1;
+        }
+    }
+
     fn tell(&mut self) -> mlua::Result<()> {
+        self.listen();
         let players = self.scripts.players.clone();
         let (shown, asked) = {
             let sh = self.scripts.shared.lock().unwrap();
@@ -332,7 +354,7 @@ impl Harness {
             let asked: Vec<_> = players.iter().filter_map(|p| sh.ui.panels.get(&p.id).and_then(|q| q.front().cloned()).map(|f| (p.id, f))).collect();
             (shown, asked)
         };
-        let Harness { scripts, herd, id, health, .. } = self;
+        let Harness { scripts, herd, id, health, heard, .. } = self;
         let vm = scripts.vms.get_mut(id.as_str()).expect("the creation runs");
         let lua = &vm.lua;
         let h = vm.test_harness.clone();
@@ -370,7 +392,8 @@ impl Harness {
             t.set("choices", panel.choices)?;
             a.set(pid, t)?;
         }
-        h.set("asked", a)
+        h.set("asked", a)?;
+        h.set("heard", lua.create_table_from(heard.iter().map(|(k, v)| (k.as_str(), *v)))?)
     }
 
     /// Whether the creation's own code went wrong (a tick, an event).
@@ -395,7 +418,7 @@ impl Harness {
             }
             let ids: Vec<u32> = self.scripts.players.iter().map(|p| p.id).collect();
             let _ = self.scripts.ui_changes(&ids);
-            let _ = self.scripts.sound_changes();
+            self.listen();
             let _ = self.scripts.net_changes(&ids);
             let _ = self.scripts.focus_changes();
             let _ = self.scripts.healing_changes();

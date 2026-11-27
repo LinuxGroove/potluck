@@ -29,11 +29,11 @@ store = "0.1"
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
-| `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
+| `@potluck/sound` | 0.2 | The game's sounds and the creation's own (made from numbers in `potluck.toml`), somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
-| `@potluck/test` | 0.1 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
+| `@potluck/test` | 0.2 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
-Every module planned for the API is here. Still to come in later minor versions: sounds of a creation's own, from its files (`sound`), and more of the API in client halves (`net`).
+Every module planned for the API is here. Still to come in later minor versions: more of the API in client halves (`net`).
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -80,6 +80,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Meters (`ui.meter`) | 3 on a screen, from every creation together |
 | Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 8 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds, until they use one of its creatures or a block it hears `block_used` for |
 | Sounds | 10 a second; heard within 40 blocks |
+| Sounds of its own (`[sounds]`) | 16, each up to 3 seconds, with up to 3 layers besides the first and 32 notes a layer |
 | Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
 | Flying (`flies`, `creature:climb`) | -4 to 4 blocks a second, eased into; no higher than 24 blocks over the world's highest blocks |
@@ -122,6 +123,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/sound`
 
 - **0.1**: the first version: `sound.play`, `sound.play_for` and `sound.names`, with the game's own sounds.
+- **0.2**: sounds of the creation's own, made from numbers in `potluck.toml` (`[sounds.moo]`: a wave, a pitch or notes, a length, how it rises and fades, wobble, pulse, filters, and up to 3 layers). `play`, `play_for`, `names` and behaviours' `sound` find them first. Client halves play them too.
 
 ### `@potluck/ui`
 
@@ -143,3 +145,4 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/test`
 
 - **0.1**: the first version: `test.case`, `check` and `same`; `wait`; `player` and `move`; what players do (`place`, `dig`, `use_block`, `use`, `hit`, `ride`, `get_off`, `press`, `release`, `answer`, `hold`); and looking (`kind`, `creature`, `health`, `shown`, `asked`).
+- **0.2**: `test.heard(name)`, how many times the creation played a sound since the case began.

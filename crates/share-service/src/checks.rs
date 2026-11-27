@@ -26,6 +26,9 @@ pub struct Toml {
     /// Its client half's file (`@potluck/net`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
+    /// Sounds of its own (`@potluck/sound` 0.2): `[sounds.moo]`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sounds: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -68,9 +71,88 @@ pub fn action_problems(actions: &BTreeMap<String, Action>) -> (Vec<String>, Vec<
     (problems, no_pad)
 }
 
+/// What a creation's own sounds may say. Keep in step with `RECIPE_KEYS`,
+/// `LAYER_KEYS`, `WAVES` and the limits in the game's sound.rs.
+pub const SOUND_KEYS: &[&str] = &["caption", "wave", "pitch", "notes", "each", "length", "attack", "decay", "wobble", "pulse", "lowpass", "highpass", "layers"];
+pub const LAYER_KEYS: &[&str] = &["wave", "pitch", "notes", "each", "length", "attack", "decay", "wobble", "pulse", "lowpass", "highpass", "at", "gain"];
+pub const WAVES: &[&str] = &["sine", "triangle", "saw", "square", "noise"];
+pub const MAX_SOUNDS: usize = 16;
+
+fn note_ok(n: &toml::Value) -> bool {
+    match n {
+        toml::Value::Integer(_) | toml::Value::Float(_) => true,
+        toml::Value::String(s) => {
+            let s = s.trim();
+            let mut c = s.chars();
+            s == "-"
+                || (c.next().is_some_and(|l| "CDEFGABcdefgab".contains(l)) && {
+                    let rest: String = c.collect();
+                    let rest = rest.strip_prefix(['#', 'b']).unwrap_or(&rest);
+                    rest.is_empty() || rest.parse::<i32>().is_ok_and(|o| (0..=9).contains(&o))
+                })
+        }
+        _ => false,
+    }
+}
+
+fn layer_problems(what: &str, t: &toml::Table, keys: &[&str], out: &mut Vec<String>) {
+    for k in t.keys() {
+        if !keys.contains(&k.as_str()) {
+            out.push(format!("{what} has \"{k}\", which sounds don't (they have {})", keys.join(", ")));
+        }
+    }
+    if let Some(w) = t.get("wave") {
+        if !w.as_str().is_some_and(|w| WAVES.contains(&w)) {
+            out.push(format!("{what}'s wave is one of {}", WAVES.join(", ")));
+        }
+    }
+    if let Some(n) = t.get("notes") {
+        match n.as_array() {
+            Some(a) if a.len() > 32 => out.push(format!("{what} has more than 32 notes")),
+            Some(a) if a.iter().all(note_ok) => {}
+            _ => out.push(format!("{what}'s notes are a list of names like \"C5\" or \"F#4\", \"-\" for a rest, or numbers")),
+        }
+    }
+}
+
+/// What's wrong with a creation's own sounds.
+pub fn sound_problems(sounds: &BTreeMap<String, toml::Value>) -> Vec<String> {
+    let mut out = vec![];
+    if sounds.len() > MAX_SOUNDS {
+        out.push(format!("it has {} sounds of its own, and the most is {MAX_SOUNDS}", sounds.len()));
+    }
+    for (name, v) in sounds {
+        if name.is_empty() || name.len() > 24 || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            out.push(format!("a sound's name is 1 to 24 small letters, numbers or _ (not \"{name}\")"));
+            continue;
+        }
+        let what = format!("sound {name}");
+        let Some(t) = v.as_table() else {
+            out.push(format!("{what} is a table, [sounds.{name}]"));
+            continue;
+        };
+        layer_problems(&what, t, SOUND_KEYS, &mut out);
+        if let Some(l) = t.get("layers") {
+            match l.as_array() {
+                Some(a) if a.len() > 3 => out.push(format!("{what} has more than 3 layers")),
+                Some(a) => {
+                    for (i, l) in a.iter().enumerate() {
+                        match l.as_table() {
+                            Some(l) => layer_problems(&format!("{what}'s layer {}", i + 1), l, LAYER_KEYS, &mut out),
+                            None => out.push(format!("{what}'s layers are tables, [[sounds.{name}.layers]]")),
+                        }
+                    }
+                }
+                None => out.push(format!("{what}'s layers are a list, [[sounds.{name}.layers]]")),
+            }
+        }
+    }
+    out
+}
+
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.10"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.1"), ("net", "0.1"), ("test", "0.1")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.10"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.1"), ("test", "0.2")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -332,6 +414,15 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         });
     }
 
+    // Its own sounds
+    if let Some(m) = manifest.as_ref().filter(|m| !m.sounds.is_empty()) {
+        let problems = sound_problems(&m.sounds);
+        out.push(match problems.is_empty() {
+            true => Check::new("Sounds", "pass", format!("makes {} sound{} of its own", m.sounds.len(), if m.sounds.len() == 1 { "" } else { "s" })),
+            false => Check::new("Sounds", "fail", problems.join("; ")),
+        });
+    }
+
     // The code compiles
     let mut code_problems = Vec::new();
     for (name, text) in files.iter().filter(|(n, _)| n.ends_with(".luau") || n.ends_with(".lua")) {
@@ -407,6 +498,30 @@ mod tests {
             let files: BTreeMap<String, String> = list.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
             let (_, checks) = run(&files, &words, &|_| false);
             assert!(!failed(&checks) && !warned(&checks), "{id}: {checks:?}");
+        }
+    }
+
+    #[test]
+    fn a_creations_own_sounds_are_checked() {
+        let words = Words::parse("grumble\n");
+        let with = |sounds: &str| {
+            let mut f = creation("local sound = require(\"@potluck/sound@0.2\")\n");
+            let toml = f["potluck.toml"].replace("[needs]", &format!("{sounds}\n[needs]\nsound = \"0.2\""));
+            f.insert("potluck.toml".into(), toml);
+            let (_, checks) = run(&f, &words, &|_| false);
+            checks.into_iter().find(|c| c.name == "Sounds").expect("a Sounds check")
+        };
+        let good = with("[sounds.moo]\nwave = \"saw\"\npitch = [220, 160]\nlength = 0.8\n[[sounds.moo.layers]]\nwave = \"noise\"\npitch = 900\ngain = 0.3\n[sounds.tune]\nnotes = [\"C5\", \"E5\", \"-\", \"G5\", 1046.5]\n");
+        assert_eq!((good.result.as_str(), good.note.as_str()), ("pass", "makes 2 sounds of its own"), "{good:?}");
+        for bad in [
+            "[sounds.moo]\npiitch = 200\n",
+            "[sounds.moo]\nwave = \"hum\"\n",
+            "[sounds.Moo]\npitch = 200\n",
+            "[sounds.moo]\nnotes = [\"H2\"]\n",
+            "[sounds.moo]\n[[sounds.moo.layers]]\ncaption = \"no\"\n",
+        ] {
+            let c = with(bad);
+            assert_eq!(c.result, "fail", "{bad}: {c:?}");
         }
     }
 
