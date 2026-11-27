@@ -87,7 +87,7 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
-                (render::sky, render::clouds::drift, render::lanterns, render::flicker, render::motes::motes, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::clouds::drift, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),
@@ -106,14 +106,17 @@ fn main() {
     }
     // a screenshot: --shot=out.png [--after=8] [--at=x,y,z,yaw,pitch] [--time=0.5] [--screen=inside]
     // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5;
-    // --at=creature looks a creature in the face, --at=creature:2 the third)
+    // --at=creature looks a creature in the face, --at=creature:2 the third;
+    // --person[=hue] stands a player in view)
     if let Some(path) = opt("shot") {
         let after: f32 = opt("after").and_then(|v| v.parse().ok()).unwrap_or(8.0);
         let at: Option<Vec<f32>> = opt("at").map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect());
         let tod: Option<f32> = opt("time").and_then(|v| v.parse().ok());
         let screen = opt("screen");
         let creature = opt("at").and_then(|a| a.strip_prefix("creature").map(|n| n.trim_start_matches(':').parse().unwrap_or(0)));
-        app.insert_resource(Shot { path, after, at, tod, screen, creature, done: false, frames: 0 });
+        // --person[=hue] stands a player a few blocks ahead, facing you
+        let person = args.iter().find(|a| a.starts_with("--person")).map(|a| a.strip_prefix("--person=").and_then(|h| h.parse().ok()).unwrap_or(30.0));
+        app.insert_resource(Shot { path, after, at, tod, screen, creature, person, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
         // no outline round the block in the crosshair
         app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
@@ -134,6 +137,8 @@ struct Shot {
     screen: Option<String>,
     /// Which creature to look in the face, counting by id.
     creature: Option<usize>,
+    /// A player to stand in view, by their shirt's hue, until it's placed.
+    person: Option<f32>,
     done: bool,
     /// Frames drawn in the last three seconds before the picture, for the frame rate.
     frames: u32,
@@ -207,6 +212,12 @@ fn shot(
             me.pitch = -0.15;
             me.flying = true;
         }
+    }
+    if let Some(hue) = s.person.take() {
+        let fwd = Vec3::new(-me.yaw.sin(), 0.0, -me.yaw.cos());
+        let mut at = me.pos + fwd * 2.4;
+        at.y = voxels.top(at.x.floor() as i32, at.z.floor() as i32) as f32 + 1.0;
+        commands.spawn((Transform::from_translation(at).with_rotation(Quat::from_rotation_y(me.yaw + std::f32::consts::PI)), Visibility::default(), creatures::Person::new(hue)));
     }
     let t = time.elapsed_secs();
     if t > 1.0 && focus.screen == ui::Screen::Title {

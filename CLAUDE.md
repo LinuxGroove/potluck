@@ -14,7 +14,7 @@ cargo run --bin potluck --features raytracing -- --play --lighting=ultra   # Ult
 cargo run --bin potluck-server -- --port=47126 [--config=server.toml] [--tls-port=47443 --cert=fullchain.pem --key=privkey.pem]
 cargo run --bin potluck-bots -- --address=ws://127.0.0.1:47126 --bots=50 --minutes=60 --build --report=/tmp/soak.jsonl   # bot players for soak tests
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1280x720x24" target/debug/potluck --demo=/tmp/demo --size=1280x720   # scripted play-through, recorded (about 1.5 s a frame on 4 CPUs)
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1600x900x24" target/debug/potluck --shot=/tmp/a.png --after=8 [--at=x,y,z,yaw,pitch] [--time=0.8] [--screen=play|inside|tweak|pause|title] [--lighting=low|medium|high|ultra] [--no-vsync | --present=immediate|mailbox|fifo|relaxed] [--timings]   # logs the frame rate too; --timings adds where frames go (lengths, main and render world, waiting for the screen) and each render pass's CPU and GPU time
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1600x900x24" target/debug/potluck --shot=/tmp/a.png --after=8 [--at=x,y,z,yaw,pitch] [--time=0.8] [--at=creature:N] [--person[=hue]] [--screen=play|inside|tweak|pause|title] [--lighting=low|medium|high|ultra] [--no-vsync | --present=immediate|mailbox|fifo|relaxed] [--timings]   # logs the frame rate too; --timings adds where frames go (lengths, main and render world, waiting for the screen) and each render pass's CPU and GPU time
 tools/tiers.sh [out=/tmp/potluck-tiers] [size=2560x1440] [binary]   # every lighting tier from four places, with frame rates (on a real graphics card)
 tools/server-snap.sh build/potluck-server && (cd build/potluck-server && snapcraft pack)   # the server snap
 CYCLES_DEVICE=OPTIX python tools/blocks.py -- assets/blocks 256 [only=grass_top,dirt]   # bake block textures (bpy wheel in a venv; drop CYCLES_DEVICE without a GPU)
@@ -34,7 +34,7 @@ Run the tests before every commit. Set `POTLUCK_HOME` to a scratch folder for ru
 | `src/mesh.rs`, `textures.rs`, `render.rs` | 32³ chunk meshing in three layers, the generated block atlas (glowing tiles kept apart), sky, sun, lanterns, the lighting tiers (`Tier`: Low, Medium, High, Ultra) |
 | `src/player.rs`, `input.rs` | Walking, flying, building, survival; controls read once a frame into `Controls` |
 | `src/script.rs` | Luau VMs (one per creation, sandboxed, memory and time limits), the API, knobs, events, hot reload keeping creatures' state |
-| `src/creatures.rs` | Bodies made of boxes, walking, riding, drawing |
+| `src/creatures.rs` | Bodies made of boxes, walking, riding, drawing; parts wear painted skins chosen by name (`textures/skins.rs`), and players' bodies are `Person`s (placed by `net`, dressed and walked here) |
 | `src/creations.rs` | Creations on disk and embedded (`BASE`), the library, Remix, watching folders |
 | `src/net.rs`, `transport.rs` | Host-authoritative worlds: messages (`Msg`, bump `PROTOCOL` when they change), what each player hears about (players and creatures within `NEAR`, as changes), WebSocket over TCP or TLS, the status page, the LAN beacon |
 | `src/share.rs` | The market's client (sharing, loading signed creations, suggestions, merging, sign-in links for the QR code), signing in to the game server and its older codes, the launch ping |

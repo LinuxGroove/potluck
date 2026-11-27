@@ -427,6 +427,126 @@ fn spawn_parts(commands: &mut Commands, e: Entity, b: &Body, looks: &mut Looks) 
     });
 }
 
+/// A player's body, for other players and for you seen from behind: `net`
+/// places and turns it, and `people` dresses it in painted parts (shirt,
+/// trousers, a belt, a face with eyes, hair) and swings its arms and legs
+/// as it moves. The shirt's hue picks the skin and hair too.
+#[derive(Component)]
+pub struct Person {
+    parts: Vec<Part>,
+    /// Each swinging part's pivot (a hip or a shoulder) and where in the
+    /// stride it starts.
+    limbs: Vec<Option<(Vec3, f32)>>,
+    dressed: bool,
+    last: Option<Vec3>,
+    phase: f32,
+    stride: f32,
+}
+
+impl Person {
+    pub fn new(hue: f32) -> Self {
+        let parts = person_parts(hue);
+        // hands hang from the shoulders; each arm swings with the other leg
+        let limbs = parts
+            .iter()
+            .map(|q| {
+                q.leg.then(|| {
+                    let arm = q.at.y > 0.9 || q.name.contains("hand");
+                    let top = if arm { 1.47 } else { q.at.y + q.size.y / 2.0 };
+                    let left = q.at.x < 0.0;
+                    (Vec3::new(q.at.x, top, q.at.z), if left != arm { 0.0 } else { std::f32::consts::PI })
+                })
+            })
+            .collect();
+        Self { parts, limbs, dressed: false, last: None, phase: 0.0, stride: 0.0 }
+    }
+}
+
+/// A person's parts, feet at the origin, facing -z; legs, arms and hands
+/// are marked `leg`, to swing.
+pub fn person_parts(hue: f32) -> Vec<Part> {
+    let pick = |list: &[[f32; 3]], salt: i32| list[(crate::noise::hash2(hue as i32, salt, 77) * list.len() as f32) as usize % list.len()];
+    let skin = pick(&[[0.96, 0.8, 0.69], [0.87, 0.68, 0.53], [0.72, 0.53, 0.38], [0.55, 0.38, 0.26], [0.4, 0.27, 0.18]], 1);
+    let hair = pick(&[[0.12, 0.09, 0.07], [0.3, 0.19, 0.1], [0.58, 0.4, 0.2], [0.78, 0.62, 0.36], [0.5, 0.2, 0.1]], 2);
+    let shirt = Color::hsl(hue, 0.55, 0.55).to_srgba();
+    let shirt = [shirt.red, shirt.green, shirt.blue];
+    let sleeve = shirt.map(|c| c * 0.88);
+    let trousers = pick(&[[0.2, 0.25, 0.4], [0.28, 0.24, 0.2], [0.22, 0.24, 0.22], [0.34, 0.36, 0.4]], 3);
+    let part = |name: &str, size: [f32; 3], at: [f32; 3], color: [f32; 3], leg: bool| Part {
+        name: name.into(),
+        size: Vec3::from_array(size),
+        at: Vec3::from_array(at),
+        color,
+        leg,
+        head: false,
+        glow: false,
+    };
+    let mut parts = vec![
+        part("leg cloth", [0.25, 0.8, 0.27], [-0.13, 0.4, 0.0], trousers, true),
+        part("leg cloth", [0.25, 0.8, 0.27], [0.13, 0.4, 0.0], trousers, true),
+        part("sleeve cloth", [0.18, 0.5, 0.2], [0.375, 1.22, 0.0], sleeve, true),
+        part("sleeve cloth", [0.18, 0.5, 0.2], [-0.375, 1.22, 0.0], sleeve, true),
+        part("hand", [0.16, 0.16, 0.18], [0.375, 0.89, 0.0], skin, true),
+        part("hand", [0.16, 0.16, 0.18], [-0.375, 0.89, 0.0], skin, true),
+        part("shirt cloth", [0.54, 0.68, 0.3], [0.0, 1.14, 0.0], shirt, false),
+        part("belt", [0.555, 0.07, 0.31], [0.0, 0.84, 0.0], [0.3, 0.2, 0.12], false),
+        part("face", [0.44, 0.44, 0.42], [0.0, 1.7, 0.0], skin, false),
+        part("hair", [0.47, 0.12, 0.45], [0.0, 1.94, 0.01], hair, false),
+        part("hair", [0.47, 0.3, 0.1], [0.0, 1.8, 0.2], hair, false),
+        part("hair", [0.47, 0.08, 0.04], [0.0, 1.86, -0.215], hair, false),
+        part("face", [0.13, 0.03, 0.02], [0.0, 1.6, -0.215], skin.map(|c| c * 0.62), false),
+    ];
+    for side in [-1.0, 1.0] {
+        parts.push(part("eye", [0.1, 0.07, 0.02], [0.1 * side, 1.74, -0.215], [0.95, 0.95, 0.92], false));
+        parts.push(part("pupil", [0.05, 0.07, 0.02], [0.08 * side, 1.74, -0.225], [0.1, 0.08, 0.06], false));
+    }
+    parts
+}
+
+/// Dresses new people and walks the rest: arms and legs swing with the
+/// distance moved, settling straight when they stand.
+pub fn people(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut people: Query<(Entity, &mut Person, &Transform, Option<&Children>)>,
+    mut limbs: Query<(&PartView, &mut Transform), Without<Person>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<PartMaterials>,
+    rt: Option<Res<crate::render::Raytraced>>,
+) {
+    let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0) };
+    let dt = time.delta_secs().max(1e-4);
+    for (e, mut p, t, children) in &mut people {
+        if !p.dressed {
+            p.dressed = true;
+            let parts: Vec<_> = p.parts.iter().map(|q| (looks.mesh(q, Skin::of(&q.name)), looks.material(q, Skin::of(&q.name)), Transform::from_translation(q.at))).collect();
+            commands.entity(e).with_children(|c| {
+                for (i, (mesh, mat, t)) in parts.into_iter().enumerate() {
+                    c.spawn((Mesh3d(mesh), MeshMaterial3d(mat), t, PartView { index: i }));
+                }
+            });
+            continue;
+        }
+        let moved = p.last.map_or(0.0, |l| (t.translation - l).xz().length());
+        p.last = Some(t.translation);
+        // a teleport isn't a step
+        let moved = if moved > 2.0 { 0.0 } else { moved };
+        p.phase += moved * 3.2;
+        let want = (moved / dt / 4.0).min(1.0);
+        p.stride += (want - p.stride) * (dt * 8.0).min(1.0);
+        let Some(children) = children else { continue };
+        for c in children.iter() {
+            let Ok((v, mut lt)) = limbs.get_mut(c) else { continue };
+            let (Some(q), Some(Some((pivot, start)))) = (p.parts.get(v.index), p.limbs.get(v.index)) else { continue };
+            let rot = Quat::from_rotation_x((p.phase + start).sin() * 0.6 * p.stride);
+            lt.translation = *pivot + rot * (q.at - *pivot);
+            lt.rotation = rot;
+        }
+    }
+}
+
 /// Keeps the local player in the saddle.
 pub fn ride(herd: Res<Herd>, mut me: ResMut<Me>) {
     if let Some(id) = me.riding {

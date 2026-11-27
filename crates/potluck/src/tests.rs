@@ -948,6 +948,7 @@ fn creature_parts_wear_skins_by_name() {
     assert_eq!(Skin::of("bill"), Skin::Horn);
     assert_eq!(Skin::of("hat_tip"), Skin::Cloth);
     assert_eq!(Skin::of("leg_back_left"), Skin::Fur);
+    assert_eq!(Skin::of("face"), Skin::Bare);
     for skin in Skin::ALL {
         let s = paint(skin);
         let px = s.color.data.as_ref().unwrap();
@@ -977,4 +978,25 @@ fn the_sky_seen_is_less_under_a_roof() {
     // the villa's library, under its roof, against its open terrace
     let (inside, outside) = (crate::mesh::sky_seen(&w, Vec3::new(48.5, 27.6, 202.5)), crate::mesh::sky_seen(&w, Vec3::new(39.5, 27.6, 196.5)));
     assert!(inside < 0.25 && outside > 0.75, "library {inside}, terrace {outside}");
+}
+
+#[test]
+fn people_wear_clothes_a_face_and_hair() {
+    use crate::textures::skins::Skin;
+    for hue in [0.0, 67.0, 134.0, 200.0, 335.0] {
+        let parts = crate::creatures::person_parts(hue);
+        let skins: Vec<Skin> = parts.iter().map(|p| Skin::of(&p.name)).collect();
+        for want in [Skin::Cloth, Skin::Bare, Skin::Fur, Skin::Eye] {
+            assert!(skins.contains(&want), "a person wears {want:?}");
+        }
+        // legs, arms and hands swing
+        assert_eq!(parts.iter().filter(|p| p.leg).count(), 6);
+        // stands on the ground, the eyes at eye height and on the face's front
+        let low = parts.iter().map(|p| p.at.y - p.size.y / 2.0).fold(9.0f32, f32::min);
+        assert!(low.abs() < 1e-3, "feet on the ground ({low})");
+        let eye = parts.iter().find(|p| p.name == "eye").unwrap();
+        assert!((eye.at.y - crate::player::EYE).abs() < 0.15);
+        let face = parts.iter().find(|p| p.name == "face").unwrap();
+        assert!(eye.at.z < face.at.z - face.size.z / 2.0 + 0.01, "eyes on the front, which is -z");
+    }
 }

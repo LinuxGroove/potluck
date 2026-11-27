@@ -2,7 +2,7 @@
 //! part's own colour tints them. Which one a part wears comes from its name
 //! (`Skin::of`): fur for most, fluff for fleece and moss, plates for shells,
 //! a smooth sheen for jelly, fine streaks for horns and beaks, a weave for
-//! hats and belts, and glossy eyes. Each has a height (for the normal map)
+//! hats and belts, bare skin for faces and hands, and glossy eyes. Each has a height (for the normal map)
 //! and a roughness, like the blocks' art.
 
 use bevy::asset::RenderAssetUsages;
@@ -23,17 +23,20 @@ pub enum Skin {
     Smooth,
     Horn,
     Cloth,
+    Bare,
     Eye,
 }
 
 impl Skin {
-    pub const ALL: [Skin; 7] = [Skin::Fur, Skin::Fluff, Skin::Shell, Skin::Smooth, Skin::Horn, Skin::Cloth, Skin::Eye];
+    pub const ALL: [Skin; 8] = [Skin::Fur, Skin::Fluff, Skin::Shell, Skin::Smooth, Skin::Horn, Skin::Cloth, Skin::Bare, Skin::Eye];
 
     /// The skin a part wears, from its name.
     pub fn of(name: &str) -> Skin {
         let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
         if has(&["eye", "pupil"]) {
             Skin::Eye
+        } else if has(&["face", "hand", "bare"]) {
+            Skin::Bare
         } else if has(&["shell", "plate", "scale"]) {
             Skin::Shell
         } else if has(&["fleece", "wool", "moss", "tuft", "beard", "mane", "fluff"]) {
@@ -52,7 +55,7 @@ impl Skin {
     /// How many blocks one tile covers on a part.
     pub fn tile(self) -> f32 {
         match self {
-            Skin::Fur | Skin::Horn | Skin::Cloth => 0.5,
+            Skin::Fur | Skin::Horn | Skin::Cloth | Skin::Bare => 0.5,
             Skin::Fluff => 0.6,
             Skin::Shell => 0.8,
             Skin::Smooth | Skin::Eye => 1.0,
@@ -64,6 +67,7 @@ impl Skin {
         match self {
             Skin::Eye => 0.08,
             Skin::Smooth => 0.3,
+            Skin::Bare => 0.62,
             _ => 1.0,
         }
     }
@@ -161,6 +165,13 @@ fn texel(skin: Skin, x: f32, y: f32) -> (f32, f32, f32) {
             let fuzz = vn(x, y, 32, 32, 61);
             let h = 0.7 * over + 0.3 * fuzz;
             (0.8 + 0.2 * h, h, 0.92)
+        }
+        Skin::Bare => {
+            // even skin, faintly mottled, with a fine grain
+            let mottle = vn(x, y, 4, 4, 71);
+            let grain = vn(x, y, 32, 32, 72);
+            let h = 0.5 + 0.12 * grain;
+            (0.9 + 0.06 * mottle + 0.04 * grain, h, 0.55 + 0.12 * mottle)
         }
         Skin::Eye => (1.0, 0.5, 0.08),
     }
