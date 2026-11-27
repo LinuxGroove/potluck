@@ -27,32 +27,46 @@ fn main() {
     }
     let size = opt("size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some(UVec2::new(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(UVec2::new(1600, 900));
     // screenshots and recordings draw offscreen at exactly --size, in a window
-    // that fits the screen
-    let offscreen = opt("shot").is_some() || opt("demo").is_some();
+    // that fits the screen; --onscreen draws a shot straight to a window of
+    // that size, as play does, to measure frame rates the way players get them
+    let onscreen = args.iter().any(|a| a == "--onscreen");
+    let offscreen = (opt("shot").is_some() && !onscreen) || opt("demo").is_some();
     let window = if offscreen { (size.as_vec2() * (1600.0 / size.x as f32).min(900.0 / size.y as f32).min(1.0)).as_uvec2() } else { size };
+    let mut resolution = WindowResolution::new(window.x, window.y);
+    if onscreen {
+        resolution = resolution.with_scale_factor_override(1.0);
+    }
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Potluck".into(),
-            resolution: WindowResolution::new(window.x, window.y),
+            resolution,
+            // --latency=N lets N frames queue for the screen (2 unless asked)
+            desired_maximum_frame_latency: opt("latency").and_then(|n| n.parse().ok()).and_then(std::num::NonZero::new),
             // --no-vsync to see how fast a card really draws; the tools draw
-            // offscreen at their own pace, so they never wait for the screen
-            present_mode: if offscreen || args.iter().any(|a| a == "--no-vsync") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
+            // offscreen at their own pace, so they never wait for the screen;
+            // --present=immediate|mailbox|fifo|relaxed asks for one mode
+            present_mode: match opt("present").as_deref() {
+                Some("immediate") => PresentMode::Immediate,
+                Some("mailbox") => PresentMode::Mailbox,
+                Some("fifo") => PresentMode::Fifo,
+                Some("relaxed") => PresentMode::FifoRelaxed,
+                _ if offscreen || args.iter().any(|a| a == "--no-vsync") => PresentMode::AutoNoVsync,
+                _ => PresentMode::AutoVsync,
+            },
             ..default()
         }),
         ..default()
     }));
     sim(&mut app, SEED);
+    app.add_plugins(MaterialPlugin::<render::WaterMaterial>::default());
     if offscreen {
         app.insert_resource(OffscreenSize(size));
     }
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
         // checks the graphics card itself, and stays idle on one that can't ray trace
-        app.add_plugins((bevy::solari::SolariPlugins, bevy::post_process::auto_exposure::AutoExposurePlugin))
-            .add_systems(PostUpdate, render::raytrace_meshes)
-            .add_systems(PostStartup, render::adapt::setup)
-            .add_systems(Update, render::adapt::follow_day);
+        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, render::raytrace_meshes);
         // the ray tracer binds each vertex slab whole, and some cards bind at most 128 MiB
         use bevy::render::{mesh::allocator::MeshAllocatorSettings, slab_allocator::SlabAllocatorSettings};
         let slabs = SlabAllocatorSettings { max_slab_size: 64 << 20, large_threshold: 32 << 20, ..default() };
@@ -81,11 +95,16 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
-                (render::sky, render::lanterns, render::flicker, render::motes::motes, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::clouds::drift, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),
         );
+    // where a frame's time goes, logged with a shot: --timings
+    if args.iter().any(|a| a == "--timings") {
+        app.add_plugins((bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(), bevy::render::diagnostic::RenderDiagnosticsPlugin));
+        render::timings::add(&mut app);
+    }
     if args.iter().any(|a| a == "--play") {
         app.add_systems(PostStartup, |mut acts: ResMut<ui::Acts>| acts.0.push(ui::Act::PlayAlone));
     }
@@ -94,13 +113,18 @@ fn main() {
         demo::add(&mut app, dir.into(), size);
     }
     // a screenshot: --shot=out.png [--after=8] [--at=x,y,z,yaw,pitch] [--time=0.5] [--screen=inside]
-    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5)
+    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5;
+    // --at=creature looks a creature in the face, --at=creature:2 the third;
+    // --person[=hue] stands a player in view)
     if let Some(path) = opt("shot") {
         let after: f32 = opt("after").and_then(|v| v.parse().ok()).unwrap_or(8.0);
         let at: Option<Vec<f32>> = opt("at").map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect());
         let tod: Option<f32> = opt("time").and_then(|v| v.parse().ok());
         let screen = opt("screen");
-        app.insert_resource(Shot { path, after, at, tod, screen, done: false, frames: 0 });
+        let creature = opt("at").and_then(|a| a.strip_prefix("creature").map(|n| n.trim_start_matches(':').parse().unwrap_or(0)));
+        // --person[=hue] stands a player a few blocks ahead, facing you
+        let person = args.iter().find(|a| a.starts_with("--person")).map(|a| a.strip_prefix("--person=").and_then(|h| h.parse().ok()).unwrap_or(30.0));
+        app.insert_resource(Shot { path, after, at, tod, screen, creature, person, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
         // no outline round the block in the crosshair
         app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
@@ -119,6 +143,10 @@ struct Shot {
     at: Option<Vec<f32>>,
     tod: Option<f32>,
     screen: Option<String>,
+    /// Which creature to look in the face, counting by id.
+    creature: Option<usize>,
+    /// A player to stand in view, by their shirt's hue, until it's placed.
+    person: Option<f32>,
     done: bool,
     /// Frames drawn in the last three seconds before the picture, for the frame rate.
     frames: u32,
@@ -135,6 +163,8 @@ fn shot(
     herd: Res<creatures::Herd>,
     voxels: Res<world::Voxels>,
     off: Option<Res<render::Offscreen>>,
+    diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
+    frames: Option<Res<render::timings::Shared>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     use bevy::render::view::screenshot::save_to_disk;
@@ -176,6 +206,27 @@ fn shot(
             me.flying = true;
         }
     }
+    if let Some(n) = s.creature {
+        let mut ids: Vec<_> = herd.bodies.keys().copied().collect();
+        ids.sort();
+        if let Some(b) = ids.get(n).and_then(|id| herd.bodies.get(id)) {
+            // creatures face -z, turned by their yaw; stand a few blocks in
+            // front, a little above, looking back at it
+            let fwd = Quat::from_rotation_y(b.yaw) * Vec3::NEG_Z;
+            let reach = 1.5 + b.half.x.max(b.half.z) * 1.8;
+            me.pos = b.pos + fwd * reach + Vec3::Y * (b.half.y * 1.1 - player::EYE);
+            me.vel = Vec3::ZERO;
+            me.yaw = fwd.x.atan2(fwd.z);
+            me.pitch = -0.15;
+            me.flying = true;
+        }
+    }
+    if let Some(hue) = s.person.take() {
+        let fwd = Vec3::new(-me.yaw.sin(), 0.0, -me.yaw.cos());
+        let mut at = me.pos + fwd * 2.4;
+        at.y = voxels.top(at.x.floor() as i32, at.z.floor() as i32) as f32 + 1.0;
+        commands.spawn((Transform::from_translation(at).with_rotation(Quat::from_rotation_y(me.yaw + std::f32::consts::PI)), Visibility::default(), creatures::Person::new(hue)));
+    }
     let t = time.elapsed_secs();
     if t > 1.0 && focus.screen == ui::Screen::Title {
         if let Some(sc) = s.screen.clone() {
@@ -196,6 +247,21 @@ fn shot(
     if t > s.after && !s.done {
         s.done = true;
         info!("Shot: {:.0} frames a second over the last 3 s", s.frames as f32 / 3.0);
+        if let Some(f) = frames {
+            f.report(3.0);
+        }
+        if let Some(d) = diagnostics {
+            // each pass's CPU and GPU time, the dearest first
+            let mut all: Vec<(String, f64)> = d
+                .iter()
+                .filter(|x| x.path().as_str().ends_with("elapsed_gpu") || x.path().as_str().ends_with("elapsed_cpu"))
+                .filter_map(|x| Some((x.path().to_string(), x.smoothed()?)))
+                .collect();
+            all.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for (path, v) in all {
+                info!("Timing: {path} {v:.3}");
+            }
+        }
         let path = s.path.clone();
         commands.spawn(render::screenshot(off.as_deref())).observe(save_to_disk(path));
     }
@@ -208,6 +274,7 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut waters: ResMut<Assets<render::WaterMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut media: ResMut<Assets<ScatteringMedium>>,
     settings: Res<settings::Settings>,
@@ -218,7 +285,7 @@ fn setup(
 ) {
     let atlas = textures::build(&mut images);
     let rt = render::Raytraced::new(&settings, device.as_deref());
-    commands.insert_resource(render::make_materials(&atlas, &mut mats, rt));
+    commands.insert_resource(render::make_materials(&atlas, &mut mats, &mut waters, rt));
     commands.insert_resource(atlas);
     commands.insert_resource(rt);
     commands.insert_resource(mesh::Cover::of(render::Tier::of(&settings.lighting)));
@@ -226,6 +293,7 @@ fn setup(
     let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
     render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
     render::spawn_sea(&mut commands, &mut meshes, &mut mats);
+    render::clouds::spawn(&mut commands, &mut meshes, &mut mats, &mut images);
     if let Some(off) = off {
         commands.insert_resource(off);
     }

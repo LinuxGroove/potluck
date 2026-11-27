@@ -1117,6 +1117,86 @@ fn every_base_creation_runs_and_answers_players() {
     assert!(scripts.out.scores.iter().any(|s| s.1 == "longest ride" && s.3 == 7 && s.4 > 0.0), "the ride is on the board: {:?}", scripts.out.scores);
 }
 
+#[test]
+fn clouds_cover_part_of_the_sky() {
+    let n = 512;
+    let cover: Vec<f32> = (0..n * n).map(|i| crate::render::clouds::cover((i % n) as f32 / n as f32, (i / n) as f32 / n as f32)).collect();
+    let cloudy = cover.iter().filter(|&&c| c > 0.5).count() as f32 / cover.len() as f32;
+    if let Ok(dir) = std::env::var("POTLUCK_DUMP_TEX") {
+        let px: Vec<u8> = cover.iter().map(|c| (c * 255.0) as u8).collect();
+        let mut f = format!("P5 {n} {n} 255\n").into_bytes();
+        f.extend(px);
+        std::fs::write(std::path::Path::new(&dir).join("clouds.pgm"), f).unwrap();
+    }
+    assert!((0.2..0.55).contains(&cloudy), "a third or so of the sky is cloud ({cloudy})");
+    // the pattern tiles
+    let edge = (crate::render::clouds::cover(0.0, 0.3) - crate::render::clouds::cover(1.0, 0.3)).abs();
+    assert!(edge < 1e-3, "the texture tiles ({edge})");
+}
+
+#[test]
+fn creature_parts_wear_skins_by_name() {
+    use crate::textures::skins::{paint, Skin, SIZE};
+    assert_eq!(Skin::of("eye_left"), Skin::Eye);
+    assert_eq!(Skin::of("shell_top"), Skin::Shell);
+    assert_eq!(Skin::of("fleece"), Skin::Fluff);
+    assert_eq!(Skin::of("jelly"), Skin::Smooth);
+    assert_eq!(Skin::of("bill"), Skin::Horn);
+    assert_eq!(Skin::of("hat_tip"), Skin::Cloth);
+    assert_eq!(Skin::of("leg_back_left"), Skin::Fur);
+    assert_eq!(Skin::of("face"), Skin::Bare);
+    for skin in Skin::ALL {
+        let s = paint(skin);
+        let px = s.color.data.as_ref().unwrap();
+        assert_eq!(px.len(), SIZE * SIZE * 4);
+        if let Ok(dir) = std::env::var("POTLUCK_DUMP_TEX") {
+            let mut f = format!("P5 {SIZE} {SIZE} 255\n").into_bytes();
+            f.extend(px.chunks(4).map(|c| c[0]));
+            std::fs::write(std::path::Path::new(&dir).join(format!("skin_{skin:?}.pgm")), f).unwrap();
+        }
+    }
+    // a part's box: skins tile at one scale on every face, and it's darker underneath
+    let m = crate::creatures::part_mesh(Vec3::new(1.0, 0.5, 2.0), Skin::Fur, true);
+    let uv = m.attribute(Mesh::ATTRIBUTE_UV_0).unwrap();
+    let bevy::mesh::VertexAttributeValues::Float32x2(uv) = uv else { panic!() };
+    let widest = uv.iter().map(|u| u[0].max(u[1])).fold(0.0f32, f32::max);
+    assert!((widest - 2.0 / Skin::Fur.tile()).abs() < 1e-4, "the long side carries four tiles ({widest})");
+    let Some(bevy::mesh::VertexAttributeValues::Float32x4(col)) = m.attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("no shading") };
+    let pos = m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+    let (top, bottom) = pos.iter().zip(col).fold((0.0f32, 1.0f32), |(t, b), (p, c)| if p[1] > 0.0 { (t.max(c[0]), b) } else { (t, b.min(c[0])) });
+    assert!(top > bottom + 0.2, "lighter on top ({top}) than underneath ({bottom})");
+    assert!(crate::creatures::part_mesh(Vec3::ONE, Skin::Fur, false).attribute(Mesh::ATTRIBUTE_COLOR).is_none(), "no colours for ray tracing");
+}
+
+#[test]
+fn the_sky_seen_is_less_under_a_roof() {
+    let w = world();
+    // the villa's library, under its roof, against its open terrace
+    let (inside, outside) = (crate::mesh::sky_seen(&w, Vec3::new(48.5, 27.6, 202.5)), crate::mesh::sky_seen(&w, Vec3::new(39.5, 27.6, 196.5)));
+    assert!(inside < 0.25 && outside > 0.75, "library {inside}, terrace {outside}");
+}
+
+#[test]
+fn people_wear_clothes_a_face_and_hair() {
+    use crate::textures::skins::Skin;
+    for hue in [0.0, 67.0, 134.0, 200.0, 335.0] {
+        let parts = crate::creatures::person_parts(hue);
+        let skins: Vec<Skin> = parts.iter().map(|p| Skin::of(&p.name)).collect();
+        for want in [Skin::Cloth, Skin::Bare, Skin::Fur, Skin::Eye] {
+            assert!(skins.contains(&want), "a person wears {want:?}");
+        }
+        // legs, arms and hands swing
+        assert_eq!(parts.iter().filter(|p| p.leg).count(), 6);
+        // stands on the ground, the eyes at eye height and on the face's front
+        let low = parts.iter().map(|p| p.at.y - p.size.y / 2.0).fold(9.0f32, f32::min);
+        assert!(low.abs() < 1e-3, "feet on the ground ({low})");
+        let eye = parts.iter().find(|p| p.name == "eye").unwrap();
+        assert!((eye.at.y - crate::player::EYE).abs() < 0.15);
+        let face = parts.iter().find(|p| p.name == "face").unwrap();
+        assert!(eye.at.z < face.at.z - face.size.z / 2.0 + 0.01, "eyes on the front, which is -z");
+    }
+}
+
 /// Jams from the game: the Green's arches show what the market offers (an
 /// entry in this week's jam first, then what's trending, and for younger
 /// players only what's checked for all ages) until players bring their own;

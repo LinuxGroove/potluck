@@ -40,13 +40,16 @@ pub struct Off {
     pub sky: bool,
     /// Leaves out of the ray traced scene (the tracer counts them as solid)
     pub rtleaves: bool,
+    /// Leaves in the ray traced scene as the solid blocks they're drawn
+    /// with, in place of the porous stand-in (`porous_leaves`)
+    pub rtsolid: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid") }
     }
 }
 
@@ -342,7 +345,8 @@ fn sky_u(s: f32) -> f32 {
 fn sky_through(b: BlockId) -> f32 {
     match b {
         AIR => 1.0,
-        LEAVES | BIRCH_LEAVES | PINE => 0.7,
+        // crowns are full of gaps: a forest floor keeps a good share of sky
+        LEAVES | BIRCH_LEAVES | PINE => 0.8,
         GLASS => 0.85,
         WATER => 0.8,
         _ if blocks::is_opaque(b) => 0.0,
@@ -394,6 +398,27 @@ const SKY_REGION: IVec3 = IVec3::new(CHUNK + 2 * SKY_AROUND.x, CHUNK + 2 * SKY_P
 fn sky_through_all() -> &'static [f32; 256] {
     static ALL: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
     ALL.get_or_init(|| std::array::from_fn(|i| sky_through(i as BlockId)))
+}
+
+/// How much of the sky a point sees, 0 to 1, by the same rays chunks are
+/// shaded with: for the eye adjusting under trees and roofs (`render::sky`).
+pub fn sky_seen(w: &Voxels, p: Vec3) -> f32 {
+    let pass = sky_through_all();
+    let at = p.floor().as_ivec3();
+    let mut seen = 0.0;
+    for ray in sky_rays(true) {
+        let mut through = 1.0;
+        for c in &ray.cells {
+            let q = at + *c;
+            through *= pass[w.get(q.x, q.y, q.z) as usize];
+            if through < 0.03 {
+                through = 0.0;
+                break;
+            }
+        }
+        seen += through * ray.weight;
+    }
+    seen
 }
 
 /// The rays near the player and further out (see `Sky`).
@@ -709,6 +734,38 @@ fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 
 
 /// A chunk's meshes, with as much detail as `detail` says; near the player,
 /// its plants move in the wind.
+/// The ray tracer's stand-in for a chunk's leaves. It counts everything as
+/// solid, so a canopy of whole leaf blocks would shut out the sky and leave
+/// the forest floor black; here about half the leaf blocks are left out and
+/// the rest are smaller boxes, nudged about inside their cells, so sun and
+/// sky come down through the gaps in patches, as they do through the drawn
+/// leaves' cut-outs.
+pub fn porous_leaves(w: &Voxels, c: IVec3) -> MeshData {
+    let mut m = MeshData::default();
+    let o = c * CHUNK;
+    for y in o.y..o.y + CHUNK {
+        for z in o.z..o.z + CHUNK {
+            for x in o.x..o.x + CHUNK {
+                if !matches!(w.get(x, y, z), LEAVES | BIRCH_LEAVES | PINE) {
+                    continue;
+                }
+                let r = |k: i32| hash2(x * 31 + k, z * 17 - y * 5 + k * 3, 911 + y);
+                if r(4) < 0.55 {
+                    continue;
+                }
+                let size = 0.52 + 0.1 * r(0);
+                let room = 1.0 - size;
+                let mid = Vec3::new(x as f32 + 0.5 + (r(1) - 0.5) * room, y as f32 + 0.5 + (r(2) - 0.5) * room * 0.6, z as f32 + 0.5 + (r(3) - 0.5) * room);
+                for f in &FACES {
+                    let corners = f.c.map(|cc| (mid + (Vec3::new(cc[0] as f32, cc[1] as f32, cc[2] as f32) - 0.5) * size).to_array());
+                    m.quad(corners, f.n.map(|v| v as f32), [0.0, 0.0, 1.0, 1.0], [1.0; 4], false);
+                }
+            }
+        }
+    }
+    m
+}
+
 pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail: Detail) -> ChunkMesh {
     let detail = if cover.off.lod { Detail::Near } else { detail };
     // past the middle distance a fin is a few pixels
@@ -805,7 +862,9 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                         }
                     }
                     Shape::Solid | Shape::Cutout => {
-                        let layer = if def.light { 4 } else if def.shape == Shape::Solid { 0 } else { 1 };
+                        // glass goes with the plants, which stay out of the ray
+                        // traced scene: the tracer would count it solid
+                        let layer = if def.light { 4 } else if def.shape == Shape::Solid { 0 } else if id == GLASS { 3 } else { 1 };
                         for f in &FACES {
                             let (nx, ny, nz) = (x + f.n[0], y + f.n[1], z + f.n[2]);
                             let nb = w.get(nx, ny, nz);
@@ -877,6 +936,10 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
 #[derive(Resource)]
 pub struct BlockMaterials {
     pub layers: [Handle<StandardMaterial>; 5],
+    /// The ray tracer's stand-in canopy's (`porous_leaves`): plain leaf green.
+    pub canopy: Handle<StandardMaterial>,
+    /// The water layer's, which keeps its own normals (`render::WaterMaterial`).
+    pub water: Handle<crate::render::WaterMaterial>,
 }
 
 #[derive(Resource, Default)]
@@ -945,12 +1008,13 @@ pub fn remesh(
     let a = &*atlas;
     let cv = *cover;
     let jobs: Vec<(IVec3, Detail)> = list.iter().map(|&c| (c, Detail::of(c, focus.0, chunks.detail.get(&c).copied()))).collect();
-    let done: Vec<(IVec3, Detail, ChunkMesh)> = ComputeTaskPool::get().scope(|s| {
+    let porous = rt.0 && !cv.off.rtleaves && !cv.off.rtsolid;
+    let done: Vec<(IVec3, Detail, ChunkMesh, Option<MeshData>)> = ComputeTaskPool::get().scope(|s| {
         for &(c, d) in &jobs {
-            s.spawn(async move { (c, d, mesh_chunk(w, a, c, cv, d)) });
+            s.spawn(async move { (c, d, mesh_chunk(w, a, c, cv, d), porous.then(|| porous_leaves(w, c))) });
         }
     });
-    for (c, detail, m) in done {
+    for (c, detail, m, mut canopy) in done {
         chunks.meshed += 1;
         if m.varies {
             chunks.detail.insert(c, detail);
@@ -974,10 +1038,14 @@ pub fn remesh(
             let mut e = commands.spawn((
                 // water and plants stay out of the ray traced scene, so they keep their colours
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(mats.layers[LAYER_MATERIAL[i]].clone()),
                 Transform::IDENTITY,
                 ChunkPart,
             ));
+            if i == 2 {
+                e.insert(MeshMaterial3d(mats.water.clone()));
+            } else {
+                e.insert(MeshMaterial3d(mats.layers[LAYER_MATERIAL[i]].clone()));
+            }
             if let (true, Some(w)) = (sways, &wind) {
                 e.insert(MeshMorphWeights::Reference(w.0));
             }
@@ -987,6 +1055,14 @@ pub fn remesh(
                 }
                 1 if cover.off.rtleaves => {
                     e.insert(crate::render::NotRaytraced);
+                }
+                // the tracer sees a porous stand-in in their place, so light
+                // comes down through the canopy in patches
+                1 if porous => {
+                    e.insert(crate::render::NotRaytraced);
+                    if let Some(stand_in) = canopy.take().filter(|d| !d.is_empty()) {
+                        crate::render::trace_only(&mut e, meshes.add(stand_in.into_mesh(true)), mats.canopy.clone());
+                    }
                 }
                 3 => {
                     e.insert(crate::render::NotRaytraced);

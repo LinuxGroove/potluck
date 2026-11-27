@@ -23,6 +23,7 @@ use bevy::{
 use crate::noise::{seed_of, tfbm, tnoise, Rng};
 
 mod art;
+pub mod skins;
 
 /// How big the drawn textures are.
 pub const TILE: usize = 32;

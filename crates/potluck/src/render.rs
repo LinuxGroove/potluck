@@ -15,9 +15,9 @@ use bevy::pbr::{AtmosphereSettings, ContactShadows, DistanceFog, FogFalloff, Scr
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
+pub mod clouds;
+pub mod timings;
 pub mod motes;
-#[cfg(feature = "raytracing")]
-pub mod adapt;
 
 use crate::mesh::BlockMaterials;
 use crate::player::{MainCamera, Me};
@@ -116,6 +116,15 @@ impl Raytraced {
 #[derive(Component)]
 pub struct NotRaytraced;
 
+/// Puts a mesh in the ray traced scene only, as a child of `e`: the tracer
+/// sees it and nothing draws it.
+pub fn trace_only(e: &mut EntityCommands, mesh: Handle<Mesh>, material: Handle<StandardMaterial>) {
+    #[cfg(feature = "raytracing")]
+    e.with_child((bevy::solari::prelude::RaytracingMesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY));
+    #[cfg(not(feature = "raytracing"))]
+    let _ = (e, mesh, material);
+}
+
 /// Every mesh drawn joins the ray traced scene, when there is one.
 #[cfg(feature = "raytracing")]
 pub fn raytrace_meshes(rt: Res<Raytraced>, added: Query<(Entity, &Mesh3d), (Added<Mesh3d>, Without<NotRaytraced>)>, mut commands: Commands) {
@@ -143,7 +152,30 @@ pub struct LanternLight {
     pub phase: f32,
 }
 
-pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, rt: Raytraced) -> BlockMaterials {
+/// Water: the block material, except that it keeps its own bumpy normals
+/// where the camera has a normal prepass (High, for SSAO). Bevy otherwise
+/// lights see-through things with the prepass's normals, which are those of
+/// the sea floor under them, and the near sea went flat and pale.
+pub type WaterMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, OwnNormals>;
+
+#[derive(Asset, bevy::render::render_resource::AsBindGroup, Reflect, Debug, Clone, Default)]
+pub struct OwnNormals {}
+
+impl bevy::pbr::MaterialExtension for OwnNormals {
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if let Some(f) = descriptor.fragment.as_mut() {
+            f.shader_defs.retain(|d| *d != bevy::shader::ShaderDefVal::from("LOAD_PREPASS_NORMALS"));
+        }
+        Ok(())
+    }
+}
+
+pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, waters: &mut Assets<WaterMaterial>, rt: Raytraced) -> BlockMaterials {
     let solid = StandardMaterial {
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
@@ -187,7 +219,9 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
     // ray traced meshes carry no colours, so there the material takes the
     // colour of a block or two of water instead of showing bare sand
     let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)] }
+    let own = waters.add(WaterMaterial { base: water.clone(), extension: OwnNormals {} });
+    let canopy = mats.add(StandardMaterial { base_color: Color::srgb(0.22, 0.4, 0.15), perceptual_roughness: 0.9, ..default() });
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], canopy, water: own }
 }
 
 /// The open sea round the island, out past the far end of the view: a ring of
@@ -355,6 +389,11 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
     commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.75, 0.82, 1.0), brightness: if medium { 1200.0 } else { 6000.0 }, ..default() });
 }
 
+/// How far into the night it is for the eye, 0 by day and 1 at night.
+fn night_eye(day: f32) -> f32 {
+    (1.0 - day).powf(0.7)
+}
+
 pub fn sky(
     time: Res<Time>,
     mut clock: ResMut<Clock>,
@@ -366,7 +405,19 @@ pub fn sky(
     mut haze: Query<(&mut Transform, &mut FogVolume), (With<Haze>, Without<Sun>, Without<MainCamera>)>,
     me: Res<Me>,
     rt: Res<Raytraced>,
+    voxels: Res<crate::world::Voxels>,
+    mut eye: Local<Option<(f32, f32)>>,
 ) {
+    // how open the sky over the player is, looked at a few times a second
+    // and followed slowly, as eyes adjust
+    let (since, open) = eye.get_or_insert((1.0, 1.0));
+    *since += time.delta_secs();
+    if *since > 0.25 {
+        let now = crate::mesh::sky_seen(&voxels, me.eye());
+        *open += (now - *open) * (*since / 1.5).min(1.0);
+        *since = 0.0;
+    }
+    let shade = 1.0 - open.clamp(0.0, 1.0);
     if clock.running {
         clock.time = (clock.time + time.delta_secs() / (DAY_MINUTES * 60.0)) % 1.0;
     }
@@ -419,12 +470,16 @@ pub fn sky(
         grade.shadows.lift = -0.008 * golden;
         grade.highlights.gain = 1.0 + 0.04 * golden;
         // eyes adjust to the dark, gently
-        ex.ev100 = 13.7 - (1.0 - day).powf(0.7) * 4.4;
+        ex.ev100 = 13.7 - night_eye(day) * 4.4;
         if rt.0 {
             // ray traced shade has no made-up fill from everywhere, so the
-            // eye opens up a little
-            ex.ev100 -= 0.4;
+            // eye opens up a little, and more at night
+            ex.ev100 -= 0.4 + 1.0 * night_eye(day);
         }
+        // under trees or a roof by day the eye opens up: a little where the
+        // sky's fill still reaches in, more where ray tracing finds the
+        // shade truly dark
+        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);
         let f = night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day);
