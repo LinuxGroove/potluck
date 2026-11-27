@@ -17,8 +17,6 @@ use bevy::prelude::*;
 
 pub mod clouds;
 pub mod motes;
-#[cfg(feature = "raytracing")]
-pub mod adapt;
 
 use crate::mesh::BlockMaterials;
 use crate::player::{MainCamera, Me};
@@ -391,7 +389,19 @@ pub fn sky(
     mut haze: Query<(&mut Transform, &mut FogVolume), (With<Haze>, Without<Sun>, Without<MainCamera>)>,
     me: Res<Me>,
     rt: Res<Raytraced>,
+    voxels: Res<crate::world::Voxels>,
+    mut eye: Local<Option<(f32, f32)>>,
 ) {
+    // how open the sky over the player is, looked at a few times a second
+    // and followed slowly, as eyes adjust
+    let (since, open) = eye.get_or_insert((1.0, 1.0));
+    *since += time.delta_secs();
+    if *since > 0.25 {
+        let now = crate::mesh::sky_seen(&voxels, me.eye());
+        *open += (now - *open) * (*since / 1.5).min(1.0);
+        *since = 0.0;
+    }
+    let shade = 1.0 - open.clamp(0.0, 1.0);
     if clock.running {
         clock.time = (clock.time + time.delta_secs() / (DAY_MINUTES * 60.0)) % 1.0;
     }
@@ -450,6 +460,10 @@ pub fn sky(
             // eye opens up a little
             ex.ev100 -= 0.4;
         }
+        // under trees or a roof by day the eye opens up: a little where the
+        // sky's fill still reaches in, more where ray tracing finds the
+        // shade truly dark
+        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 2.8 } else { 1.0 };
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);
         let f = night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day);

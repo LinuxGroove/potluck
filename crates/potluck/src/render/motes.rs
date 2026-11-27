@@ -17,11 +17,11 @@ use crate::world::{Voxels, SEA};
 /// The most embers and fireflies about at once.
 const EMBERS: usize = 90;
 const FIREFLIES: usize = 28;
-const DUST: usize = 70;
+const DUST: usize = 110;
 /// How far from the player braziers send up embers and fireflies stray.
 const EMBER_REACH: f32 = 28.0;
 const FIREFLY_REACH: f32 = 20.0;
-const DUST_REACH: f32 = 6.0;
+const DUST_REACH: f32 = 4.5;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -192,7 +192,7 @@ pub fn motes(
             let at = eye + Vec3::new(dice.range(-1.0, 1.0), dice.range(-0.8, 0.9), dice.range(-1.0, 1.0)) * DUST_REACH;
             if voxels.at(at.floor().as_ivec3()) == crate::blocks::AIR {
                 let vel = Vec3::new(dice.range(-0.03, 0.03), dice.range(-0.02, 0.01), dice.range(-0.03, 0.03));
-                spawn(&mut commands, Kind::Dust, at, vel, dice.range(8.0, 16.0), dice.range(0.016, 0.028), dice.range(0.0, 50.0));
+                spawn(&mut commands, Kind::Dust, at, vel, dice.range(8.0, 16.0), dice.range(0.03, 0.05), dice.range(0.0, 50.0));
             }
         }
     }

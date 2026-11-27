@@ -397,6 +397,27 @@ fn sky_through_all() -> &'static [f32; 256] {
     ALL.get_or_init(|| std::array::from_fn(|i| sky_through(i as BlockId)))
 }
 
+/// How much of the sky a point sees, 0 to 1, by the same rays chunks are
+/// shaded with: for the eye adjusting under trees and roofs (`render::sky`).
+pub fn sky_seen(w: &Voxels, p: Vec3) -> f32 {
+    let pass = sky_through_all();
+    let at = p.floor().as_ivec3();
+    let mut seen = 0.0;
+    for ray in sky_rays(true) {
+        let mut through = 1.0;
+        for c in &ray.cells {
+            let q = at + *c;
+            through *= pass[w.get(q.x, q.y, q.z) as usize];
+            if through < 0.03 {
+                through = 0.0;
+                break;
+            }
+        }
+        seen += through * ray.weight;
+    }
+    seen
+}
+
 /// The rays near the player and further out (see `Sky`).
 fn sky_rays(full: bool) -> &'static [SkyRay] {
     static RAYS: std::sync::OnceLock<[Vec<SkyRay>; 2]> = std::sync::OnceLock::new();

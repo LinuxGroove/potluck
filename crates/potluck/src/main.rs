@@ -50,10 +50,7 @@ fn main() {
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
         // checks the graphics card itself, and stays idle on one that can't ray trace
-        app.add_plugins((bevy::solari::SolariPlugins, bevy::post_process::auto_exposure::AutoExposurePlugin))
-            .add_systems(PostUpdate, render::raytrace_meshes)
-            .add_systems(PostStartup, render::adapt::setup)
-            .add_systems(Update, render::adapt::follow_day);
+        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, render::raytrace_meshes);
         // the ray tracer binds each vertex slab whole, and some cards bind at most 128 MiB
         use bevy::render::{mesh::allocator::MeshAllocatorSettings, slab_allocator::SlabAllocatorSettings};
         let slabs = SlabAllocatorSettings { max_slab_size: 64 << 20, large_threshold: 32 << 20, ..default() };
@@ -193,11 +190,11 @@ fn shot(
             // creatures face -z, turned by their yaw; stand a few blocks in
             // front, a little above, looking back at it
             let fwd = Quat::from_rotation_y(b.yaw) * Vec3::NEG_Z;
-            let reach = 2.2 + b.half.x.max(b.half.z) * 2.0;
-            me.pos = b.pos + fwd * reach + Vec3::Y * (b.half.y * 1.4 - 1.5);
+            let reach = 1.5 + b.half.x.max(b.half.z) * 1.8;
+            me.pos = b.pos + fwd * reach + Vec3::Y * (b.half.y * 1.1 - player::EYE);
             me.vel = Vec3::ZERO;
             me.yaw = fwd.x.atan2(fwd.z);
-            me.pitch = -0.2;
+            me.pitch = -0.15;
             me.flying = true;
         }
     }

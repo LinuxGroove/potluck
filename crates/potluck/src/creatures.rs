@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use crate::noise::Rng;
 use crate::player::{move_body, Me};
 use crate::script::KindDef;
+use crate::textures::skins::{paint, Skin};
 use crate::world::Voxels;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -245,8 +246,58 @@ pub struct PartView {
     index: usize,
 }
 
+/// The looks parts share: a material for each colour, glow and skin, the
+/// skins' textures, and a mesh for each size and skin.
 #[derive(Resource, Default)]
-pub struct PartMaterials(HashMap<([u8; 3], bool), Handle<StandardMaterial>>);
+pub struct PartMaterials {
+    mats: HashMap<([u8; 3], bool, Skin), Handle<StandardMaterial>>,
+    skins: HashMap<Skin, [Handle<Image>; 3]>,
+    meshes: HashMap<([u16; 3], Skin), Handle<Mesh>>,
+}
+
+/// A part's box, `size` across, with its skin tiling at the same scale on
+/// every face (strands running down the sides) and, drawn normally, shading
+/// that darkens toward its underside like a painted model. Ray traced
+/// meshes carry no colours, so there the light does that alone.
+pub fn part_mesh(size: Vec3, skin: Skin, colours: bool) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let h = size / 2.0;
+    let tile = skin.tile();
+    // each face: its normal, the way across it and the way up it
+    let faces = [
+        (Vec3::X, Vec3::NEG_Z, Vec3::Y),
+        (Vec3::NEG_X, Vec3::Z, Vec3::Y),
+        (Vec3::Z, Vec3::X, Vec3::Y),
+        (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
+        (Vec3::Y, Vec3::X, Vec3::NEG_Z),
+        (Vec3::NEG_Y, Vec3::X, Vec3::Z),
+    ];
+    let (mut pos, mut norm, mut uv, mut col, mut idx) = (vec![], vec![], vec![], vec![], vec![]);
+    for (n, r, up) in faces {
+        let (hn, hr, hu) = ((n * h).length(), (r * h).length(), (up * h).length());
+        let base = pos.len() as u32;
+        for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let p = n * hn + r * hr * a + up * hu * b;
+            pos.push(p.to_array());
+            norm.push(n.to_array());
+            uv.push([(a + 1.0) * hr / tile, (1.0 - b) * hu / tile]);
+            // lighter on top, darker underneath
+            let k = if skin.shaded() { 0.74 + 0.26 * ((p.y + h.y) / size.y.max(1e-3)).clamp(0.0, 1.0) } else { 1.0 };
+            col.push([k, k, k, 1.0]);
+        }
+        idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, norm)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+        .with_inserted_indices(Indices::U32(idx));
+    if colours {
+        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    }
+    m.with_generated_tangents().expect("a box has UVs and normals")
+}
 
 pub fn draw(
     mut commands: Commands,
@@ -255,11 +306,11 @@ pub fn draw(
     mut parts: Query<(&PartView, &mut Transform), Without<BodyView>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut cache: ResMut<PartMaterials>,
-    mut cube: Local<Option<Handle<Mesh>>>,
+    rt: Option<Res<crate::render::Raytraced>>,
 ) {
-    // tangents too, so ray tracing can take the bodies
-    let cube = cube.get_or_insert_with(|| meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 1.0)).with_generated_tangents().unwrap())).clone();
+    let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0) };
     let mut seen = std::collections::HashSet::new();
     for (e, mut v, mut t, children) in &mut views {
         let Some(b) = herd.bodies.get(&v.id) else {
@@ -276,7 +327,7 @@ pub fn draw(
                     commands.entity(c).despawn();
                 }
             }
-            spawn_parts(&mut commands, e, b, &cube, &mut mats, &mut cache);
+            spawn_parts(&mut commands, e, b, &mut looks);
             continue;
         }
         if let Some(ch) = children {
@@ -291,7 +342,7 @@ pub fn draw(
     for b in herd.bodies.values() {
         if !seen.contains(&b.id) {
             let e = commands.spawn((BodyView { id: b.id, rev: b.rev }, Transform::from_translation(b.pos), Visibility::default())).id();
-            spawn_parts(&mut commands, e, b, &cube, &mut mats, &mut cache);
+            spawn_parts(&mut commands, e, b, &mut looks);
         }
     }
 }
@@ -308,26 +359,70 @@ fn pose(p: &Part, i: usize, phase: f32, t: &mut Transform) {
     }
 }
 
-fn spawn_parts(commands: &mut Commands, e: Entity, b: &Body, cube: &Handle<Mesh>, mats: &mut Assets<StandardMaterial>, cache: &mut PartMaterials) {
-    commands.entity(e).with_children(|c| {
-        for (i, p) in b.parts.iter().enumerate() {
-            let key = (p.color.map(|v| (v * 255.0) as u8), p.glow);
-            let mat = cache
-                .0
-                .entry(key)
-                .or_insert_with(|| {
-                    let col = Color::srgb(p.color[0], p.color[1], p.color[2]);
-                    mats.add(StandardMaterial {
-                        base_color: col,
-                        perceptual_roughness: 0.85,
-                        emissive: if p.glow { col.to_linear() * 4.0 } else { LinearRgba::BLACK },
-                        ..default()
-                    })
-                })
-                .clone();
-            let mut t = Transform::from_translation(p.at).with_scale(p.size);
+/// What drawing parts needs at hand.
+struct Looks<'a> {
+    meshes: &'a mut Assets<Mesh>,
+    mats: &'a mut Assets<StandardMaterial>,
+    images: &'a mut Assets<Image>,
+    cache: &'a mut PartMaterials,
+    rt: bool,
+}
+
+impl Looks<'_> {
+    fn material(&mut self, p: &Part, skin: Skin) -> Handle<StandardMaterial> {
+        let key = (p.color.map(|v| (v * 255.0) as u8), p.glow, skin);
+        if let Some(m) = self.cache.mats.get(&key) {
+            return m.clone();
+        }
+        let images = &mut *self.images;
+        let [color, normal, rough] = self
+            .cache
+            .skins
+            .entry(skin)
+            .or_insert_with(|| {
+                let s = paint(skin);
+                [images.add(s.color), images.add(s.normal), images.add(s.rough)]
+            })
+            .clone();
+        let col = Color::srgb(p.color[0], p.color[1], p.color[2]);
+        let textured = skin != Skin::Eye;
+        let m = self.mats.add(StandardMaterial {
+            base_color: col,
+            base_color_texture: textured.then_some(color),
+            normal_map_texture: textured.then_some(normal),
+            metallic_roughness_texture: textured.then_some(rough),
+            perceptual_roughness: skin.roughness(),
+            reflectance: if skin == Skin::Eye { 0.6 } else { 0.4 },
+            emissive: if p.glow { col.to_linear() * 4.0 } else { LinearRgba::BLACK },
+            ..default()
+        });
+        self.cache.mats.insert(key, m.clone());
+        m
+    }
+
+    fn mesh(&mut self, p: &Part, skin: Skin) -> Handle<Mesh> {
+        let key = (p.size.to_array().map(|v| (v * 256.0).round().clamp(1.0, 65535.0) as u16), skin);
+        let rt = self.rt;
+        let meshes = &mut *self.meshes;
+        self.cache.meshes.entry(key).or_insert_with(|| meshes.add(part_mesh(p.size, skin, !rt))).clone()
+    }
+}
+
+fn spawn_parts(commands: &mut Commands, e: Entity, b: &Body, looks: &mut Looks) {
+    let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>, Transform)> = b
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let skin = Skin::of(&p.name);
+            let mut t = Transform::from_translation(p.at);
             pose(p, i, b.phase, &mut t);
-            c.spawn((Mesh3d(cube.clone()), MeshMaterial3d(mat), t, PartView { index: i }));
+            (looks.mesh(p, skin), looks.material(p, skin), t)
+        })
+        .collect();
+    commands.entity(e).with_children(|c| {
+        for (i, (mesh, mat, t)) in parts.into_iter().enumerate() {
+            c.spawn((Mesh3d(mesh), MeshMaterial3d(mat), t, PartView { index: i }));
         }
     });
 }
