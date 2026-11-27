@@ -73,7 +73,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 
   target/debug/potluck --demo=/tmp/demo --size=1280x720
 ```
 
-`potluck --shot=out.png --after=8 --at=x,y,z,yaw,pitch --time=0.5 --screen=inside` takes one screenshot, and `--lighting=high` tries a lighting tier without changing your setting.
+`potluck --shot=out.png --after=8 --at=x,y,z,yaw,pitch --time=0.5 --screen=inside` takes one screenshot, and `--lighting=high` tries a lighting tier without changing your setting. Built with `--features raytracing`, Ultra is ray traced on graphics cards that can (NVIDIA RTX, recent AMD and Intel Arc).
 
 ## Releases
 

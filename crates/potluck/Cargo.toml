@@ -17,6 +17,10 @@ serde_json = "1"
 toml = "0.9"
 ctrlc = { version = "3.5.3", features = ["termination"] }
 
+[features]
+# Ultra lighting ray traced with Bevy's Solari, on graphics cards that can
+raytracing = ["bevy/bevy_solari"]
+
 [[bin]]
 name = "potluck"
 path = "src/main.rs"

@@ -258,7 +258,8 @@ pub fn draw(
     mut cache: ResMut<PartMaterials>,
     mut cube: Local<Option<Handle<Mesh>>>,
 ) {
-    let cube = cube.get_or_insert_with(|| meshes.add(Cuboid::new(1.0, 1.0, 1.0))).clone();
+    // tangents too, so ray tracing can take the bodies
+    let cube = cube.get_or_insert_with(|| meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 1.0)).with_generated_tangents().unwrap())).clone();
     let mut seen = std::collections::HashSet::new();
     for (e, mut v, mut t, children) in &mut views {
         let Some(b) = herd.bodies.get(&v.id) else {

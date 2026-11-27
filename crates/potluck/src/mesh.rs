@@ -51,14 +51,18 @@ impl MeshData {
         }
     }
 
-    pub fn into_mesh(self) -> Mesh {
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+    /// The mesh, with corner shading in its vertex colours unless the world
+    /// is ray traced (which shades corners itself, and takes only position,
+    /// normal, UV and tangent).
+    pub fn into_mesh(self, raytraced: bool) -> Mesh {
+        let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tan)
-            .with_inserted_indices(Indices::U32(self.idx))
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv);
+        if !raytraced {
+            m.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
+        }
+        m.with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tan).with_inserted_indices(Indices::U32(self.idx))
     }
 }
 
@@ -206,6 +210,7 @@ pub fn remesh(
     focus: Res<MeshFocus>,
     mut chunks: ResMut<ChunkEntities>,
     mut meshes: ResMut<Assets<Mesh>>,
+    rt: Res<crate::render::Raytraced>,
 ) {
     if voxels.dirty.is_empty() {
         return;
@@ -240,13 +245,13 @@ pub fn remesh(
                 continue;
             }
             let mut e = commands.spawn((
-                Mesh3d(meshes.add(data.into_mesh())),
+                Mesh3d(meshes.add(data.into_mesh(rt.0))),
                 MeshMaterial3d(mats.layers[i].clone()),
                 Transform::IDENTITY,
                 ChunkPart,
             ));
             if i == 2 {
-                e.insert(bevy::light::NotShadowCaster);
+                e.insert((bevy::light::NotShadowCaster, crate::render::NotRaytraced));
             }
             slot[i] = Some(e.id());
         }

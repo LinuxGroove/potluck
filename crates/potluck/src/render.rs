@@ -81,6 +81,42 @@ impl Tier {
     }
 }
 
+/// Whether the world is ray traced: Ultra, on a graphics card that can,
+/// in a build with the `raytracing` feature.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct Raytraced(pub bool);
+
+impl Raytraced {
+    /// Works it out from the setting and what the graphics card can do.
+    pub fn new(settings: &Settings, device: Option<&bevy::render::renderer::RenderDevice>) -> Self {
+        #[cfg(feature = "raytracing")]
+        if Tier::of(&settings.lighting) == Tier::Ultra {
+            let need = bevy::solari::SolariPlugins::required_wgpu_features();
+            let can = device.is_some_and(|d| d.features().contains(need));
+            if !can {
+                info!("Ultra lighting without ray tracing: this graphics card can't ray trace");
+            }
+            return Raytraced(can);
+        }
+        let _ = (settings, device);
+        Raytraced(false)
+    }
+}
+
+/// Meshes ray tracing leaves out (water).
+#[derive(Component)]
+pub struct NotRaytraced;
+
+/// Every mesh drawn joins the ray traced scene, when there is one.
+#[cfg(feature = "raytracing")]
+pub fn raytrace_meshes(rt: Res<Raytraced>, added: Query<(Entity, &Mesh3d), (Added<Mesh3d>, Without<NotRaytraced>)>, mut commands: Commands) {
+    if rt.0 {
+        for (e, m) in &added {
+            commands.entity(e).insert(bevy::solari::prelude::RaytracingMesh3d(m.0.clone()));
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct Sun;
 
@@ -118,10 +154,11 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
     BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water)] }
 }
 
-pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Assets<ScatteringMedium>) {
+pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Assets<ScatteringMedium>, rt: Raytraced) {
     let tier = Tier::of(&settings.lighting);
     let medium = tier >= Tier::Medium;
-    let high = tier >= Tier::High;
+    // ray tracing does the shadows, corners and bounced light itself
+    let high = tier >= Tier::High && !rt.0;
     let ultra = tier == Tier::Ultra;
     let cam = commands.spawn((
         Camera3d::default(),
@@ -174,8 +211,18 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         ..default()
     }
     .build();
+    #[cfg(feature = "raytracing")]
+    if rt.0 {
+        use bevy::render::render_resource::TextureUsages;
+        commands.entity(cam).insert((
+            Msaa::Off,
+            bevy::camera::CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+            bevy::solari::prelude::SolariLighting::default(),
+            TemporalAntiAliasing::default(),
+        ));
+    }
     let mut sun = commands.spawn((
-        DirectionalLight { shadow_maps_enabled: true, contact_shadows_enabled: high, illuminance: lux::RAW_SUNLIGHT, ..default() },
+        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high, illuminance: lux::RAW_SUNLIGHT, ..default() },
         cascades,
         SunDisk::EARTH,
         Transform::default(),

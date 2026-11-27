@@ -29,6 +29,15 @@ fn main() {
         ..default()
     }));
     sim(&mut app, SEED);
+    #[cfg(feature = "raytracing")]
+    if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
+        // checks the graphics card itself, and stays idle on one that can't ray trace
+        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, render::raytrace_meshes);
+        // the ray tracer binds each vertex slab whole, and some cards bind at most 128 MiB
+        use bevy::render::{mesh::allocator::MeshAllocatorSettings, slab_allocator::SlabAllocatorSettings};
+        let slabs = SlabAllocatorSettings { max_slab_size: 64 << 20, large_threshold: 32 << 20, ..default() };
+        app.sub_app_mut(bevy::render::RenderApp).insert_resource(MeshAllocatorSettings { slab_allocator_settings: slabs, ..default() });
+    }
     app.insert_resource(settings)
         .init_resource::<input::Controls>()
         .init_resource::<player::Me>()
@@ -142,11 +151,14 @@ fn setup(
     settings: Res<settings::Settings>,
     voxels: Res<world::Voxels>,
     mut me: ResMut<player::Me>,
+    device: Option<Res<bevy::render::renderer::RenderDevice>>,
 ) {
     let atlas = textures::build(&mut images);
     commands.insert_resource(render::make_materials(&atlas, &mut mats));
     commands.insert_resource(atlas);
-    render::spawn_sky(&mut commands, &settings, &mut media);
+    let rt = render::Raytraced::new(&settings, device.as_deref());
+    commands.insert_resource(rt);
+    render::spawn_sky(&mut commands, &settings, &mut media, rt);
     me.respawn(&voxels, None);
 }
 
