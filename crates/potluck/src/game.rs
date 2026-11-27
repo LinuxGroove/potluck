@@ -33,7 +33,12 @@ pub enum Action {
     /// What this player carries now (survival), and how many lots of the
     /// host's changes they've had (`world.pockets`).
     Pockets { survival: bool, items: Vec<(crate::blocks::BlockId, u32)>, seen: u32 },
+    /// Interact on a block, for creations' `block_used`.
+    UseBlock([i32; 3]),
 }
+
+/// How far from a player a block they use can be.
+const USE_REACH: f32 = 8.0;
 
 /// What players did this frame: (player id, action).
 #[derive(Resource, Default)]
@@ -166,6 +171,9 @@ pub fn interact(
         }
     } else if let Some((i, _)) = me.aim_arch.as_ref().filter(|_| c.interact) {
         acts.0.push(Act::Arch(*i));
+    } else if let Some(hit) = me.target.filter(|_| c.interact) {
+        // a block: creations may answer it (a table to craft at, say)
+        actions.0.push((pid, Action::UseBlock(hit.block.to_array())));
     } else if c.look_inside {
         focus.go(Screen::Library);
     }
@@ -191,6 +199,10 @@ pub fn host_step(
     clock: Res<crate::render::Clock>,
 ) {
     if matches!(net.role, Role::Client(_)) {
+        // the host hears about this player's blocks from the blocks themselves
+        if let Some(me) = me.as_mut() {
+            me.built.clear();
+        }
         return;
     }
     let dt = time.delta_secs().min(0.05);
@@ -202,6 +214,12 @@ pub fn host_step(
     }
     players.extend(net.remote_players().into_iter().map(|p| PlayerInfo { id: p.id, name: p.name.clone(), pos: p.pos }));
     scripts.players = players.clone();
+    // blocks this game's own player placed and broke
+    if let Some(me) = me.as_mut() {
+        for (at, old, new) in std::mem::take(&mut me.built) {
+            scripts.player_block(my_id, at, old, new);
+        }
+    }
     for (pid, a) in std::mem::take(&mut actions.0) {
         let Some(player) = players.iter().find(|p| p.id == pid).cloned() else { continue };
         match a {
@@ -238,6 +256,12 @@ pub fn host_step(
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
             Action::Net(note) => scripts.hear(pid, note),
             Action::Pockets { survival, items, seen } => scripts.set_pockets(pid, survival, &items, seen),
+            Action::UseBlock(at) => {
+                let at = IVec3::from_array(at);
+                if (at.as_vec3() + Vec3::splat(0.5)).distance(player.pos) <= USE_REACH {
+                    scripts.use_block(pid, at, voxels.at(at));
+                }
+            }
         }
     }
     let w = &*voxels;

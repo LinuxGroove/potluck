@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 4), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 5), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -29,7 +29,12 @@ pub const MAX_TIMERS: usize = 64;
 /// Handlers one creation may give `world.on`.
 pub const MAX_HANDLERS: usize = 32;
 /// What `world.on` can listen for.
-pub const EVENTS: &[&str] = &["player_joined", "player_left"];
+pub const EVENTS: &[&str] = &["player_joined", "player_left", "block_placed", "block_broken", "block_used"];
+/// The most block events (`block_placed`, `block_broken`, `block_used`)
+/// creations hear in one tick; past it they wait for the next.
+pub const BLOCK_EVENTS_A_TICK: usize = 64;
+/// The most block events waiting; past it new ones are dropped.
+const BLOCK_EVENTS_WAITING: usize = 512;
 /// What one creation may keep with `@potluck/store`, counted as JSON.
 pub const STORE_QUOTA: usize = 64 << 10;
 /// Pieces (different ids) one creation may show at once with `@potluck/ui`.
@@ -608,6 +613,9 @@ pub struct Scripts {
     tick_acc: f32,
     /// Who was here last tick, to tell creations who came and went.
     seen: Vec<PlayerInfo>,
+    /// What players did to blocks, for creations' `world.on`: (player,
+    /// event, where, the block).
+    block_events: Vec<(u32, &'static str, IVec3, blocks::BlockId)>,
 }
 
 pub(crate) fn vec_of(v: &Value) -> Option<Vec3> {
@@ -1953,6 +1961,28 @@ impl Scripts {
         out
     }
 
+    /// A player changed a block (it was `old`, now `new`): creations hear
+    /// `block_placed` or `block_broken`.
+    pub fn player_block(&mut self, player: u32, at: IVec3, old: blocks::BlockId, new: blocks::BlockId) {
+        let event = match (old, new) {
+            (o, n) if o == n => return,
+            // to air, or to water flowing in where it was
+            (o, blocks::AIR | blocks::WATER) if o != blocks::AIR && o != blocks::WATER => ("block_broken", o),
+            (_, blocks::AIR | blocks::WATER) => return,
+            (_, n) => ("block_placed", n),
+        };
+        if self.block_events.len() < BLOCK_EVENTS_WAITING {
+            self.block_events.push((player, event.0, at, event.1));
+        }
+    }
+
+    /// A player used (interacted with) a block: creations hear `block_used`.
+    pub fn use_block(&mut self, player: u32, at: IVec3, block: blocks::BlockId) {
+        if block != blocks::AIR && self.block_events.len() < BLOCK_EVENTS_WAITING {
+            self.block_events.push((player, "block_used", at, block));
+        }
+    }
+
     /// The time of day creations see (`world.daytime`).
     pub fn set_day(&mut self, time: f32) {
         self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
@@ -1998,6 +2028,10 @@ impl Scripts {
         let mut log = Vec::new();
         let p = player.clone();
         let creation = b.creation.clone();
+        if event == "used" {
+            // they came to it, so it may ask them things again
+            self.shared.lock().unwrap().ui.quiet.remove(&(player.id, creation.clone()));
+        }
         let r = vm.session(voxels, herd, &players, &mut self.out, &creation, time.max(0.001), &mut log, |lua, _| {
             if let Some(f) = t.get::<Option<Function>>(event)? {
                 f.call::<()>((t.clone(), player_table(lua, &p)?))?;
@@ -2025,6 +2059,8 @@ impl Scripts {
         let joined: Vec<PlayerInfo> = players.iter().filter(|p| !self.seen.iter().any(|q| q.id == p.id)).cloned().collect();
         let left: Vec<PlayerInfo> = self.seen.iter().filter(|q| !players.iter().any(|p| p.id == q.id)).cloned().collect();
         self.seen = players.clone();
+        let n = self.block_events.len().min(BLOCK_EVENTS_A_TICK);
+        let block_events: Vec<_> = self.block_events.drain(..n).collect();
         {
             let mut sh = self.shared.lock().unwrap();
             for p in &left {
@@ -2065,6 +2101,16 @@ impl Scripts {
             let mut log = Vec::new();
             let waiting = vm.waiting.clone();
             {
+                // a player who used a block this creation listens for came to it, so it may ask them things again
+                let listens = waiting.lock().unwrap().on.iter().any(|(e, _)| e == "block_used");
+                if listens {
+                    let mut sh = self.shared.lock().unwrap();
+                    for (pid, ..) in block_events.iter().filter(|e| e.1 == "block_used") {
+                        sh.ui.quiet.remove(&(*pid, id.clone()));
+                    }
+                }
+            }
+            {
                 let mut w = waiting.lock().unwrap();
                 w.sound_budget = (w.sound_budget + step * SOUNDS_A_SECOND).min(SOUNDS_A_SECOND);
                 w.note_budget = (w.note_budget + step * NOTES_A_SECOND).min(NOTES_A_SECOND);
@@ -2089,6 +2135,16 @@ impl Scripts {
                             for (_, f) in on.iter().filter(|(e, _)| e == event) {
                                 f.call::<()>(player_table(lua, p)?)?;
                             }
+                        }
+                    }
+                }
+                // what players did to blocks
+                if !block_events.is_empty() {
+                    let on = waiting.lock().unwrap().on.clone();
+                    for (pid, event, at, b) in &block_events {
+                        let Some(p) = players.iter().find(|p| p.id == *pid) else { continue };
+                        for (_, f) in on.iter().filter(|(e, _)| e == event) {
+                            f.call::<()>((player_table(lua, p)?, vector(at.as_vec3() + Vec3::splat(0.5)), blocks::block(*b).name))?;
                         }
                     }
                 }

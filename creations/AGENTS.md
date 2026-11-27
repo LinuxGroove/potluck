@@ -13,9 +13,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.4")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.4. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.5")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.5. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.4
+### `@potluck/world` 0.5
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -45,7 +45,7 @@ world.on("player_left", function(player) print(player.name .. " went home") end)
 ```
 
 - `world.after(seconds, fn)` calls `fn` once, `seconds` from now; `world.every(seconds, fn)` calls it every `seconds`. Both return an id for `world.cancel(id)`. Timers run on the world's ticks, ten a second, so 0.1 is the shortest; at most 64 wait at once.
-- `world.on(event, fn)`: `"player_joined"` when someone arrives in the world and `"player_left"` when they go, each with the player. Players already here when the creation starts are in `world.players()`.
+- `world.on(event, fn)`: `"player_joined"` when someone arrives in the world and `"player_left"` when they go, each with the player. Players already here when the creation starts are in `world.players()`. Block events are below (0.5).
 - A creation's top level runs again when it reloads, and sets its timers and handlers up again. Timers started inside handlers don't carry over a reload.
 
 The blocks players carry (new in 0.3), for trading, crafting and prizes:
@@ -79,6 +79,22 @@ print(world.daytime())                    -- 0.5 is noon
 - `world.daylight()` is how light it is, 0 in the dead of night to 1 in full day. It's 1 through most of the day and 0 through most of the night, and moves between them in the minute or so around sunrise and sunset.
 - `world.find_light(pos, radius)` is the middle of the nearest block that gives light (a lantern, brazier or candle) within `radius` (up to 16), or nil.
 - `world.hurt(player, amount)` takes `amount` from a player's health and `world.heal(player, amount)` gives it back. Health is 0 to 20; at 0 the player goes back to the hill. Only players in survival have health, so both return false, and do nothing, for anyone in creative. `amount` is 0 to 20.
+
+What players do to blocks (new in 0.5), for crafting tables, farms and anything a player builds:
+
+```luau
+world.on("block_used", function(player, at, block)
+	if block == "Table" then
+		print(player.name .. " wants to make something")
+	end
+end)
+world.on("block_placed", function(player, at, block) end)
+world.on("block_broken", function(player, at, block) end)
+```
+
+- `world.on("block_placed", fn)` and `world.on("block_broken", fn)` hear a player put a block down or break one; `"block_used"` hears a player Interact on a block (aiming at it, not at a creature). Each calls `fn(player, at, block)`, with the middle of the block and its name (for `block_broken`, what it was).
+- They're only for what players do: blocks creations change with `world.set_block`, and water flowing, aren't heard.
+- At most 64 are heard a tick; more wait their turn, and past a few hundred waiting the rest are dropped.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 
@@ -183,7 +199,7 @@ end)
 - `ui.hide(player, id)` takes it off; `ui.hide(nil, id)` takes it off every screen, including lines shown to one player with that id.
 - `ui.ask(player, { title?, text?, choices? }, fn)` asks one player a question. `title` is up to 40 letters (the creation's name if left out), `text` up to 300 (`"\n"` starts a new line), and up to 4 `choices` of 30 letters (`{ "OK" }` if left out). `fn(player, choice)` is called once, on a later tick, with the number of their choice, or nil if they closed it, the creation asked them something else first, or it couldn't be shown. It returns an id.
 - `ui.close(player)` takes this creation's question back off their screen, and `fn` isn't called.
-- The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it.
+- The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it (using one of its creatures, or a block it hears `block_used` for, lets it ask at once).
 - Lines and questions go when the creation stops, and a reload takes its questions away (its lines stay until it shows them again). A player who leaves takes theirs with them, and their `fn` isn't called.
 
 ### `@potluck/sound` 0.1
