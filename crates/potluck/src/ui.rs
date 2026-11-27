@@ -400,7 +400,7 @@ pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
             let b = blocks::block(id);
             let on = if b.shape == Shape::Model || b.light {
                 "Things"
-            } else if matches!(b.shape, Shape::Cross | Shape::Water) || b.shape == Shape::Cutout && id != blocks::GLASS || ground.contains(&id) {
+            } else if matches!(b.shape, Shape::Cross | Shape::Water) || b.shape == Shape::Cutout && id != blocks::GLASS || ground.contains(&id) || (blocks::COAL_ORE..=blocks::MOONSILVER_ORE).contains(&id) {
                 "Nature"
             } else {
                 "Building"

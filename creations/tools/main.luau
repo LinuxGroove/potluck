@@ -1,12 +1,14 @@
 --!strict
 -- Tools, for survival. Holding a pickaxe, stone and brick break faster; an
 -- axe, wood; a shovel, earth, sand and gravel (world.digging, by the kind
--- of block). Every block a tool breaks wears it a little, a bar beside
--- your health shows how much it has left, and a worn out tool breaks.
+-- of block). A tool's level is how hard a block it reaches: ores need a
+-- pickaxe of their level or better (the mining creation says which).
+-- Every block a tool breaks wears it a little, a bar beside your health
+-- shows how much it has left, and a worn out tool breaks.
 -- TOOLS below says what each does, so a remix can change them. Swords are
 -- for Gloomlings, who say what a sword does to them.
 
-local world = require("@potluck/world@0.8")
+local world = require("@potluck/world@0.13")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -18,21 +20,21 @@ local knobs = tweak {
 	color = { "#a8b0b8", label = "Wear bar", order = 4 },
 }
 
-type Tool = { digs: string, speed: number, uses: number }
+type Tool = { digs: string, speed: number, level: number, uses: number }
 
 -- What each tool digs faster (soft, hard, wood, plant or glass), how much
--- faster, and how many blocks it breaks before it wears out.
+-- faster, its level, and how many blocks it breaks before it wears out.
 local TOOLS: { [string]: Tool } = {
-	["Wooden pickaxe"] = { digs = "hard", speed = 2.5, uses = 60 },
-	["Stone pickaxe"] = { digs = "hard", speed = 4, uses = 130 },
-	["Wooden axe"] = { digs = "wood", speed = 2.5, uses = 60 },
-	["Stone axe"] = { digs = "wood", speed = 4, uses = 130 },
-	["Wooden shovel"] = { digs = "soft", speed = 2.5, uses = 60 },
-	["Stone shovel"] = { digs = "soft", speed = 4, uses = 130 },
+	["Wooden pickaxe"] = { digs = "hard", speed = 2.5, level = 1, uses = 60 },
+	["Stone pickaxe"] = { digs = "hard", speed = 4, level = 2, uses = 130 },
+	["Wooden axe"] = { digs = "wood", speed = 2.5, level = 1, uses = 60 },
+	["Stone axe"] = { digs = "wood", speed = 4, level = 2, uses = 130 },
+	["Wooden shovel"] = { digs = "soft", speed = 2.5, level = 1, uses = 60 },
+	["Stone shovel"] = { digs = "soft", speed = 4, level = 2, uses = 130 },
 }
 
 for name, t in TOOLS do
-	world.digging(name, { [t.digs] = math.min(t.speed * knobs.faster, 10) })
+	world.digging(name, { [t.digs] = math.min(t.speed * knobs.faster, 10), level = t.level })
 end
 
 local function uses(t: Tool): number

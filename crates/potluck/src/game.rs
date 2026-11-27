@@ -332,12 +332,18 @@ pub fn host_step(
             net.send_healing(pid, rate);
         }
     }
-    // what tools dig faster, for every game here
+    // what tools dig faster and what blocks give, for every game here
     if let Some(digging) = scripts.digging_changes() {
         if let Some(me) = me.as_mut() {
-            me.digging = digging.iter().copied().collect();
+            me.rules.digging = digging.iter().copied().collect();
         }
         net.broadcast_digging(digging);
+    }
+    if let Some(drops) = scripts.drops_changes() {
+        if let Some(me) = me.as_mut() {
+            me.rules.drops = drops.iter().copied().collect();
+        }
+        net.broadcast_drops(drops);
     }
     // messages creations sent their client halves
     for (pid, note) in scripts.net_changes(&here) {

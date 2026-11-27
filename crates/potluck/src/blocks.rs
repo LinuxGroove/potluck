@@ -60,9 +60,18 @@ pub const COLUMN: BlockId = 44;
 pub const BRAZIER: BlockId = 45;
 pub const FENCE: BlockId = 46;
 // 47 to 63 are kept for the looks; 64 and up are for the creations' work.
-// 64 to 71 were tools before items had ids of their own (`items`): no
-// world has them, so they're free.
+// 64 to 71 were tools before items had ids of their own (`items`); no
+// world had them, so they're ores and what's found underground now.
+pub const COAL_ORE: BlockId = 64;
+pub const COPPER_ORE: BlockId = 65;
+pub const IRON_ORE: BlockId = 66;
+pub const GOLD_ORE: BlockId = 67;
+pub const CRYSTAL_ORE: BlockId = 68;
+pub const MOONSILVER_ORE: BlockId = 69;
+pub const OLD_CHEST: BlockId = 70;
+pub const GLOWCAP: BlockId = 71;
 pub const BALLOON_BASKET: BlockId = 72;
+pub const TORCH: BlockId = 73;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
@@ -83,7 +92,7 @@ pub struct Block {
     /// Texture names for the top, the sides and the bottom.
     pub faces: [&'static str; 3],
     pub shape: Shape,
-    /// Gives light (lanterns, candles, braziers).
+    /// Gives light (lanterns, candles, braziers, torches).
     pub light: bool,
     /// Seconds to break by hand; 0 is instant, negative can't be broken.
     pub hardness: f32,
@@ -233,6 +242,11 @@ const FENCE_BOXES: &[Cuboid] = &[
     bx([7, 11, 0], [9, 14, 6]).when(When::Joins(5)),
 ];
 
+/// A torch: a stick with a flame on top, the candle's flame.
+const TORCH_BOXES: &[Cuboid] = &[bx([7, 0, 7], [9, 7, 9]).tex(["torch_top", "torch", "torch_top"]), bx([7, 7, 7], [9, 11, 9]).tex(["flame", "flame", "flame"]).glow()];
+/// An old chest: a box with a lid a little wider than it.
+const CHEST_BOXES: &[Cuboid] = &[bx([1, 0, 2], [15, 10, 14]), bx([0, 10, 1], [16, 14, 15])];
+
 pub static BLOCKS: &[Block] = &[
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Grass", ["grass_top", "grass_side", "dirt"], Shape::Solid, 0.5),
@@ -299,17 +313,22 @@ pub static BLOCKS: &[Block] = &[
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
-    // 64 to 71: free (tools are items now)
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
+    // 64 to 69: ores (the mining creation says what each gives, and which
+    // pickaxe it needs)
+    b("Coal ore", ["ore_coal", "ore_coal", "ore_coal"], Shape::Solid, 1.5),
+    b("Copper ore", ["ore_copper", "ore_copper", "ore_copper"], Shape::Solid, 1.8),
+    b("Iron ore", ["ore_iron", "ore_iron", "ore_iron"], Shape::Solid, 2.0),
+    b("Gold ore", ["ore_gold", "ore_gold", "ore_gold"], Shape::Solid, 2.0),
+    b("Crystal ore", ["ore_crystal", "ore_crystal", "ore_crystal"], Shape::Solid, 2.4),
+    b("Moonsilver ore", ["ore_moonsilver", "ore_moonsilver", "ore_moonsilver"], Shape::Solid, 3.0),
+    // 70: in old workings underground; the mining creation opens it
+    m("Old chest", ["old_chest_top", "old_chest", "old_chest_top"], CHEST_BOXES, true, 0.8),
+    // 71: a mushroom that glows on cave floors
+    b("Glowcap", ["glowcap", "glowcap", "glowcap"], Shape::Cross, 0.0),
     // 72: put down, it becomes a hot air balloon (the balloon creation)
     m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
+    // 73: a torch, made from coal and planks at a workbench
+    lit(m("Torch", ["torch_top", "torch", "torch_top"], TORCH_BOXES, false, 0.0)),
 ];
 
 /// The blocks creations made, by id less `FIRST_MADE`. Only `set_made`

@@ -1,5 +1,6 @@
 //! What players carry: every block, and items, things that are only carried
-//! and held (tools and swords now; ingots, food and armour later).
+//! and held (tools and swords, and what ores give; ingots, food and armour
+//! later).
 //!
 //! A `Thing` is either. Ids under `FIRST_ITEM` are blocks, by their block
 //! id; ids from `FIRST_ITEM` up are the game's own items, listed in `ITEMS`.
@@ -28,6 +29,12 @@ pub const WOODEN_SHOVEL: Thing = 260;
 pub const STONE_SHOVEL: Thing = 261;
 pub const WOODEN_SWORD: Thing = 262;
 pub const STONE_SWORD: Thing = 263;
+pub const COAL: Thing = 264;
+pub const RAW_COPPER: Thing = 265;
+pub const RAW_IRON: Thing = 266;
+pub const RAW_GOLD: Thing = 267;
+pub const CRYSTAL: Thing = 268;
+pub const RAW_MOONSILVER: Thing = 269;
 
 /// How many of a block go in one slot.
 pub const BLOCK_STACK: u32 = 99;
@@ -49,6 +56,11 @@ const fn tool(name: &'static str, icon: &'static str) -> Item {
     Item { name, icon, stack: 1 }
 }
 
+/// Something that stacks as blocks do.
+const fn stuff(name: &'static str, icon: &'static str) -> Item {
+    Item { name, icon, stack: BLOCK_STACK }
+}
+
 /// The game's own items, from `FIRST_ITEM` on (the tools and gloomlings
 /// creations say what these do).
 pub static ITEMS: &[Item] = &[
@@ -60,6 +72,13 @@ pub static ITEMS: &[Item] = &[
     tool("Stone shovel", "shovel_stone"),
     tool("Wooden sword", "sword_wood"),
     tool("Stone sword", "sword_stone"),
+    // what ores give (the mining creation says which)
+    stuff("Coal", "coal"),
+    stuff("Raw copper", "raw_copper"),
+    stuff("Raw iron", "raw_iron"),
+    stuff("Raw gold", "raw_gold"),
+    stuff("Crystal", "crystal"),
+    stuff("Raw moonsilver", "raw_moonsilver"),
 ];
 
 /// A block as a thing to carry.
@@ -290,6 +309,90 @@ impl Slots {
                 self.0[i] = Slot { thing: t, count: k };
                 n -= k;
                 i += 1;
+            }
+        }
+    }
+}
+
+/// What a thing in hand does to blocks (`world.digging`): how much faster
+/// it breaks each kind, in the order of `sound::DIG_KINDS`, and its level,
+/// how hard a block it reaches among the kinds it digs faster.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Digging {
+    pub speeds: [f32; 5],
+    pub level: u8,
+}
+
+impl Default for Digging {
+    fn default() -> Self {
+        Digging { speeds: [1.0; 5], level: 0 }
+    }
+}
+
+/// What breaking a block gives in survival (`world.drops`): `least` to
+/// `most` of `gives` (nothing when it's 0), once a thing in hand of at
+/// least `level` breaks it. A block with no rule gives itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Drop {
+    pub gives: Thing,
+    pub least: u32,
+    pub most: u32,
+    pub level: u8,
+}
+
+/// The highest level a tool or a block's need can have.
+pub const MAX_LEVEL: u8 = 9;
+
+/// What every game knows about breaking blocks: what each thing in hand
+/// digs (by thing) and what each block gives (by block).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rules {
+    pub digging: std::collections::HashMap<Thing, Digging>,
+    pub drops: std::collections::HashMap<BlockId, Drop>,
+}
+
+impl Rules {
+    /// How much faster than by hand `held` breaks a block.
+    pub fn speed(&self, held: Thing, b: BlockId) -> f32 {
+        crate::sound::material(b).dig().and_then(|k| self.digging.get(&held).map(|d| d.speeds[k])).unwrap_or(1.0)
+    }
+
+    /// How hard a block `held` reaches: its level, if it digs that kind of
+    /// block faster than a hand, or 0.
+    pub fn level(&self, held: Thing, b: BlockId) -> u8 {
+        let Some(k) = crate::sound::material(b).dig() else { return 0 };
+        self.digging.get(&held).filter(|d| d.speeds[k] > 1.0).map(|d| d.level).unwrap_or(0)
+    }
+
+    /// The level a block needs before it breaks.
+    pub fn needs(&self, b: BlockId) -> u8 {
+        self.drops.get(&b).map(|d| d.level).unwrap_or(0)
+    }
+
+    pub fn can_break(&self, held: Thing, b: BlockId) -> bool {
+        self.level(held, b) >= self.needs(b)
+    }
+
+    /// The thing of the lowest level that breaks a block (by thing, among
+    /// equals), to tell a player what it needs; None when nothing does.
+    pub fn tool_for(&self, b: BlockId) -> Option<Thing> {
+        let need = self.needs(b);
+        let mut tools: Vec<(u8, Thing)> = self.digging.keys().map(|&t| (self.level(t, b), t)).filter(|(l, _)| *l >= need).collect();
+        tools.sort();
+        tools.first().map(|(_, t)| *t)
+    }
+
+    /// What breaking a block gives: its rule's thing, as many as `roll`
+    /// (0 to 1) picks between least and most, or the block itself; None
+    /// for nothing.
+    pub fn gives(&self, b: BlockId, roll: f32) -> Option<(Thing, u32)> {
+        match self.drops.get(&b) {
+            None => Some((of_block(b), 1)),
+            Some(d) if d.gives == 0 => None,
+            Some(d) => {
+                let span = d.most.saturating_sub(d.least) + 1;
+                let n = d.least + ((roll.clamp(0.0, 0.999) * span as f32) as u32).min(span - 1);
+                (n > 0).then_some((d.gives, n))
             }
         }
     }
