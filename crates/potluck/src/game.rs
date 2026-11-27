@@ -855,6 +855,9 @@ pub fn do_acts(
                 settings.lighting = crate::render::Tier::next(&settings.lighting).into();
                 settings.save();
             }
+            // the map's and chat's own, done before this (`map::map_acts`,
+            // `chat::acts`); one left over had nothing to do
+            _ => {}
         }
     }
     acts.0.extend(later);
@@ -938,7 +941,7 @@ pub fn share_results(
                 focus.status.clear();
                 focus.link = Some((url, title));
             }
-            Done::Pass { address, pass } => match net.join(&address, &settings.name, pass) {
+            Done::Pass { address, pass } => match net.join(&address, &settings.name, pass, settings.young) {
                 Ok(()) => focus.status = format!("Joining {address}..."),
                 Err(e) => focus.status = format!("Couldn't join {address}: {e}"),
             },

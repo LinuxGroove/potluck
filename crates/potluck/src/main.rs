@@ -179,12 +179,31 @@ fn main() {
         .init_resource::<mesh::Cover>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<ui::Labels>()
-        .add_systems(Startup, ((ui::fonts, setup, ui::spawn_hud).chain(), render::motes::setup))
+        .insert_resource(waypoints::Waypoints::load())
+        .init_resource::<waypoints::Travel>()
+        .init_resource::<map::MapView>()
+        .init_resource::<map::MapImage>()
+        .add_systems(Startup, ((ui::fonts, setup, ui::spawn_hud, map::spawn_hud, map::spawn_map, chat::spawn_feed, waypoints::spawn_fade).chain(), render::motes::setup))
+        .add_systems(PostStartup, map::palette)
         .add_systems(
             Update,
             (
-                (input::read, ui::menu_input, game::do_acts, ui::draw_menu, game::title_view).chain(),
-                (player::look, player::walk, game::interact, player::build, player::settle_plants).chain(),
+                (
+                    input::read,
+                    keyboard::input,
+                    ui::menu_input,
+                    map::map_input,
+                    ui::menu_owns,
+                    map::map_acts,
+                    chat::acts,
+                    game::do_acts,
+                    map::fill,
+                    chat::fill,
+                    ui::draw_menu,
+                    game::title_view,
+                )
+                    .chain(),
+                (player::look, player::walk, game::interact, player::build, player::settle_plants, map::keys, chat::keys, waypoints::follow_world, waypoints::travel).chain(),
             )
                 .chain()
                 .before(Sim),
@@ -195,6 +214,7 @@ fn main() {
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
                 (render::sky, render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (map::refresh, map::draw_hud, map::make_room, map::draw_map, chat::draw_feed, keyboard::draw),
             )
                 .chain()
                 .after(Sim),
@@ -223,7 +243,9 @@ fn main() {
         let creature = opt("at").and_then(|a| a.strip_prefix("creature").map(|n| n.trim_start_matches(':').parse().unwrap_or(0)));
         // --person[=hue] stands a player a few blocks ahead, facing you
         let person = args.iter().find(|a| a.starts_with("--person")).map(|a| a.strip_prefix("--person=").and_then(|h| h.parse().ok()).unwrap_or(30.0));
-        app.insert_resource(Shot { path, after, at, tod, screen, creature, person, done: false, frames: 0 });
+        // --lines puts a few lines of chat on the screen, as friends might say
+        let lines = args.iter().any(|a| a == "--lines");
+        app.insert_resource(Shot { path, after, at, tod, screen, creature, person, lines, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
         // no outline round the block in the crosshair
         app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
@@ -246,6 +268,8 @@ struct Shot {
     creature: Option<usize>,
     /// A player to stand in view, by their shirt's hue, until it's placed.
     person: Option<f32>,
+    /// Lines of chat to show.
+    lines: bool,
     done: bool,
     /// Frames drawn in the last three seconds before the picture, for the frame rate.
     frames: u32,
@@ -265,6 +289,7 @@ fn shot(
     diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
     frames: Option<Res<render::timings::Shared>>,
     mut exit: MessageWriter<AppExit>,
+    mut chat: ResMut<chat::Chat>,
 ) {
     use bevy::render::view::screenshot::save_to_disk;
     if let Some(t) = s.tod {
@@ -336,8 +361,32 @@ fn shot(
                 "tweak" => ui::Screen::Tweak(id),
                 "title" => ui::Screen::Title,
                 "pause" => ui::Screen::Pause,
+                "map" => ui::Screen::Map,
+                "chat" | "keyboard" => ui::Screen::Chat,
                 _ => ui::Screen::Playing,
             });
+            if sc == "keyboard" {
+                // a pad typing a line
+                focus.fields.insert("say".into(), "see you at the c".into());
+                keyboard::open(&mut focus, "say", "Say something");
+                if let Some(k) = focus.keyboard.as_mut() {
+                    (k.row, k.col) = (3, 6);
+                }
+            }
+            if s.lines {
+                let now = time.elapsed_secs_f64();
+                let p = me.pos.floor().as_ivec3();
+                let say = [
+                    (2, "Kaden", "found a cave under the hill!", None),
+                    (2, "Kaden", "", Some(chat::Place { name: "Kaden's cave".into(), at: [p.x + 40, p.y - 6, p.z - 30] })),
+                    (3, "Drew", "on my way", None),
+                    (4, "Cy", "Nice build!", None),
+                ];
+                for (i, (id, name, text, place)) in say.into_iter().enumerate() {
+                    let line = chat::Line { id: i as u64 + 1, name: name.into(), from: chat::Source::Player(id), text: text.into(), place, young: id == 4, at: hosting::now() };
+                    chat.keep(line, now);
+                }
+            }
         }
     }
     if t > s.after - 3.0 && !s.done {

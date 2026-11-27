@@ -205,7 +205,7 @@ fn tick(bot: &mut Bot, dt: f32, address: &str, ground: &mut Ground, counts: &mut
         let (tx, rx) = channel();
         match transport::connect(address, net::PORT, tx) {
             Ok(out) => {
-                let _ = out.send(net::frame_msg(&Msg::Hello { name: bot.name.clone(), protocol: net::PROTOCOL, pass: None }));
+                let _ = out.send(net::frame_msg(&Msg::Hello { name: bot.name.clone(), protocol: net::PROTOCOL, pass: None, young: false }));
                 bot.out = Some(out);
                 bot.rx = Some(rx);
             }
