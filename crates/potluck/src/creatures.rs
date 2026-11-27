@@ -107,10 +107,32 @@ impl Body {
         self.pos + Vec3::Y * (self.seat - 0.55) + self.forward() * 0.1
     }
 
-    /// Where a ray from `from` along `dir` first meets this body, if it does.
+    /// The box round all of it, in its own space (from its feet, facing -z):
+    /// its parts and its collision box, which a long body's head and tail
+    /// reach past.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        let mut lo = Vec3::new(-self.half.x, 0.0, -self.half.z);
+        let mut hi = Vec3::new(self.half.x, self.half.y, self.half.z);
+        for p in &self.parts {
+            lo = lo.min(p.at - p.size / 2.0);
+            hi = hi.max(p.at + p.size / 2.0);
+        }
+        (lo, hi)
+    }
+
+    /// How far from its middle it reaches along the ground (to its nose, say).
+    pub fn reach(&self) -> f32 {
+        let (lo, hi) = self.bounds();
+        lo.abs().max(hi.abs()).xz().max_element()
+    }
+
+    /// Where a ray from `from` along `dir` first meets this body, if it
+    /// does: anywhere on it, turned the way it faces.
     pub fn ray(&self, from: Vec3, dir: Vec3) -> Option<f32> {
-        let lo = self.pos - Vec3::new(self.half.x, 0.0, self.half.z);
-        let hi = self.pos + Vec3::new(self.half.x, self.half.y, self.half.z);
+        let (lo, hi) = self.bounds();
+        let back = Quat::from_rotation_y(-self.yaw);
+        let from = back * (from - self.pos);
+        let dir = back * dir;
         let inv = dir.recip();
         let t1 = (lo - from) * inv;
         let t2 = (hi - from) * inv;
@@ -193,6 +215,37 @@ pub const FLY_ABOVE: f32 = 24.0;
 /// The fastest a flier climbs or sinks (`creature:climb`).
 pub const MAX_CLIMB: f32 = 4.0;
 
+/// How high a walking creature steps up onto what's in its way.
+pub const STEP_UP: f32 = 1.0;
+
+/// Where a body walking by `d` from `from` ends up if it steps up onto what
+/// stopped it: lifted a block, moved on and settled onto the top. None when
+/// there's no room above, it's taller than a block, or it's a fence, which
+/// keeps creatures in as it would anywhere.
+pub fn step_up(voxels: &Voxels, from: Vec3, d: Vec3, half: Vec3) -> Option<Vec3> {
+    let mut p = from;
+    if move_body(voxels, &mut p, Vec3::Y * STEP_UP, half.x, half.y).y {
+        return None;
+    }
+    move_body(voxels, &mut p, Vec3::new(d.x, 0.0, d.z), half.x, half.y);
+    let gone = Vec2::new(p.x - from.x, p.z - from.z).length();
+    move_body(voxels, &mut p, Vec3::Y * -STEP_UP, half.x, half.y);
+    if p.y < from.y + 0.5 || gone < 1e-4 {
+        return None;
+    }
+    // what it would stand on
+    let (lo, hi) = ((p - half).floor().as_ivec3(), (p + half - Vec3::splat(1e-4)).floor().as_ivec3());
+    let y = p.y.round() as i32 - 1;
+    for z in lo.z..=hi.z {
+        for x in lo.x..=hi.x {
+            if voxels.get(x, y, z) == crate::blocks::FENCE {
+                return None;
+            }
+        }
+    }
+    Some(p)
+}
+
 /// Moves every creature one frame (on the host, or alone).
 pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
     let riders = herd.riders.clone();
@@ -254,13 +307,21 @@ pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
             b.vel.y = (b.vel.y - 30.0 * dt).max(-50.0);
         }
         let mut pos = b.pos;
-        let hit = move_body(voxels, &mut pos, b.vel * dt, b.half.x, b.half.y);
-        let landed = hit.y && b.vel.y < 0.0;
+        let mut hit = move_body(voxels, &mut pos, b.vel * dt, b.half.x, b.half.y);
+        let mut landed = hit.y && b.vel.y < 0.0;
+        if (hit.x || hit.z) && (landed || b.on_ground || wet) && want.length() > 0.1 && !b.flies {
+            // walking into something one block high, it steps up onto it:
+            // never a hop, so nothing bounces against a bank or a wall
+            if let Some(up) = step_up(voxels, b.pos, b.vel * dt, b.half) {
+                pos = up;
+                hit = BVec3::new(false, true, false);
+                landed = true;
+            } else if b.wander {
+                b.goal = None; // somewhere else, then
+            }
+        }
         if hit.y {
             b.vel.y = 0.0;
-        }
-        if (hit.x || hit.z) && (landed || b.on_ground) && want.length() > 0.1 && !b.flies {
-            b.vel.y = 7.5; // hop up a step
         }
         if hit.x { b.vel.x = 0.0 }
         if hit.z { b.vel.z = 0.0 }
@@ -417,7 +478,9 @@ pub fn draw(
     mut cache: ResMut<PartMaterials>,
     rt: Option<Res<crate::render::Raytraced>>,
     lib: Res<crate::creations::Library>,
+    time: Res<Time>,
 ) {
+    let dt = time.delta_secs();
     let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0), lib: Some(&lib) };
     let mut seen = std::collections::HashSet::new();
     for (e, mut v, mut t, children) in &mut views {
@@ -426,7 +489,7 @@ pub fn draw(
             continue;
         };
         seen.insert(b.id);
-        t.translation = t.translation.lerp(b.pos, 0.6);
+        t.translation = shown_at(t.translation, b.pos, dt);
         t.rotation = Quat::from_rotation_y(b.yaw);
         if v.rev != b.rev {
             v.rev = b.rev;
@@ -453,6 +516,20 @@ pub fn draw(
             spawn_parts(&mut commands, e, b, &mut looks);
         }
     }
+}
+
+/// How fast a step up is shown climbing, in blocks a second.
+const CLIMB_SHOWN: f32 = 6.0;
+
+/// Where a body is drawn this frame, following where it is: a step up a
+/// block shows as a quick climb rather than a pop.
+pub fn shown_at(was: Vec3, now: Vec3, dt: f32) -> Vec3 {
+    let mut at = was.lerp(now, 0.6);
+    let rise = now.y - was.y;
+    if rise > 0.3 && rise < 2.0 {
+        at.y = was.y + (CLIMB_SHOWN * dt).min(rise);
+    }
+    at
 }
 
 fn pose(p: &Part, i: usize, phase: f32, t: &mut Transform) {

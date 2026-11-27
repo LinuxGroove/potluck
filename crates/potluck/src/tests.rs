@@ -5353,3 +5353,180 @@ fn caves_keep_away_from_the_sea_and_mostly_from_the_surface() {
     }
     assert!(mouths > 0 && mouths < 256 * 256 / 50, "{mouths} holes in the grass");
 }
+
+/// The pup, as its creation makes it.
+fn pup() -> crate::script::KindDef {
+    home();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&Library::load().list.remove("pup").expect("the base game has pups"), &mut herd).unwrap();
+    scripts.vms["pup"].kinds[0].clone()
+}
+
+#[test]
+fn creatures_step_up_a_block_and_stand_where_their_feet_are() {
+    use crate::blocks::{FENCE, GRASS};
+    let k = pup();
+    assert!(k.half.x < 0.45, "a pup bumps into things about as wide as its legs stand, not as long as it is: {:?}", k.half);
+    // flat ground with its top at 21; east of x 24 a step one block up, a
+    // wall three high to the north, and a fence to the south
+    let mut w = Voxels::empty(1);
+    for x in 0..48 {
+        for z in 0..48 {
+            for y in 0..=20 {
+                w.set(IVec3::new(x, y, z), GRASS);
+            }
+            if x >= 24 {
+                w.set(IVec3::new(x, 21, z), GRASS);
+            }
+            if z == 10 && x < 24 {
+                for y in 21..24 {
+                    w.set(IVec3::new(x, y, z), GRASS);
+                }
+            }
+            if z == 38 && x < 24 {
+                w.set(IVec3::new(x, 21, z), FENCE);
+            }
+        }
+    }
+    let mut rng = Rng::new(1);
+    let mut herd = Herd::default();
+    let run = |herd: &mut Herd, rng: &mut Rng, secs: f32, each: &mut dyn FnMut(&creatures::Body)| {
+        for _ in 0..(secs * 60.0) as usize {
+            creatures::step(herd, &w, 1.0 / 60.0, rng);
+            each(herd.bodies.values().next().unwrap());
+        }
+    };
+    let id = herd.spawn("pup", &k, Vec3::new(18.5, 21.0, 24.5));
+    let walk = |herd: &mut Herd, to: Vec3| {
+        let b = herd.bodies.get_mut(&id).unwrap();
+        b.goal = Some(to);
+        b.wander = false;
+    };
+    // up the step, with no hop
+    walk(&mut herd, Vec3::new(30.5, 22.0, 24.5));
+    let mut rose = 0.0f32;
+    run(&mut herd, &mut rng, 5.0, &mut |b| rose = rose.max(b.vel.y));
+    let b = &herd.bodies[&id];
+    assert_eq!(b.pos.y, 22.0, "it walked up onto the step: {:?}", b.pos);
+    assert!(b.pos.x > 29.0, "and on to where it was going: {:?}", b.pos);
+    assert!(rose <= 0.0, "without a hop: it rose at {rose}");
+    // and back down
+    walk(&mut herd, Vec3::new(18.5, 21.0, 24.5));
+    run(&mut herd, &mut rng, 5.0, &mut |_| {});
+    assert_eq!(herd.bodies[&id].pos.y, 21.0);
+    // a wall it can't climb stops it where it stands, still on the ground
+    walk(&mut herd, Vec3::new(18.5, 21.0, 4.5));
+    let mut highest = 0.0f32;
+    run(&mut herd, &mut rng, 5.0, &mut |b| highest = highest.max(b.pos.y));
+    assert_eq!(highest, 21.0, "it never left the ground at the wall");
+    assert!((herd.bodies[&id].pos.z - 11.0 - k.half.z).abs() < 0.01, "it's up against the wall: {:?}", herd.bodies[&id].pos);
+    // nor does it step over a fence
+    walk(&mut herd, Vec3::new(18.5, 21.0, 44.5));
+    run(&mut herd, &mut rng, 8.0, &mut |b| highest = highest.max(b.pos.y));
+    assert_eq!(highest, 21.0, "a fence keeps it in");
+    assert!(herd.bodies[&id].pos.z < 38.0);
+    // dropped beside the step, it stands on the ground under its feet, not
+    // on the block beside it
+    let b = herd.bodies.get_mut(&id).unwrap();
+    b.pos = Vec3::new(24.0 - 0.45, 23.5, 24.5);
+    b.goal = None;
+    b.yaw = 0.0;
+    b.vel = Vec3::ZERO;
+    run(&mut herd, &mut rng, 2.0, &mut |_| {});
+    assert_eq!(herd.bodies[&id].pos.y, 21.0, "it stands where its feet are: {:?}", herd.bodies[&id].pos);
+    // a step up shows as a climb, a few frames long, not a pop
+    let mut shown = Vec3::new(10.0, 21.0, 10.0);
+    let mut frames = 0;
+    while shown.y < 21.99 && frames < 60 {
+        shown = creatures::shown_at(shown, Vec3::new(10.0, 22.0, 10.0), 1.0 / 60.0);
+        frames += 1;
+    }
+    assert!((8..30).contains(&frames), "{frames} frames to show a step");
+}
+
+#[test]
+fn creatures_are_picked_anywhere_on_their_bodies() {
+    let k = pup();
+    let mut herd = Herd::default();
+    let id = herd.spawn("pup", &k, Vec3::ZERO);
+    for yaw in [0.0f32, 1.0, 2.5, 4.0] {
+        let b = herd.bodies.get_mut(&id).unwrap();
+        b.yaw = yaw;
+        let b = &herd.bodies[&id];
+        let nose = Quat::from_rotation_y(yaw) * Vec3::new(0.0, 0.85, -0.84);
+        let side = Quat::from_rotation_y(yaw) * Vec3::X;
+        // aimed down at its nose from above and in front
+        let eye = nose + Vec3::new(0.0, 1.5, 0.0) - side * 0.01;
+        assert!(b.ray(eye, Vec3::NEG_Y).is_some(), "its nose is part of it, facing {yaw}");
+        // beside it, a hand's width off its flank, misses
+        let flank = side * 0.5 + Vec3::Y * 2.0;
+        assert!(b.ray(flank, Vec3::NEG_Y).is_none(), "beside it misses, facing {yaw}");
+    }
+}
+
+#[test]
+fn creatures_near_the_start_neither_hop_by_themselves_nor_float() {
+    home();
+    let lib = Library::load();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    // these only hop when someone rides, uses or hits them
+    for id in ["pup", "woolly", "hedgehog", "mossback", "villagers"] {
+        scripts.start(&lib.list[id], &mut herd).unwrap();
+    }
+    let start = crate::script::spot("start").unwrap();
+    let ground = |v: &Voxels, p: Vec3| {
+        let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
+        let mut y = p.y.floor() as i32;
+        while y > 0 && !crate::blocks::is_solid(v.get(x, y, z)) {
+            y -= 1;
+        }
+        y as f32 + 1.0
+    };
+    let mut rng = Rng::new(1);
+    // each body's creation, hops, frames on the ground, frames held up
+    // with no foot on the ground, and whether it was on the ground last frame
+    let mut seen: BTreeMap<u64, (String, u32, u32, u32, bool)> = BTreeMap::new();
+    let dt = 1.0 / 60.0;
+    for i in 0..(60.0 / dt) as usize {
+        // a player walks round the start, so the pups follow
+        let a = i as f32 * dt / 20.0 * std::f32::consts::TAU;
+        let mut p = start + Vec3::new(a.cos() * 6.0, 0.0, a.sin() * 6.0);
+        p.y = voxels.top(p.x.floor() as i32, p.z.floor() as i32) as f32 + 1.0;
+        scripts.players = vec![PlayerInfo { id: 1, name: "Ken".into(), pos: p }];
+        creatures::step(&mut herd, &voxels, dt, &mut rng);
+        scripts.tick(&mut voxels, &mut herd, dt);
+        for b in herd.bodies.values() {
+            let s = seen.entry(b.id).or_insert((b.creation.clone(), 0, 0, 0, false));
+            // (a body that walks into water floats up, which isn't a hop)
+            let wet = voxels.at(b.pos.floor().as_ivec3()) == crate::blocks::WATER;
+            if s.4 && !b.on_ground && b.vel.y > 0.0 && !wet {
+                s.1 += 1;
+            }
+            if b.on_ground {
+                s.2 += 1;
+                // held up in the air: no leg (or, with none, not its middle)
+                // over the block it stands on
+                let turn = Quat::from_rotation_y(b.yaw);
+                let mut feet: Vec<Vec3> = b.parts.iter().filter(|p| p.leg).map(|p| b.pos + turn * Vec3::new(p.at.x, 0.0, p.at.z)).collect();
+                if feet.is_empty() {
+                    feet.push(b.pos);
+                }
+                if feet.iter().all(|f| ground(&voxels, *f) < b.pos.y - 0.5) {
+                    s.3 += 1;
+                }
+            }
+            s.4 = b.on_ground;
+        }
+    }
+    for (creation, hops, grounded, held_up, _) in seen.values() {
+        assert_eq!(*hops, 0, "a {creation} hopped by itself");
+        let held = *held_up as f32 / (*grounded).max(1) as f32;
+        println!("{creation}: on the ground {grounded} frames, held up by the block beside it {:.1}% of them", held * 100.0);
+        if creation == "pup" {
+            assert!(held < 0.05, "a pup stood a block up in the air {:.0}% of the time", held * 100.0);
+        }
+    }
+}

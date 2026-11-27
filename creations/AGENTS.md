@@ -24,7 +24,7 @@ Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` work
 - `world.creature(def)` defines a kind of creature and returns it, to add handlers to. `def` has:
   - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
   - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z. Or (new in 0.11) the name of a Blockbench model in the creation's folder, `body = "hedgehog.bbmodel"`: see `world.model`.
-  - `size = { w, h, d }`: the box it bumps into things with (worked out from the body if left out)
+  - `size = { w, h, d }`: the box it bumps into things with and stands on. Left out, it's worked out from the body: as wide as its legs stand (or its body across its narrower side), so a long creature's head and tail reach past it rather than holding it up on the block beside it
   - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
 - `world.model(file, scale?)` (new in 0.11) reads a Blockbench model (a `.bbmodel` file in the creation's folder, saved from Blockbench) into the list of boxes a `body` is, so code can change it first (`part.color = knobs.fur`). Each cube is a part: 16 pixels to a block (`scale` 0.1 to 4 changes that), drawn with its faces' pictures from the model's texture, as Blockbench shows them. Its `color` is the colour most of its faces show (or its marker colour if it has no texture): change it and the picture takes on the new colour, keeping its detail. Its `texture` says where its picture is in the model; set it to nil to paint the part in its colour instead, like a part you write yourself. `head = true` if its name or a group it's in says "head", `leg = true` for "leg" and `glow = true` for "glow". The front is Blockbench's north (negative z). Bodies are upright boxes, so a turned cube is drawn upright and meshes are left out; the log says so. 64 cubes at most.
 - `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
@@ -160,7 +160,7 @@ A creature's handlers, written as `function Kind:handler(...)`:
 Inside a handler, `self` is that creature. Fields you set on it (`self.mood = "happy"`) are kept across reloads. It has:
 
 - `self.position`, `self.id`, `self.kind`, `self.rider` (the player riding it, or nil)
-- `self:walk_to(pos, speed?)`, `self:wander(speed?)`, `self:stop()`, `self:hop(power?)`, `self:face(pos)`
+- `self:walk_to(pos, speed?)`, `self:wander(speed?)`, `self:stop()`, `self:hop(power?)`, `self:face(pos)`. Walking, it steps up onto anything one block high (never onto a fence) and stops at anything taller; it only ever hops when you say so
 - `self:say(text)` (a speech bubble), `self:distance_to(pos)`, `self:throw_rider(force?)`, `self:remove()`
 - `self:on_ground()`, and (new in 0.9) `self:climb(speed)` and `self:become(kind)`, below
 
