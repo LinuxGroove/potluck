@@ -1,12 +1,11 @@
 name = "Woolly"
 by = "Potluck"
 kind = "creature"
-about = "Sheep that graze the Green. Pat one and it follows you about for a while; bop one and it's off. In survival, patting one shears it for wool, which grows back in a few minutes."
+about = "Sheep that graze the Green. Hold wheat and they come to you, pat one and it follows you about for a while, bop one and it's off. In survival, patting one shears it for wool, which grows back in a few minutes."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.9"
+world = "0.10"
 tweak = "0.1"
-sound = "0.1"

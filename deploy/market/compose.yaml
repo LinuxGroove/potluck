@@ -3,7 +3,7 @@
 # the web pages, and Caddy puts https in front. Players sign in through the
 # game server (play.linuxgroove.com), which runs separately.
 #
-#   FORGEJO_TOKEN=... docker compose up -d     (see README.md here for the first run)
+#   FORGEJO_TOKEN=... docker compose up -d     (docs/hosting.md has the first run)
 
 services:
   forgejo:
@@ -31,7 +31,7 @@ services:
     depends_on:
       - forgejo
     environment:
-      FORGEJO_TOKEN: ${FORGEJO_TOKEN:?the Forgejo admin token: see README.md}
+      FORGEJO_TOKEN: ${FORGEJO_TOKEN:?the Forgejo admin token: see docs/hosting.md}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
     volumes:

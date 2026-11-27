@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.9")
+local world = require("@potluck/world@0.10")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.9"
+world = "0.10"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.9 | Blocks and lights, creatures (walking or flying, and changing kind), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.10 | Blocks and lights, creatures (walking or flying, changing kind, and behaviours that need no code), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -31,6 +31,7 @@ store = "0.1"
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
+| `@potluck/test` | 0.1 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
 Every module planned for the API is here. Still to come in later minor versions: sounds of a creation's own, from its files (`sound`), and more of the API in client halves (`net`).
 
@@ -99,7 +100,8 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
-- **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields).
+- **0.10**: `behaviours` for `world.creature`, what a creature does with no code: `wander`, `follow_food`, `follow_when_used`, `flee_when_hit`, `hop_when_hit`, `chatter` and `sound`. They act before its own handlers, which have the last word.
+- **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields, and still counting toward the `count` of the kind it came as). `world.spawn` puts a creature wider than a block that's set down beside a wall just clear of it.
 - **0.8**: `world.held` (what's in a player's hand), `world.kind` (what a block is made of) and `world.digging` (a thing held breaks some kinds of block faster, 0 to 10 times; creations' speeds multiply). Tools and swords are things to hold, never put down: `world.set_block` with one is an error.
 - **0.7**: `down_to` for `world.hurt`, the least health a hurt leaves (0 to 20).
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
@@ -137,3 +139,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/tweak`
 
 - **0.1**: the first version.
+
+### `@potluck/test`
+
+- **0.1**: the first version: `test.case`, `check` and `same`; `wait`; `player` and `move`; what players do (`place`, `dig`, `use_block`, `use`, `hit`, `ride`, `get_off`, `press`, `release`, `answer`, `hold`); and looking (`kind`, `creature`, `health`, `shown`, `asked`).

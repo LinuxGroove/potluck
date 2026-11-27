@@ -94,6 +94,8 @@ pub struct Me {
     regen: f32,
     /// Seconds since the last hurt, for the HUD's flash.
     pub hurt: f32,
+    /// Where the player was last hurt too badly, for the map's marker.
+    pub fell_at: Option<Vec3>,
 }
 
 impl Default for Me {
@@ -136,6 +138,7 @@ impl Default for Me {
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
+            fell_at: None,
         }
     }
 }
@@ -174,6 +177,16 @@ impl Me {
         self.fall_from = self.pos.y;
         self.riding = None;
         self.flying = false;
+    }
+
+    /// Puts the player at a spot as it is (a trip to a waypoint), keeping
+    /// which way they face.
+    pub fn place(&mut self, at: Vec3) {
+        self.pos = at;
+        self.vel = Vec3::ZERO;
+        self.fall_from = at.y;
+        self.flying = false;
+        self.breaking = None;
     }
 
     pub fn give(&mut self, id: BlockId) {
@@ -489,6 +502,9 @@ pub fn walk(
     }
     if me.pos.y < -20.0 || me.health <= 0.0 {
         let msg = if me.health <= 0.0 { "You were hurt too badly. Back to the hill." } else { "You fell out of the world. Back to the hill." };
+        if me.health <= 0.0 && settings.survival {
+            me.fell_at = Some(me.pos);
+        }
         let w = &*voxels;
         me.respawn(w, None);
         toasts.push(msg);

@@ -21,6 +21,8 @@ ed25519-dalek = "3"
 sha2 = "0.11"
 base64 = "0.22"
 qrcode = { version = "0.15", default-features = false, features = ["std"] }
+# the dev bridge's screenshots, as PNG (the same image crate Bevy uses)
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 # Ultra lighting ray traced with Bevy's Solari, on graphics cards that can

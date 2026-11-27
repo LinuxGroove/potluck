@@ -73,6 +73,10 @@ pub struct ServerConfig {
     pub creations: Vec<String>,
     /// Other servers creations can send players to, by name: rodeo = "wss://rodeo.example.org".
     pub links: BTreeMap<String, String>,
+    /// Whether players may go to waypoints and friends from the map.
+    pub teleport: bool,
+    /// Whether players may chat.
+    pub chat: bool,
 }
 
 impl Default for ServerConfig {
@@ -99,6 +103,8 @@ impl Default for ServerConfig {
             market_token: String::new(),
             creations: vec![],
             links: BTreeMap::new(),
+            teleport: true,
+            chat: true,
         }
     }
 }
@@ -153,6 +159,8 @@ impl ServerConfig {
             market_key: None,
             listed: self.list,
             all_ages: self.all_ages,
+            teleport: self.teleport,
+            chat: self.chat,
         }
     }
 
@@ -181,11 +189,15 @@ pub struct Rules {
     pub listed: bool,
     /// For all ages: younger players may join even though it's listed.
     pub all_ages: bool,
+    /// Players may go to waypoints and friends from the map.
+    pub teleport: bool,
+    /// Players may chat.
+    pub chat: bool,
 }
 
 impl Default for Rules {
     fn default() -> Self {
-        Rules { max_players: 16, join: Join::Anyone, allow: vec![], ban: vec![], bring: Bring::Anyone, build: true, address: String::new(), links: BTreeMap::new(), market_key: None, listed: false, all_ages: false }
+        Rules { max_players: 16, join: Join::Anyone, allow: vec![], ban: vec![], bring: Bring::Anyone, build: true, address: String::new(), links: BTreeMap::new(), market_key: None, listed: false, all_ages: false, teleport: true, chat: true }
     }
 }
 

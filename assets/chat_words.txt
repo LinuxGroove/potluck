@@ -1,0 +1,30 @@
+# Words chat hides (each letter becomes *). One a line; word* matches any
+# word starting with it. Look-alike spellings (sh1t, fuuuck) are folded
+# before matching, and runs of a letter squash to one on both sides, so a
+# word that squashes to an everyday one can't be listed ("ass" reads "as").
+# A starting list: have a person go through it before servers open to
+# strangers.
+fuck*
+fuk*
+fck*
+motherf*
+shit*
+bullshit*
+bitch*
+cunt*
+asshole*
+arsehole*
+arse
+dickhead*
+dick
+dicks
+cock
+cocks
+pussy
+whore*
+slut*
+bastard*
+wank*
+twat*
+piss*
+bollock*

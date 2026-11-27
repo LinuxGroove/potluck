@@ -13,6 +13,7 @@
 //!     potluck-server [--config=server.toml] [--name="Riverbend"] [--port=47126] [--seed=26]
 //!                    [--tls-port=443 --cert=fullchain.pem --key=privkey.pem]
 //!                    [--data=/var/lib/potluck] [--no-beacon] [--max-players=50]
+//!     potluck-server --test=balloon|path/to/folder|all
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,7 +75,44 @@ const HELP: &str = "Options (or the POTLUCK_* environment variables; these win o
   --max-players=50     how many may play at once (POTLUCK_MAX_PLAYERS)
   --data=DIR           where the world is kept (POTLUCK_HOME)
   --no-beacon          don't announce the world on the local network
-  --check              read the settings, say what's wrong, and stop";
+  --check              read the settings, say what's wrong, and stop
+  --test=CREATION      run a creation's own tests (its test.luau) in a fresh world
+                       and stop: an id, a folder, or all for every one that has
+                       tests. It ends with 1 if any failed, for scripts and CI";
+
+/// `--test`: runs creations' own tests, each case in a fresh copy of the
+/// world from the seed, and says how they went.
+fn test(what: &str, args: &[String]) -> i32 {
+    let lib = Library::load();
+    let creations: Vec<Creation> = if what == "all" {
+        lib.list.values().filter(|c| c.files.contains_key(testing::FILE)).cloned().map(|mut c| {
+            c.knobs.clear();
+            c
+        }).collect()
+    } else {
+        match lib.to_test(what) {
+            Ok(c) => vec![c],
+            Err(e) => {
+                eprintln!("potluck-server: {e}");
+                return 2;
+            }
+        }
+    };
+    let seed = arg(args, "seed", "POTLUCK_SEED").and_then(|s| s.parse().ok()).unwrap_or(SEED);
+    let world = world::generate(seed);
+    let mut failed = 0;
+    for c in &creations {
+        let report = testing::run(c, &world);
+        println!("{}", report.text());
+        if !report.passed() {
+            failed += 1;
+        }
+    }
+    if creations.len() > 1 {
+        println!("{} of {} creations passed their tests", creations.len() - failed, creations.len());
+    }
+    if failed > 0 { 1 } else { 0 }
+}
 
 /// The settings: server.toml, then the environment and command line over it.
 fn settings_from(args: &[String]) -> Result<ServerConfig, String> {
@@ -123,6 +161,9 @@ fn main() {
         unsafe { std::env::set_var("POTLUCK_HOME", d) };
     }
     let _ = std::fs::create_dir_all(settings::data_dir());
+    if let Some(what) = args.iter().find_map(|a| a.strip_prefix("--test=")) {
+        std::process::exit(test(what, &args));
+    }
     let cfg = match settings_from(&args) {
         Ok(c) => c,
         Err(e) => {
@@ -186,6 +227,15 @@ fn main() {
         shared.boards = hosting::Boards::load(&boards_file());
         shared.store = script::Store::load(&store_file());
         shared.links = cfg.links.keys().cloned().collect();
+    }
+    {
+        // every line of chat, for the operator; their own word list, if they keep one
+        let mut chat = app.world_mut().resource_mut::<chat::Chat>();
+        chat.log = Some(settings::data_dir().join("chat.jsonl"));
+        if let Ok(words) = std::fs::read_to_string(settings::data_dir().join("chat_words.txt")) {
+            chat.use_words(&words);
+            info!("Chat hides the words in {}", settings::data_dir().join("chat_words.txt").display());
+        }
     }
     let listing = cfg.list.then(|| (cfg.clone(), Arc::new(link)));
     app.insert_resource(s)

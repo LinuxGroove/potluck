@@ -9,20 +9,22 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 | `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.3"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.1"` for sounds, `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
 | `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder. It runs on the world's host, the only place the world changes |
 | `client.luau` | Only if it has a client half (`client = "client.luau"` in potluck.toml): code that runs on each player's own game, for what only they see. See `@potluck/net` |
+| `test.luau` | Only if it has tests of its own: cases that play in a world of their own, to check it does what it should. See `@potluck/test` |
 | `types/potluck.d.luau` | The API's types, for editors and AI helpers. Don't edit it: the game writes it |
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.9")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.9. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.10")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.10. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.9
+### `@potluck/world` 0.10
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
 - `world.creature(def)` defines a kind of creature and returns it, to add handlers to. `def` has:
-  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
+  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
   - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z.
   - `size = { w, h, d }`: the box it bumps into things with (worked out from the body if left out)
+  - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
 - `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
 - `world.top(x, z)` is the height of the highest solid block. `world.find_block(pos, radius, name)` is the nearest block of that name within `radius` (up to 16), or nil.
 - `world.players()` is a list of players; `world.nearest_player(pos, radius?)` is the nearest one, or nil. A player is `{ id, name, position }`.
@@ -159,8 +161,35 @@ function Egg:hit(player) self:become(Chick) end   -- same creature, the Chick's 
 - A creature with `flies = true` has no gravity. `self:climb(speed)` sets how fast it rises (or sinks, below 0), from -4 to 4 blocks a second, and it eases into that speed over a second or so, so whoever rides it is never jolted. It stays at what it was last told; 0 hovers. It returns false for a creature that doesn't fly. Fliers float on water, and slow to a stop 24 blocks above the world's highest blocks.
 - A rider steers a flier with their movement while it's in the air; it gathers and loses speed gently. On the ground it stays put.
 - `self:on_ground()` is whether it's standing on something.
-- `self:become(kind)` turns it into another kind of this creation's: the new kind's body, size, speed, `rideable`, `seat` and `flies`, and its handlers from then on. Its fields and its rider stay (unless the new kind isn't rideable). `spawned` isn't called again.
+- `self:become(kind)` turns it into another kind of this creation's: the new kind's body, size, speed, `rideable`, `seat` and `flies`, and its handlers from then on. Its fields and its rider stay (unless the new kind isn't rideable). `spawned` isn't called again, and it still counts toward the `count` of the kind it came as, so a sheared sheep doesn't bring another.
 - Creatures aren't kept when a server restarts (they come back by `count`); keep anything that matters, such as where a balloon is, in `@potluck/store`.
+
+Behaviours (new in 0.10): a creature can do the usual things with no code at all, and code is for what they can't do.
+
+```luau
+local Woolly = world.creature {
+	name = "Woolly",
+	home = "green",
+	behaviours = {
+		follow_food = "Wheat",       -- comes to a player holding wheat
+		follow_when_used = 20,       -- follows whoever pats it, for 20 s
+		flee_when_hit = 6,           -- runs 6 blocks from whoever bops it
+		hop_when_hit = 0.8,
+		chatter = { "Baa.", "Baa?" }, -- says one now and then, and when patted
+		sound = "bleat",             -- with a sound, and when patted or bopped
+	},
+	body = { ... },
+}
+```
+
+- `wander` (true unless it's false): wanders about its home when it has nothing else to do.
+- `follow_food`: a block's name, or a list of them. It comes to the nearest player within 10 blocks with one in their hand, stops a couple of blocks off and looks at them, and goes back to what it was doing when they put it away.
+- `follow_when_used`: seconds it follows whoever used it (true for 20, up to 300). Being hit stops it.
+- `flee_when_hit`: how far it runs from whoever hit it, straight away from them, at nearly twice its speed (true for 6, up to 16).
+- `hop_when_hit`: how high it hops when hit, as `self:hop` has it (true for 0.6, up to 3).
+- `chatter`: lines it says now and then (every 10 to 35 seconds) and when it's used, one at random, 80 letters each.
+- `sound`: one of the game's sounds (`sound.names()`), with its chatter, and when it's used or hit. It needn't `require` `@potluck/sound`.
+- Behaviours act first, each tick and when it's used or hit, and then its own handlers run, so its code has the last word: a `tick` that calls `self:walk_to` takes it somewhere else, and a `hit` that calls `self:say` says something else. A creature being ridden doesn't follow anyone. Kinds that `become` one another can share one table of behaviours, or have their own.
 
 ### `@potluck/tweak` 0.1
 
@@ -328,6 +357,39 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
+### `@potluck/test` 0.1
+
+A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
+
+```luau
+local test = require("@potluck/test@0.1")
+local world = require("@potluck/world@0.10")
+
+test.case("a basket put down fills up into a balloon", function()
+	local p = test.player("Ada")                    -- on the Green
+	local x, z = p.position.x + 3, p.position.z
+	local at = vector.create(x, world.top(x, z) + 1, z)
+	test.place(p, at, "Balloon basket")             -- as if Ada put it down
+	test.wait(4)                                     -- four seconds of play
+	local ids = world.creatures(test.kind("Hot air balloon"))
+	test.same(#ids, 1, "balloons")
+	local b = test.creature(ids[1])
+	test.ride(p, b)
+	test.press(p, "burner")                          -- one of its [actions]
+	test.wait(4)
+	test.check(b.position.y > at.y + 2, "it rose")
+end)
+```
+
+- `test.case(name, fn)` adds a case (64 at most). It passes if `fn` returns, and fails at the first error, saying the line. It fails too if the creation's own code goes wrong while it plays.
+- `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
+- `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
+- `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
+- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), and `test.hold(player, block)` for what's in their hand (nil for nothing). Placing, digging, using a block, pressing and answering pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, and `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil.
+- The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
+- `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
+
 ## Rules of the sandbox
 
 - No files, no network, no other creation's memory. `os`, `io` and loading bytecode aren't there.
@@ -337,4 +399,20 @@ end
 
 ## Testing
 
-Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error.
+Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error, and for how it's doing against its budgets: how long its ticks take of their 15 ms, on average and at most lately, and its memory of 32 MB.
+
+To check it keeps doing what it should as you change it, give it tests of its own in `test.luau` (see `@potluck/test`) and run them with the dev bridge's `test` tool or `potluck-server --test=<its folder>`.
+
+### With a coding helper: the dev bridge
+
+A coding helper on the same computer can work with the game while you play: turn on **Settings, Dev bridge for coding helpers on this computer** (or start the game with `--bridge`) and add `http://127.0.0.1:47130/mcp` to the helper as an MCP server over HTTP (in Claude Code, `claude mcp add --transport http potluck http://127.0.0.1:47130/mcp`). It answers only programs on this computer, and it's off until you turn it on. Its tools:
+
+- `creations`: every creation in the game, which are running, the folder each of yours is in, their errors, knobs, actions, creatures, memory and load time.
+- `guide`: this file (or, with `types`, the API's types).
+- `reload`: reads a creation's folder again and starts or restarts it, keeping its creatures; an error says which file and line, and the last good version keeps running. A new folder in your creations folder is a new creation: give it a `potluck.toml` and `main.luau` and reload it by the folder's name (it gets this file and the types).
+- `log`: what it printed, its last error, and its client half's lines.
+- `run`: a few lines of Luau inside a running creation, as if they were part of its code (`return #require("@potluck/world").creatures()`), with what they printed and returned. Its files' locals aren't reachable, and it has one tick's time.
+- `test`: runs its own tests (`test.luau`, as saved in its folder) in a copy of the world, and says which cases passed and why the others failed, with the line and what it printed. Nothing it does reaches the world.
+- `tweak`: turns one of its knobs, as Tweak does.
+- `look_around`: where you are and what's near you: the block you look at, creatures with their creation, kind, rider and the fields their code keeps, other players, the blocks about and the time of day.
+- `screenshot`: the screen as it is, as a picture.
