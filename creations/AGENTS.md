@@ -338,3 +338,16 @@ end
 ## Testing
 
 Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error.
+
+### With a coding helper: the dev bridge
+
+A coding helper on the same computer can work with the game while you play: turn on **Settings, Dev bridge for coding helpers on this computer** (or start the game with `--bridge`) and add `http://127.0.0.1:47130/mcp` to the helper as an MCP server over HTTP (in Claude Code, `claude mcp add --transport http potluck http://127.0.0.1:47130/mcp`). It answers only programs on this computer, and it's off until you turn it on. Its tools:
+
+- `creations`: every creation in the game, which are running, the folder each of yours is in, their errors, knobs, actions, creatures, memory and load time.
+- `guide`: this file (or, with `types`, the API's types).
+- `reload`: reads a creation's folder again and starts or restarts it, keeping its creatures; an error says which file and line, and the last good version keeps running. A new folder in your creations folder is a new creation: give it a `potluck.toml` and `main.luau` and reload it by the folder's name (it gets this file and the types).
+- `log`: what it printed, its last error, and its client half's lines.
+- `run`: a few lines of Luau inside a running creation, as if they were part of its code (`return #require("@potluck/world").creatures()`), with what they printed and returned. Its files' locals aren't reachable, and it has one tick's time.
+- `tweak`: turns one of its knobs, as Tweak does.
+- `look_around`: where you are and what's near you: the block you look at, creatures with their creation, kind, rider and the fields their code keeps, other players, the blocks about and the time of day.
+- `screenshot`: the screen as it is, as a picture.

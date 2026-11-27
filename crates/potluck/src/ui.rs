@@ -194,6 +194,9 @@ pub struct Focus {
     pub pin_misses: Vec<std::time::Instant>,
     /// The creation's question on the Panel screen.
     pub panel: Option<crate::script::Panel>,
+    /// What Settings says under the dev bridge: its address, or why it
+    /// couldn't start.
+    pub bridge: Option<String>,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -219,6 +222,7 @@ impl Default for Focus {
             parents_open: false,
             pin_misses: vec![],
             panel: None,
+            bridge: None,
             qr: None,
         }
     }
@@ -648,7 +652,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             (p.title.clone(), v)
         }
         Screen::Settings => {
-            let v = vec![
+            let mut v = vec![
                 Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: focus.fields.get("name").cloned().unwrap_or_else(|| settings.name.clone()) } },
                 Item { label: "Mouse speed".into(), kind: Kind::Slider { key: "mouse".into(), value: settings.mouse_sensitivity as f64, min: 0.2, max: 3.0 } },
                 Item { label: "Stick speed".into(), kind: Kind::Slider { key: "stick".into(), value: settings.stick_sensitivity as f64, min: 0.2, max: 3.0 } },
@@ -661,12 +665,18 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
                 button("Creations' buttons", Act::OpenControls),
+                Item { label: "Dev bridge for coding helpers on this computer".into(), kind: Kind::Toggle { key: "bridge".into(), value: settings.dev_bridge } },
                 button("Link a device", Act::OpenDevices),
                 button("Parent settings", Act::OpenParents),
                 Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
                 Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
                 button("Back", Act::Back),
             ];
+            // where a coding helper finds the bridge, under its switch
+            if let Some(n) = focus.bridge.clone().filter(|_| settings.dev_bridge) {
+                let at = v.iter().position(|i| matches!(&i.kind, Kind::Toggle { key, .. } if key == "bridge")).map_or(v.len(), |i| i + 1);
+                v.insert(at, note(n));
+            }
             ("Settings".into(), v)
         }
     }
@@ -907,6 +917,7 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("volume", KnobValue::Number(n)) => settings.volume = n.clamp(0.0, 1.0) as f32,
         ("subtitles", KnobValue::Toggle(b)) => settings.subtitles = b,
         ("fullscreen", KnobValue::Toggle(b)) => settings.fullscreen = b,
+        ("bridge", KnobValue::Toggle(b)) => settings.dev_bridge = b,
         // a parent's, once unlocked
         ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
         ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,

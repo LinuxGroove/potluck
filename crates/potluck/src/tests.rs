@@ -3288,3 +3288,179 @@ fn gnomes_tell_survival_players_how_to_get_by() {
     assert!(topic.text.contains("workbench") && topic.text.ends_with("can't bear light."), "{}", topic.text);
     assert_eq!(scripts.vms["gnome"].error, None);
 }
+
+/// One message to the dev bridge over HTTP, answered while this thread plays
+/// the game's part: (status, body, helpers who said hello).
+fn bridge_post(open: &crate::bridge::Open, cx: &mut crate::bridge::Cx, method: &str, headers: &str, body: &str) -> (u16, String, Vec<String>) {
+    use crate::bridge::{answer, Call};
+    let port = open.port;
+    let host = if headers.lines().any(|l| l.to_ascii_lowercase().starts_with("host:")) { String::new() } else { format!("Host: 127.0.0.1:{port}\r\n") };
+    let req = format!("{method} /mcp HTTP/1.1\r\n{host}{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        let _ = tx.send(out);
+    });
+    let mut hellos = Vec::new();
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        for call in open.calls() {
+            match call {
+                Call::Hello(who) => hellos.push(who),
+                Call::Tool { name, args, reply } => {
+                    let _ = reply.send(answer(&name, &args, cx));
+                }
+            }
+        }
+        if let Ok(out) = rx.try_recv() {
+            let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
+            let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            return (status, body.to_string(), hellos);
+        }
+        assert!(Instant::now() < until, "the dev bridge never answered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A tool call to the dev bridge: (its text, whether it's an error).
+fn bridge_tool(open: &crate::bridge::Open, cx: &mut crate::bridge::Cx, tool: &str, args: serde_json::Value) -> (String, bool) {
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": { "name": tool, "arguments": args } }).to_string();
+    let (status, body, _) = bridge_post(open, cx, "POST", "", &body);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let result = &v["result"];
+    let text = result["content"].as_array().unwrap().iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
+    (text, result["isError"].as_bool().unwrap())
+}
+
+/// The dev bridge: a coding helper on this computer makes a creation in the
+/// player's folder, starts it, reads its log, runs a line in it, turns a
+/// knob, looks around and sees a mistake's line, all over MCP; nothing but
+/// programs on this computer can reach it.
+#[test]
+fn a_coding_helper_works_on_creations_through_the_dev_bridge() {
+    use crate::bridge::{self, Cx};
+    use serde_json::json;
+    home();
+    let id = "bridge-moths";
+    let dir = crate::creations::my_folder().join(id);
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _gone = Gone(dir.clone());
+    let open = bridge::listen(0).unwrap();
+    let mut voxels = world();
+    let (mid, _) = pad(&mut voxels);
+    let mut lib = Library::load();
+    let (mut scripts, mut herd, mut net) = (Scripts::default(), Herd::default(), crate::net::Net::default());
+    let (mut toasts, mut edits) = (crate::ui::Toasts::default(), crate::KnobEdits::default());
+    let mut me = crate::player::Me::default();
+    me.pos = mid.as_vec3() + Vec3::new(3.0, 0.0, 0.0);
+    let mut cx = Cx { lib: &mut lib, scripts: &mut scripts, herd: &mut herd, net: &mut net, toasts: &mut toasts, voxels: &mut voxels, edits: &mut edits, me: Some(&me), halves: None, in_world: true, survival: false, day: 0.5 };
+
+    // the handshake
+    let hello = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test helper", "version": "1" } } }).to_string();
+    let (status, body, hellos) = bridge_post(&open, &mut cx, "POST", "", &hello);
+    assert_eq!(status, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(v["result"]["serverInfo"]["name"], "potluck");
+    assert!(v["result"]["instructions"].as_str().unwrap().contains(&crate::creations::my_folder().display().to_string()), "says where creations go");
+    assert_eq!(hellos, vec!["test helper".to_string()]);
+    let (status, ..) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }).to_string());
+    assert_eq!(status, 202, "notifications get no answer");
+    let ping = json!({ "jsonrpc": "2.0", "id": 2, "method": "ping" }).to_string();
+    // only this computer: not a name pointed at it, not a web page
+    assert_eq!(bridge_post(&open, &mut cx, "POST", "Host: evil.example\r\n", &ping).0, 403);
+    assert_eq!(bridge_post(&open, &mut cx, "POST", "Origin: http://evil.example\r\n", &ping).0, 403);
+    assert_eq!(bridge_post(&open, &mut cx, "POST", &format!("Origin: http://localhost:{}\r\n", open.port), &ping).0, 200);
+    assert_eq!(bridge_post(&open, &mut cx, "GET", "", "").0, 405, "no stream from the bridge");
+    let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }).to_string());
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let names: Vec<&str> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "tweak", "look_around", "screenshot"]);
+    let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "fly" } }).to_string());
+    assert!(body.contains("-32602"), "an unknown tool is a protocol error: {body}");
+
+    // a new creation, made in the player's folder and started by the helper
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("potluck.toml"), "name = \"Lantern moths\"\nby = \"a helper\"\nkind = \"creature\"\nmain = \"main.luau\"\n").unwrap();
+    let code = |bad: bool| {
+        format!(
+            r##"local world = require("@potluck/world")
+local tweak = require("@potluck/tweak")
+{}
+local knobs = tweak {{ glow = {{ 2, min = 0, max = 5, label = "Glow" }} }}
+print("moths awake")
+local Moth = world.creature {{
+	name = "Lantern moth",
+	count = 2,
+	home = {{ {}, {}, {} }},
+	size = {{ 0.5, 0.5, 0.5 }},
+	body = {{ {{ "wing", size = {{ 0.5, 0.1, 0.3 }}, at = {{ 0, 0.25, 0 }}, color = "#ffd27f" }} }},
+}}
+function Moth:spawned()
+	self.flaps = 0
+end
+function Moth:tick(dt)
+	self.flaps += 1
+end
+"##,
+            if bad { "local oops = = 1" } else { "" },
+            mid.x,
+            mid.y,
+            mid.z
+        )
+    };
+    std::fs::write(dir.join("main.luau"), code(false)).unwrap();
+    let (text, err) = bridge_tool(&open, &mut cx, "reload", json!({ "creation": id }));
+    assert!(!err && text.contains("Lantern moths is running") && text.contains("Lantern moth"), "{text}");
+    assert!(dir.join("AGENTS.md").is_file() && dir.join("types/potluck.d.luau").is_file(), "a new folder gets the guide and types");
+    assert!(cx.lib.running.iter().any(|r| r == id));
+    run(cx.scripts, cx.voxels, cx.herd, 0.5);
+    assert_eq!(cx.herd.bodies.values().filter(|b| b.creation == id).count(), 2);
+    let (text, err) = bridge_tool(&open, &mut cx, "log", json!({ "creation": id }));
+    assert!(!err && text.contains("moths awake"), "{text}");
+    // a line run inside it sees what it sees, and prints to its log
+    let (text, err) = bridge_tool(&open, &mut cx, "run", json!({ "creation": id, "code": "print('hello from run') local world = require('@potluck/world') return #world.creatures(), 'ok'" }));
+    assert!(!err && text.contains("hello from run") && text.contains("returned: 2, \"ok\""), "{text}");
+    assert!(cx.scripts.vms[id].log.iter().any(|l| l == "hello from run"));
+    let (text, err) = bridge_tool(&open, &mut cx, "run", json!({ "creation": id, "code": "error('nope')" }));
+    assert!(err && text.contains("nope"), "{text}");
+    assert!(cx.scripts.vms[id].error.is_none(), "a helper's mistake isn't the creation's");
+    // the world near the player, with what the moths' code keeps on them
+    let (text, err) = bridge_tool(&open, &mut cx, "look_around", json!({}));
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|_| panic!("{text}"));
+    assert!(!err && v["in_world"] == true && v["you"]["mode"] == "build");
+    let moths: Vec<&serde_json::Value> = v["creatures"].as_array().unwrap().iter().filter(|c| c["creation"] == id).collect();
+    assert_eq!(moths.len(), 2, "{text}");
+    assert!(moths[0]["fields"]["flaps"].as_f64().unwrap() >= 1.0, "{text}");
+    assert_eq!(v["blocks_within_8"]["Stone"].as_u64().map(|n| n > 0), Some(true), "{text}");
+    // knobs, as Tweak turns them
+    let (text, err) = bridge_tool(&open, &mut cx, "tweak", json!({ "creation": id, "knob": "glow", "value": 4 }));
+    assert!(!err && text.contains("Glow"), "{text}");
+    assert!(matches!(cx.edits.0.last(), Some((c, k, KnobValue::Number(n))) if c == id && k == "glow" && *n == 4.0));
+    assert!(bridge_tool(&open, &mut cx, "tweak", json!({ "creation": id, "knob": "glow", "value": true })).1, "a number knob takes numbers");
+    // a mistake says where, and the last good version keeps running
+    std::fs::write(dir.join("main.luau"), code(true)).unwrap();
+    let (text, err) = bridge_tool(&open, &mut cx, "reload", json!({ "creation": id }));
+    assert!(err && text.contains("main.luau:3") && text.contains("still running"), "{text}");
+    run(cx.scripts, cx.voxels, cx.herd, 0.3);
+    assert_eq!(cx.herd.bodies.values().filter(|b| b.creation == id).count(), 2, "the moths are still about");
+    let (text, _) = bridge_tool(&open, &mut cx, "creations", json!({}));
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mine = v["creations"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap();
+    assert!(mine["running"] == true && mine["folder"].as_str().is_some() && mine["knobs"]["glow"]["label"] == "Glow" && mine["error"].as_str().is_some_and(|e| e.contains("main.luau:3")), "{mine}");
+    assert!(v["creations"].as_array().unwrap().iter().any(|c| c["id"] == "mossback" && c["origin"] == "the base game"));
+    let (text, err) = bridge_tool(&open, &mut cx, "guide", json!({}));
+    assert!(!err && text.contains("@potluck/world"));
+    // a screenshot needs the game's screen, which this test hasn't got
+    assert!(bridge_tool(&open, &mut cx, "screenshot", json!({})).1);
+    drop(open);
+}

@@ -808,6 +808,66 @@ pub(crate) fn player_table(lua: &Lua, p: &PlayerInfo) -> mlua::Result<Table> {
     Ok(t)
 }
 
+/// A Luau value as Luau would write it, kept short: for the dev bridge.
+pub(crate) fn show(v: &Value) -> String {
+    fn go(v: &Value, depth: u32, out: &mut String) {
+        if out.len() > 2000 {
+            return;
+        }
+        match v {
+            Value::Nil => out.push_str("nil"),
+            Value::Boolean(b) => out.push_str(&b.to_string()),
+            Value::Integer(i) => out.push_str(&i.to_string()),
+            Value::Number(n) => out.push_str(&n.to_string()),
+            Value::String(s) => out.push_str(&format!("{:?}", s.to_string_lossy())),
+            Value::Vector(v) => out.push_str(&format!("vector({}, {}, {})", v.x(), v.y(), v.z())),
+            Value::Table(t) if depth < 4 => {
+                out.push('{');
+                let mut first = true;
+                let n = t.raw_len();
+                for i in 1..=n {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    go(&t.raw_get::<Value>(i).unwrap_or(Value::Nil), depth + 1, out);
+                }
+                for (k, val) in t.pairs::<Value, Value>().flatten() {
+                    if matches!(k, Value::Integer(i) if i >= 1 && i as usize <= n) {
+                        continue;
+                    }
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    match &k {
+                        Value::String(s) => out.push_str(&s.to_string_lossy()),
+                        other => {
+                            out.push('[');
+                            go(other, depth + 1, out);
+                            out.push(']');
+                        }
+                    }
+                    out.push_str(" = ");
+                    go(&val, depth + 1, out);
+                }
+                out.push('}');
+            }
+            Value::Table(_) => out.push_str("{...}"),
+            Value::Function(_) => out.push_str("function"),
+            other => out.push_str(other.type_name()),
+        }
+    }
+    let mut out = String::new();
+    go(v, 0, &mut out);
+    if out.len() > 2000 {
+        let cut = (0..=2000).rev().find(|&i| out.is_char_boundary(i)).unwrap_or(0);
+        out.truncate(cut);
+        out.push_str(" ...");
+    }
+    out
+}
+
 /// Copies a creature's own fields out of the sandbox, to keep across a reload.
 pub(crate) fn to_json(v: &Value, depth: u32) -> Option<serde_json::Value> {
     use serde_json::Value as J;
@@ -1916,6 +1976,11 @@ impl Vm {
         }
     }
 
+    /// The memory its sandbox uses, in bytes.
+    pub fn memory(&self) -> usize {
+        self.lua.used_memory()
+    }
+
     /// The creatures' own fields, to carry over a reload.
     pub fn memories(&self) -> HashMap<u64, serde_json::Value> {
         let mut m = HashMap::new();
@@ -2274,6 +2339,31 @@ impl Scripts {
             let name = b.kind.clone();
             vm.failed(&name, e, &mut self.out);
         }
+    }
+
+    /// Runs a few lines of Luau in a running creation's sandbox, as if they
+    /// were part of its code, with one tick's time: what they printed and
+    /// returned (the dev bridge's `run`). An error here is the caller's, so
+    /// it doesn't count toward pausing the creation.
+    pub fn run(&mut self, voxels: &mut Voxels, herd: &mut Herd, id: &str, code: &str) -> Result<(Vec<String>, String), String> {
+        let players = self.players.clone();
+        let time = self.time.max(0.001);
+        let vm = self.vms.get_mut(id).ok_or_else(|| format!("{id} isn't running in this world"))?;
+        // what it prints goes to its log as usual, and back to the caller
+        let kept = std::mem::take(&mut vm.log);
+        let mut log = Vec::new();
+        let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
+            let vals: mlua::MultiValue = lua.load(code).set_name("=run").eval()?;
+            Ok(vals.iter().map(show).collect::<Vec<_>>().join(", "))
+        });
+        let mut printed = std::mem::replace(&mut vm.log, kept);
+        printed.extend(log);
+        vm.log.extend(printed.iter().cloned());
+        if vm.log.len() > 200 {
+            let n = vm.log.len() - 200;
+            vm.log.drain(..n);
+        }
+        r.map(|v| (printed, v))
     }
 
     /// Ticks every creation's creatures, ten times a second.
