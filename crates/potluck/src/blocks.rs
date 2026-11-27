@@ -59,10 +59,24 @@ pub const SANDSTONE_BRICKS: BlockId = 43;
 pub const COLUMN: BlockId = 44;
 pub const BRAZIER: BlockId = 45;
 pub const FENCE: BlockId = 46;
+pub const SLATE: BlockId = 47;
+pub const ICE: BlockId = 48;
+pub const CACTUS: BlockId = 49;
+pub const REEDS: BlockId = 50;
+pub const DRY_BUSH: BlockId = 51;
 // 47 to 63 are kept for the looks; 64 and up are for the creations' work.
-pub const WOODEN_PICKAXE: BlockId = 64;
-pub const STONE_SWORD: BlockId = 71;
+// 64 to 71 were tools before items had ids of their own (`items`); no
+// world had them, so they're ores and what's found underground now.
+pub const COAL_ORE: BlockId = 64;
+pub const COPPER_ORE: BlockId = 65;
+pub const IRON_ORE: BlockId = 66;
+pub const GOLD_ORE: BlockId = 67;
+pub const CRYSTAL_ORE: BlockId = 68;
+pub const MOONSILVER_ORE: BlockId = 69;
+pub const OLD_CHEST: BlockId = 70;
+pub const GLOWCAP: BlockId = 71;
 pub const BALLOON_BASKET: BlockId = 72;
+pub const TORCH: BlockId = 73;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
@@ -83,7 +97,7 @@ pub struct Block {
     /// Texture names for the top, the sides and the bottom.
     pub faces: [&'static str; 3],
     pub shape: Shape,
-    /// Gives light (lanterns, candles, braziers).
+    /// Gives light (lanterns, candles, braziers, torches).
     pub light: bool,
     /// Seconds to break by hand; 0 is instant, negative can't be broken.
     pub hardness: f32,
@@ -91,8 +105,6 @@ pub struct Block {
     pub model: &'static [Cuboid],
     /// Whether bodies bump into a model (a table, but not a candle).
     pub solid: bool,
-    /// Something to carry and hold (a tool, a sword) that's never placed.
-    pub item: bool,
 }
 
 /// Which way a side faces: east, west, up, down, south, north.
@@ -161,17 +173,12 @@ impl Cuboid {
 }
 
 const fn b(name: &'static str, faces: [&'static str; 3], shape: Shape, hardness: f32) -> Block {
-    Block { name, faces, shape, light: false, hardness, model: &[], solid: false, item: false }
+    Block { name, faces, shape, light: false, hardness, model: &[], solid: false }
 }
 
 /// A block made of boxes.
 const fn m(name: &'static str, faces: [&'static str; 3], model: &'static [Cuboid], solid: bool, hardness: f32) -> Block {
-    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid, item: false }
-}
-
-/// Something to hold, never placed: its tile is its icon.
-const fn item(name: &'static str, tile: &'static str) -> Block {
-    Block { name, faces: [tile, tile, tile], shape: Shape::Air, light: false, hardness: 0.0, model: &[], solid: false, item: true }
+    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid }
 }
 
 const fn lit(mut b: Block) -> Block {
@@ -240,6 +247,11 @@ const FENCE_BOXES: &[Cuboid] = &[
     bx([7, 11, 0], [9, 14, 6]).when(When::Joins(5)),
 ];
 
+/// A torch: a stick with a flame on top, the candle's flame.
+const TORCH_BOXES: &[Cuboid] = &[bx([7, 0, 7], [9, 7, 9]).tex(["torch_top", "torch", "torch_top"]), bx([7, 7, 7], [9, 11, 9]).tex(["flame", "flame", "flame"]).glow()];
+/// An old chest: a box with a lid a little wider than it.
+const CHEST_BOXES: &[Cuboid] = &[bx([1, 0, 2], [15, 10, 14]), bx([0, 10, 1], [16, 14, 15])];
+
 pub static BLOCKS: &[Block] = &[
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Grass", ["grass_top", "grass_side", "dirt"], Shape::Solid, 0.5),
@@ -288,7 +300,13 @@ pub static BLOCKS: &[Block] = &[
     m("Column", ["column_top", "column", "column_top"], COLUMN_BOXES, true, 1.3),
     lit(m("Brazier", ["brazier_top", "brazier", "brazier_top"], BRAZIER_BOXES, true, 0.8)),
     m("Fence", ["planks", "fence", "planks"], FENCE_BOXES, true, 0.6),
-    // 47 to 63: kept for the looks
+    // 47 to 51: the lands past the island (`world::wild`)
+    b("Slate", ["slate", "slate", "slate"], Shape::Solid, 1.8),
+    b("Ice", ["ice", "ice", "ice"], Shape::Solid, 0.5),
+    b("Cactus", ["cactus_top", "cactus_side", "cactus_top"], Shape::Solid, 0.4),
+    b("Reeds", ["reeds", "reeds", "reeds"], Shape::Cross, 0.0),
+    b("Dry bush", ["dry_bush", "dry_bush", "dry_bush"], Shape::Cross, 0.0),
+    // 52 to 63: kept for the looks
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
@@ -301,22 +319,22 @@ pub static BLOCKS: &[Block] = &[
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    // 64 on: tools and swords (the tools and gloomlings creations say what they do)
-    item("Wooden pickaxe", "pickaxe_wood"),
-    item("Stone pickaxe", "pickaxe_stone"),
-    item("Wooden axe", "axe_wood"),
-    item("Stone axe", "axe_stone"),
-    item("Wooden shovel", "shovel_wood"),
-    item("Stone shovel", "shovel_stone"),
-    item("Wooden sword", "sword_wood"),
-    item("Stone sword", "sword_stone"),
+    // 64 to 69: ores (the mining creation says what each gives, and which
+    // pickaxe it needs)
+    b("Coal ore", ["ore_coal", "ore_coal", "ore_coal"], Shape::Solid, 1.5),
+    b("Copper ore", ["ore_copper", "ore_copper", "ore_copper"], Shape::Solid, 1.8),
+    b("Iron ore", ["ore_iron", "ore_iron", "ore_iron"], Shape::Solid, 2.0),
+    b("Gold ore", ["ore_gold", "ore_gold", "ore_gold"], Shape::Solid, 2.0),
+    b("Crystal ore", ["ore_crystal", "ore_crystal", "ore_crystal"], Shape::Solid, 2.4),
+    b("Moonsilver ore", ["ore_moonsilver", "ore_moonsilver", "ore_moonsilver"], Shape::Solid, 3.0),
+    // 70: in old workings underground; the mining creation opens it
+    m("Old chest", ["old_chest_top", "old_chest", "old_chest_top"], CHEST_BOXES, true, 0.8),
+    // 71: a mushroom that glows on cave floors
+    b("Glowcap", ["glowcap", "glowcap", "glowcap"], Shape::Cross, 0.0),
     // 72: put down, it becomes a hot air balloon (the balloon creation)
     m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
+    // 73: a torch, made from coal and planks at a workbench
+    lit(m("Torch", ["torch_top", "torch", "torch_top"], TORCH_BOXES, false, 0.0)),
 ];
 
 /// The blocks creations made, by id less `FIRST_MADE`. Only `set_made`
@@ -326,7 +344,7 @@ static MADE: [AtomicPtr<Block>; 128] = [const { AtomicPtr::new(std::ptr::null_mu
 
 /// A made block's id that no creation here has given a block (a guest's
 /// copy of a world before the host's list comes).
-static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false, item: false };
+static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false };
 
 /// Gives a made block's id its block, or takes it away (`made` only).
 pub(crate) fn set_made(id: BlockId, b: Option<&'static Block>) {
@@ -351,11 +369,6 @@ pub fn block(id: BlockId) -> &'static Block {
         return made(id).unwrap_or(&UNKNOWN);
     }
     BLOCKS.get(id as usize).unwrap_or(&BLOCKS[0])
-}
-
-/// Something to hold (a tool), never placed.
-pub fn is_item(id: BlockId) -> bool {
-    block(id).item
 }
 
 pub fn shape(id: BlockId) -> Shape {

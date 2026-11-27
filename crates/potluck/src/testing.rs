@@ -19,7 +19,7 @@ use crate::blocks;
 use crate::creations::Creation;
 use crate::creatures::{self, Herd};
 use crate::noise::Rng;
-use crate::script::{self, PlayerInfo, Scripts};
+use crate::script::{self, Note, PlayerInfo, Scripts};
 use crate::world::Voxels;
 
 /// The file a creation keeps its tests in.
@@ -38,7 +38,7 @@ pub const TEST_MODULE: &str = r#"
 local test = {}
 -- what the harness and the module share: the cases, and what the harness
 -- says about the world before each part of a case runs
-local h = { cases = {}, running = false, kinds = {}, bodies = {}, health = {}, shown = {}, asked = {}, heard = {} }
+local h = { cases = {}, running = false, kinds = {}, bodies = {}, health = {}, shown = {}, asked = {}, heard = {}, sent = {} }
 local function ask(op, ...)
 	if not h.running or not coroutine.isyieldable() then
 		error("test." .. op .. " works only in a case, while the creation's tests run", 3)
@@ -71,7 +71,7 @@ function test.wait(seconds) ask("wait", seconds) end
 function test.player(name, opts) return ask("player", name, opts) end
 function test.move(player, at) return ask("move", player, at) end
 function test.place(player, at, block) ask("place", player, at, block) end
-function test.dig(player, at) ask("dig", player, at) end
+function test.dig(player, at) return ask("dig", player, at) end
 function test.use_block(player, at) ask("use_block", player, at) end
 function test.use(player, creature) ask("event", "used", player, creature) end
 function test.hit(player, creature) ask("event", "hit", player, creature) end
@@ -81,6 +81,7 @@ function test.press(player, action) ask("press", player, action, true) end
 function test.release(player, action) ask("press", player, action, false) end
 function test.answer(player, choice) ask("answer", player, choice) end
 function test.hold(player, block) ask("hold", player, block) end
+function test.from_half(player, topic, value) ask("from_half", player, topic, value) end
 -- looking: these only read what the harness said
 function test.kind(name)
 	seen("kind")
@@ -118,6 +119,18 @@ function test.heard(name)
 		error("test.heard needs a sound's name", 2)
 	end
 	return h.heard[name] or 0
+end
+function test.sent(player, topic)
+	seen("sent")
+	if type(topic) ~= "string" then
+		error("test.sent needs a player and a topic", 2)
+	end
+	local s = h.sent[pid(player, "sent")]
+	local m = s and s[topic]
+	if m then
+		return m.value, m.times
+	end
+	return nil, 0
 end
 function test.check(ok, message)
 	if not ok then
@@ -225,6 +238,9 @@ struct Harness {
     /// The sounds the creation played since the case began, by the names it
     /// plays them by (`test.heard`).
     heard: BTreeMap<String, u32>,
+    /// The last thing the creation sent each player's client half on each
+    /// topic since the case began (`test.sent`, test 0.3).
+    sent: BTreeMap<u32, BTreeMap<String, (serde_json::Value, u32)>>,
 }
 
 /// Why a case stops early.
@@ -235,7 +251,7 @@ enum Stop {
 
 impl Harness {
     fn new(creation: &Creation, voxels: Voxels, src: &str) -> Result<Harness, String> {
-        let mut h = Harness { id: creation.id.clone(), voxels, herd: Herd::default(), scripts: Scripts::default(), rng: Rng::new(7), played: 0.0, health: BTreeMap::new(), heard: BTreeMap::new() };
+        let mut h = Harness { id: creation.id.clone(), voxels, herd: Herd::default(), scripts: Scripts::default(), rng: Rng::new(7), played: 0.0, health: BTreeMap::new(), heard: BTreeMap::new(), sent: BTreeMap::new() };
         h.scripts.start(creation, &mut h.herd).map_err(|e| format!("it didn't start: {e}"))?;
         let Harness { scripts, voxels, herd, id, .. } = &mut h;
         let vm = scripts.vms.get_mut(id.as_str()).ok_or("it didn't start")?;
@@ -269,6 +285,7 @@ impl Harness {
         self.pass(0.1);
         self.played = 0.0;
         self.heard.clear();
+        self.sent.clear();
         let log_from = self.scripts.vms[&self.id].log.len();
         self.scripts.vms.get_mut(&self.id).expect("the creation runs").error = None;
         let mut reply = MultiValue::new();
@@ -335,6 +352,13 @@ impl Harness {
             let name = p.name.strip_prefix(&mine).unwrap_or(&p.name).to_string();
             *self.heard.entry(name).or_default() += 1;
         }
+        let notes = std::mem::take(&mut self.scripts.shared.lock().unwrap().notes);
+        for (who, n) in notes.into_iter().filter(|(_, n)| n.creation == self.id) {
+            for p in self.scripts.players.iter().filter(|p| who.is_none_or(|w| w == p.id)) {
+                let m = self.sent.entry(p.id).or_default().entry(n.topic.clone()).or_insert((serde_json::Value::Null, 0));
+                *m = (n.value.clone(), m.1 + 1);
+            }
+        }
     }
 
     fn tell(&mut self) -> mlua::Result<()> {
@@ -354,7 +378,7 @@ impl Harness {
             let asked: Vec<_> = players.iter().filter_map(|p| sh.ui.panels.get(&p.id).and_then(|q| q.front().cloned()).map(|f| (p.id, f))).collect();
             (shown, asked)
         };
-        let Harness { scripts, herd, id, health, heard, .. } = self;
+        let Harness { scripts, herd, id, health, heard, sent, .. } = self;
         let vm = scripts.vms.get_mut(id.as_str()).expect("the creation runs");
         let lua = &vm.lua;
         let h = vm.test_harness.clone();
@@ -393,7 +417,20 @@ impl Harness {
             a.set(pid, t)?;
         }
         h.set("asked", a)?;
-        h.set("heard", lua.create_table_from(heard.iter().map(|(k, v)| (k.as_str(), *v)))?)
+        h.set("heard", lua.create_table_from(heard.iter().map(|(k, v)| (k.as_str(), *v)))?)?;
+        let s = lua.create_table()?;
+        for (pid, topics) in sent.iter() {
+            let t = lua.create_table()?;
+            for (topic, (value, times)) in topics {
+                // a message with no value still says it was sent
+                let m = lua.create_table()?;
+                m.set("value", if value.is_null() { Value::Boolean(true) } else { script::from_json(lua, value)? })?;
+                m.set("times", *times)?;
+                t.set(topic.as_str(), m)?;
+            }
+            s.set(*pid, t)?;
+        }
+        h.set("sent", s)
     }
 
     /// Whether the creation's own code went wrong (a tick, an event).
@@ -423,6 +460,7 @@ impl Harness {
             let _ = self.scripts.focus_changes();
             let _ = self.scripts.healing_changes();
             let _ = self.scripts.digging_changes();
+            let _ = self.scripts.drops_changes();
             self.scripts.out = Default::default();
             self.played += STEP;
         }
@@ -486,16 +524,17 @@ impl Harness {
                     Vec3::new(g.x, self.voxels.top(g.x as i32, g.z as i32) as f32 + 1.0, g.z)
                 });
                 let survival = opts.as_ref().and_then(|o| o.get::<Option<bool>>("survival").ok().flatten()).unwrap_or(false);
-                let mut items = Vec::new();
+                // what they carry, put in their pockets as the game would
+                let mut pockets = crate::items::Slots::default();
                 if let Some(Ok(carry)) = opts.as_ref().map(|o| o.get::<Option<Table>>("carrying")) {
-                    for (block, count) in carry.into_iter().flat_map(|t| t.pairs::<String, u32>().flatten().collect::<Vec<_>>()) {
-                        let b = blocks::by_name(&block).ok_or_else(|| Stop::Problem(format!("test.player: there's no block called \"{block}\" to carry")))?;
-                        items.push((b, count));
+                    for (thing, count) in carry.into_iter().flat_map(|t| t.pairs::<String, u32>().flatten().collect::<Vec<_>>()) {
+                        let t = crate::items::by_name(&thing).ok_or_else(|| Stop::Problem(format!("test.player: there's nothing called \"{thing}\" to carry")))?;
+                        pockets.give(t, count);
                     }
                 }
                 let p = PlayerInfo { id: FIRST_PLAYER + n, name, pos: at };
                 self.scripts.players.push(p.clone());
-                self.scripts.set_pockets(p.id, survival, &items, 0);
+                self.scripts.set_pockets(p.id, survival, &pockets.filled(), 0);
                 self.health.insert(p.id, 20.0);
                 one(Value::Table(script::player_table(self.lua(), &p).map_err(fail)?))
             }
@@ -519,20 +558,16 @@ impl Harness {
                 match op.as_str() {
                     "place" => {
                         let name = arg(3).and_then(|v| v.as_string().map(|s| s.to_string_lossy())).unwrap_or_default();
-                        let b = blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.place: there's no block called \"{name}\"")))?;
-                        if blocks::is_item(b) {
+                        if crate::items::by_name(&name).is_some_and(crate::items::is_item) {
                             return Err(Stop::Problem(format!("test.place: {name} is something to hold, not to put down")));
                         }
+                        let b = blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.place: there's no block called \"{name}\"")))?;
                         // a survival player puts down what they carry
                         {
                             let mut sh = self.scripts.shared.lock().unwrap();
                             let pockets = sh.pockets.entry(p.id).or_default();
-                            if pockets.survival {
-                                let have = pockets.items.entry(b).or_default();
-                                if *have == 0 {
-                                    return Err(Stop::Problem(format!("test.place: {} isn't carrying any {name}", p.name)));
-                                }
-                                *have -= 1;
+                            if pockets.survival && !pockets.slots.take(crate::items::of_block(b), 1) {
+                                return Err(Stop::Problem(format!("test.place: {} isn't carrying any {name}", p.name)));
                             }
                         }
                         self.voxels.set(at, b);
@@ -540,14 +575,27 @@ impl Harness {
                     }
                     "dig" => {
                         if old != blocks::AIR {
+                            // a survival player breaks it with what's in hand, as
+                            // the game does: not at all if it needs better, and
+                            // getting what creations say it gives
+                            let rules = self.scripts.rules();
                             let mut sh = self.scripts.shared.lock().unwrap();
+                            let held = sh.held.get(&p.id).copied().unwrap_or(0);
                             let pockets = sh.pockets.entry(p.id).or_default();
                             if pockets.survival {
-                                *pockets.items.entry(old).or_default() += 1;
+                                if !rules.can_break(held, old) {
+                                    return one(Value::Boolean(false));
+                                }
+                                let roll = crate::noise::hash2(at.x ^ at.y.wrapping_mul(7919), at.z, self.played as i32);
+                                if let Some((t, n)) = rules.gives(old, roll) {
+                                    pockets.slots.give(t, n);
+                                }
                             }
                         }
                         self.voxels.set(at, blocks::AIR);
                         self.scripts.player_block(p.id, at, old, blocks::AIR);
+                        self.pass(0.1);
+                        return one(Value::Boolean(true));
                     }
                     _ => self.scripts.use_block(p.id, at, old),
                 }
@@ -579,8 +627,8 @@ impl Harness {
             "hold" => {
                 let p = self.player(arg(1), "hold")?;
                 let b = match arg(2).and_then(|v| v.as_string().map(|s| s.to_string_lossy())) {
-                    None => blocks::AIR,
-                    Some(name) => blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's no block called \"{name}\"")))?,
+                    None => 0,
+                    Some(name) => crate::items::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's nothing called \"{name}\"")))?,
                 };
                 self.scripts.set_held(p.id, b);
                 nothing
@@ -614,6 +662,18 @@ impl Harness {
                 let ask = self.scripts.shared.lock().unwrap().ui.panels.get(&p.id).and_then(|q| q.front().map(|f| f.ask));
                 let ask = ask.ok_or_else(|| Stop::Problem("test.answer: nobody has asked that player anything".into()))?;
                 self.scripts.answer(p.id, ask, choice);
+                self.pass(0.1);
+                nothing
+            }
+            "from_half" => {
+                let p = self.player(arg(1), "from_half")?;
+                let topic = arg(2).and_then(|v| v.as_string().map(|s| s.to_string_lossy())).unwrap_or_default();
+                let value = match script::note_of(&topic, arg(3).unwrap_or(&Value::Nil)) {
+                    Ok(v) => v,
+                    Err(mlua::Error::RuntimeError(e)) => return Err(Stop::Problem(format!("test.from_half: {e}"))),
+                    Err(e) => return Err(fail(e)),
+                };
+                self.scripts.hear(p.id, Note { creation: self.id.clone(), topic, value });
                 self.pass(0.1);
                 nothing
             }

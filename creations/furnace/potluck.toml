@@ -1,0 +1,517 @@
+name = "Furnaces and campfires"
+by = "Potluck"
+kind = "mod"
+about = "A furnace smelts raw metal into ingots, logs into charcoal, sand into glass and cobblestone into stone, and cooks bread and roasted carrots, burning coal, charcoal, logs or planks. A campfire cooks with no fuel, and its light keeps Gloomlings away. Make both at a workbench."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.14"
+tweak = "0.1"
+store = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# The blocks, each drawn in letters. A lit furnace and a campfire show their
+# first pictures and then each of their frames in turn, `speed` a second (a
+# frame gives only the faces that change: the furnace's sides). Players
+# with Reduce flashing on see only the first.
+[blocks.furnace]
+kind = "hard"
+hardness = 2.5
+colors = { a = "#2e3036", b = "#4a4d54", c = "#5f636a", e = "#777b82", f = "#8f9399", g = "#a9acb0", k = "#151314", h = "#3a3432" }
+top = """
+cccecebaeeeeeecaccccccbageeeeeca
+bbbbbbbacccccccabbbbbbbaccccccca
+bbbbbbbaeccceccabbbbbbbaeececcca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeeeeecaccccccbaccccccbaeeee
+cccacccccccabbebbbbabbbbbbbacccc
+cccacccccccabbbbbbeabbbbbbbacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+fgffgfeafgffgfgaffffffeaeeeeeeca
+egeeeeeaeeeeeeeaeeeeeeeaccccccca
+eeeeeegaeeeeeeeaeeeeeeeaccccecca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecaccccccbakkkkkkkkaeeeeecaeccc
+cccabbbbbbbakkkkkkkkaccccccabebb
+cccabbbbbbbakkkkkkkkaccccccabbbe
+aaaaaaaaaaaakkkkkkkkaaaaaaaaaaaa
+fgffggeacccakkkkkkkkaecaeeeegeca
+eeeeeeeabbeakkkkkkkkaccaccccccca
+geeeeeeabbbakkkkkkkkaccaccccccca
+aaaaaaaaaaaakkkkkkkkaaaaaaaaaaaa
+ccbaeegeeecaaaaaaaaaacccccbaffff
+bbbacccccccaeeeeeeeabbbbbbbaeeee
+bbeacccccccaeeeeeeeabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeeeecaeeeeeeeaeeeeeecaccccccba
+ccccceeacccccccacccccccabbbbbbba
+eccccecaeccccccacccccccabbbbbbba
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaccccccbaccccccbaccccecbaffff
+cccabbbbbbbabbbbbbbabbbbbbbaeeee
+cccaebbbbbbabbbbbbbabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+side = """
+egeeeecaccecccbaeeeeeecaccccccba
+cccccccabbbbbbbacccccccabbbbbbba
+cccccecabbbbbbbacccccccabbbbbbea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecagffffgeaegeeegcaccccccbaffff
+cccaegeeeeeacecccccabbbbbbbaeeee
+cccageeeeeeaeccccccabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeegeecafffffgeafffgffgaeeegeeca
+eccccceaeeeeeeeaeeeeeeeaccccceca
+cccceccaeeeeeeeaeeeeeeeaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeegeecaffffgfeaffffffeaegee
+eceacccceccaegeeeegaeeeeeeeacccc
+cccaccccecffffffffffffeeeeeacccc
+aaaaaaaaffaaaaaaaaaaaaffaaaaaaaa
+fffffgeaaakkkkkkkkkkkkaaeeeeeeca
+eeeeeeeaakkkkkkkkkkkkkkaccccccca
+eeeeeeeaakkkkkkkkkkkkkkaccccccca
+aaaaaaaaakkkkkkkkkkkkkkaaaaaaaaa
+ecbaccccakkkkkkkkkkkkkkaffeaeeee
+bbbabbbbakkkkkkkkkkkkkkaeeeaccec
+bbbabbebakkkkkkkkkkkkkkaeeeaccec
+aaaaaaaaakkkkkkkkkkkkkkaaaaaaaaa
+eeegeecaakkkkkkkkkkkkkkaccccccba
+cccccccaakkkkkkkkkkkkkkabbbbbbba
+cccccccaakkkkkkkkkkkkkkabbbbebba
+aaaaaaaaahhhhhhhhhhhhhhaaaaaaaaa
+ffeacccggggggggggggggggggecacccc
+geeabbbeeeeeeeeeeeeeeeeeeecabbbb
+eeeabbbbbbbacccccccacccccecaebbb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+bottom = """
+ffgfffeaeeeeeecaeeeegecaeeeeeeca
+eeeeeeeacccccccacccccccaccecceca
+eeeeeeeacccccccacccccccaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ffeaffffffeaffffffeacccccebaeeee
+gegaeeeeeeeaeegeeeeabbbbbbbacccc
+geeaeeeeegeaeeeeeeeabbbbbbbacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ccccccbagfffffeaccccccbaccccccba
+bbbbbbbaeeeeeeeabbbbebbabbbbbbba
+bbbbbbbaegeeeeeabbbbbebabbeebbba
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ccbaeegegecaeeeeeecaeeeeeecaeeee
+bbbacccccccacccccccacecccccacccc
+bbbacccccccacccccccacccccccacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeeegcageeeeecaeeeeeeeaeeeeeeca
+cccccccacccccecacccccccaccccccca
+cccceccacccccceacccceccaceccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ffeaeeeeeecaeeeeeeeaccccccbaeeeg
+eeeacecceecacccccceabbbebebacccc
+eeeacccceccacccccccabbbbbbeacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+egeeeecaeeeeeecaegeeeecaffffffga
+cccccccacceccccacccccccaeeeeeeea
+cccceccacccccccacccccccaeeeeeeea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ccbaccccccbaeeeeeecaeeeeeecacccc
+bbbabbbbbbbacccccccacccccccabbbb
+bbbaebbbbbbacccceecaccceeccabbeb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+
+[blocks.lit_furnace]
+name = "Lit furnace"
+kind = "hard"
+hardness = 2.5
+light = true
+glow = "rdoylw"
+speed = 4
+colors = { a = "#2e3036", b = "#4a4d54", c = "#5f636a", e = "#777b82", f = "#8f9399", g = "#a9acb0", k = "#151314", h = "#3a3432", r = "#7a1c08", d = "#b8380e", o = "#e8661c", y = "#ffaa2c", l = "#ffd35a", w = "#fff2c0" }
+top = """
+cccecebaeeeeeecaccccccbageeeeeca
+bbbbbbbacccccccabbbbbbbaccccccca
+bbbbbbbaeccceccabbbbbbbaeececcca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeeeeecaccccccbaccccccbaeeee
+cccacccccccabbebbbbabbbbbbbacccc
+cccacccccccabbbbbbeabbbbbbbacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+fgffgfeafgffgfgaffffffeaeeeeeeca
+egeeeeeaeeeeeeeaeeeeeeeaccccccca
+eeeeeegaeeeeeeeaeeeeeeeaccccecca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecaccccccbakkkkkkkkaeeeeecaeccc
+cccabbbbbbbakkkkkkkkaccccccabebb
+cccabbbbbbbakkkkkkkkaccccccabbbe
+aaaaaaaaaaaakkkkkkkkaaaaaaaaaaaa
+fgffggeacccakkkkkkkkaecaeeeegeca
+eeeeeeeabbeakkkkkkkkaccaccccccca
+geeeeeeabbbakkkkkkkkaccaccccccca
+aaaaaaaaaaaakkkkkkkkaaaaaaaaaaaa
+ccbaeegeeecaaaaaaaaaacccccbaffff
+bbbacccccccaeeeeeeeabbbbbbbaeeee
+bbeacccccccaeeeeeeeabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeeeecaeeeeeeeaeeeeeecaccccccba
+ccccceeacccccccacccccccabbbbbbba
+eccccecaeccccccacccccccabbbbbbba
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaccccccbaccccccbaccccecbaffff
+cccabbbbbbbabbbbbbbabbbbbbbaeeee
+cccaebbbbbbabbbbbbbabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+side = """
+egeeeecaccecccbaeeeeeecaccccccba
+cccccccabbbbbbbacccccccabbbbbbba
+cccccecabbbbbbbacccccccabbbbbbea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecagffffgeaegeeegcaccccccbaffff
+cccaegeeeeeacecccccabbbbbbbaeeee
+cccageeeeeeaeccccccabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeegeecafffffgeafffgffgaeeegeeca
+eccccceaeeeeeeeaeeeeeeeaccccceca
+cccceccaeeeeeeeaeeeeeeeaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeegeecaffffgfeaffffffeaegee
+eceacccceccaegeeeegaeeeeeeeacccc
+cccaccccecffffffffffffeeeeeacccc
+aaaaaaaaffaaaaaaaaaaaaffaaaaaaaa
+fffffgearaykkkkkkkkkkkareeeeeeca
+eeeeeeearkkkkrrkkkkkkkkrccccccca
+eeeeeeearkkkkkddkkkkkkkaccccccca
+aaaaaaaarkkkkkodrkkkkkkaaaaaaaaa
+ecbaccccakkkkooodkkkkkkaffeaeeee
+bbbabbbbrkkkkooodrkkkkkaeeeaccec
+bbbabbebrkkkoyllodrkkkkreeeaccec
+aaaaaaaaakkdoyllloddkkkraaaaaaaa
+eeegeecarkdoylwwlyoodrkaccccccba
+cccccccaakyyllwwwllyyykabbbbbbba
+cccccccarkyyllwwwllyyykabbbbebba
+aaaaaaaaaodoodoodddoodoaaaaaaaaa
+ffeacccggggggggggggggggggecacccc
+geeabbbeeeeeeeeeeeeeeeeeeecabbbb
+eeeabbbbbbbacccccccacccccecaebbb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+bottom = """
+ffgfffeaeeeeeecaeeeegecaeeeeeeca
+eeeeeeeacccccccacccccccaccecceca
+eeeeeeeacccccccacccccccaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ffeaffffffeaffffffeacccccebaeeee
+gegaeeeeeeeaeegeeeeabbbbbbbacccc
+geeaeeeeegeaeeeeeeeabbbbbbbacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ccccccbagfffffeaccccccbaccccccba
+bbbbbbbaeeeeeeeabbbbebbabbbbbbba
+bbbbbbbaegeeeeeabbbbbebabbeebbba
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ccbaeegegecaeeeeeecaeeeeeecaeeee
+bbbacccccccacccccccacecccccacccc
+bbbacccccccacccccccacccccccacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeeegcageeeeecaeeeeeeeaeeeeeeca
+cccccccacccccecacccccccaccccccca
+cccceccacccccceacccceccaceccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ffeaeeeeeecaeeeeeeeaccccccbaeeeg
+eeeacecceecacccccceabbbebebacccc
+eeeacccceccacccccccabbbbbbeacccc
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+egeeeecaeeeeeecaegeeeecaffffffga
+cccccccacceccccacccccccaeeeeeeea
+cccceccacccccccacccccccaeeeeeeea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ccbaccccccbaeeeeeecaeeeeeecacccc
+bbbabbbbbbbacccccccacccccccabbbb
+bbbaebbbbbbacccceecaccceeccabbeb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+
+[[blocks.lit_furnace.frames]]
+side = """
+egeeeecaccecccbaeeeeeecaccccccba
+cccccccabbbbbbbacccccccabbbbbbba
+cccccecabbbbbbbacccccccabbbbbbea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecagffffgeaegeeegcaccccccbaffff
+cccaegeeeeeacecccccabbbbbbbaeeee
+cccageeeeeeaeccccccabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeegeecafffffgeafffgffgaeeegeeca
+eccccceaeeeeeeeaeeeeeeeaccccceca
+cccceccaeeeeeeeaeeeeeeeaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeegeecaffffgfeaffffffeaegee
+eceacccceccaegeeeegaeeeeeeeacccc
+cccaccccecffffffffffffeeeeeacccc
+aaaaaaaaffaaaaaaaaaaaaffaaaaaaaa
+fffffgeaaakkkkyrkkkkkkaaeeeeeeca
+eeeeeeeaakkkkkkorkkkkkkrccccccca
+eeeeeeearkkkkkkddrkkkkkaccccccca
+aaaaaaaaakkkkddddkkkkkkraaaaaaaa
+ecbaccccakkkrdooodrkkkkaffeaeeee
+bbbabbbbakkkkooooodkkkkaeeeaccec
+bbbabbebakkroolllookkkkreeeaccec
+aaaaaaaaakkdyylllyodkkkraaaaaaaa
+eeegeecarkdyylwwwlyodkkrccccccba
+cccccccaakyyllwwwllyyykrbbbbbbba
+cccccccaakyyllwwwllyyykrbbbbebba
+aaaaaaaaaoooooooododddoaaaaaaaaa
+ffeacccggggggggggggggggggecacccc
+geeabbbeeeeeeeeeeeeeeeeeeecabbbb
+eeeabbbbbbbacccccccacccccecaebbb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+
+[[blocks.lit_furnace.frames]]
+side = """
+egeeeecaccecccbaeeeeeecaccccccba
+cccccccabbbbbbbacccccccabbbbbbba
+cccccecabbbbbbbacccccccabbbbbbea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecagffffgeaegeeegcaccccccbaffff
+cccaegeeeeeacecccccabbbbbbbaeeee
+cccageeeeeeaeccccccabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeegeecafffffgeafffgffgaeeegeeca
+eccccceaeeeeeeeaeeeeeeeaccccceca
+cccceccaeeeeeeeaeeeeeeeaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeegeecaffffgfeaffffffeaegee
+eceacccceccaegeeeegaeeeeeeeacccc
+cccaccccecffffffffffffeeeeeacccc
+aaaaaaaaffaaaaaaaaaaaaffaaaaaaaa
+fffffgearakkkkkrrkkokkareeeeeeca
+eeeeeeeaakykkkkdkrkkkkkrccccccca
+eeeeeeearkkkkkrddrkkkkkrccccccca
+aaaaaaaarkkkkkdookkkkkkaaaaaaaaa
+ecbaccccakkkkkdooorkkkkrffeaeeee
+bbbabbbbrkkkkdollodkkkkaeeeaccec
+bbbabbebrkkkkolllyorkkkaeeeaccec
+aaaaaaaarkkkoolllyodkkkraaaaaaaa
+eeegeecarkdoyywwwlyodkkrccccccba
+cccccccaakyyllwwwllyyykabbbbbbba
+cccccccaaryyllwwwllyyykrbbbbebba
+aaaaaaaaadooodoooodddooaaaaaaaaa
+ffeacccggggggggggggggggggecacccc
+geeabbbeeeeeeeeeeeeeeeeeeecabbbb
+eeeabbbbbbbacccccccacccccecaebbb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+
+[[blocks.lit_furnace.frames]]
+side = """
+egeeeecaccecccbaeeeeeecaccccccba
+cccccccabbbbbbbacccccccabbbbbbba
+cccccecabbbbbbbacccccccabbbbbbea
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eecagffffgeaegeeegcaccccccbaffff
+cccaegeeeeeacecccccabbbbbbbaeeee
+cccageeeeeeaeccccccabbbbbbbaeeee
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeegeecafffffgeafffgffgaeeegeeca
+eccccceaeeeeeeeaeeeeeeeaccccceca
+cccceccaeeeeeeeaeeeeeeeaccccccca
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+eeeaeeegeecaffffgfeaffffffeaegee
+eceacccceccaegeeeegaeeeeeeeacccc
+cccaccccecffffffffffffeeeeeacccc
+aaaaaaaaffaaaaaaaaaaaaffaaaaaaaa
+fffffgeaaakokkkkkkkkkkaaeeeeeeca
+eeeeeeearkkkkkkrkkkkkkkaccccccca
+eeeeeeeaakkkkkrdkkkkkkkrccccccca
+aaaaaaaaakkkkkkdkkkkkkkraaaaaaaa
+ecbaccccakkkkrdodkkkkkkrffeaeeee
+bbbabbbbrkkkkdoookrkkkkaeeeaccec
+bbbabbebakkkrolloodrkkkaeeeaccec
+aaaaaaaaakkrdylllyodkkkaaaaaaaaa
+eeegeecaakdoyywwwyyoodkrccccccba
+cccccccaakyyllwwwllyyykrbbbbbbba
+cccccccaakyyllwwwllyyykrbbbbebba
+aaaaaaaaadooddoodoooodoaaaaaaaaa
+ffeacccggggggggggggggggggecacccc
+geeabbbeeeeeeeeeeeeeeeeeeecabbbb
+eeeabbbbbbbacccccccacccccecaebbb
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+
+[blocks.campfire]
+kind = "wood"
+hardness = 1
+shape = "plant"
+light = true
+glow = "rdoylw"
+speed = 4
+colors = { r = "#7a1c08", d = "#b8380e", o = "#e8661c", y = "#ffaa2c", l = "#ffd35a", w = "#fff2c0", m = "#2e1e12", n = "#4a3019", p = "#674424", q = "#86603a", s = "#c39a62", t = "#55575c", u = "#77797e" }
+picture = """
+................................
+................................
+................................
+................................
+................................
+................................
+................................
+................................
+................rr..............
+................rrr..o..........
+..............rrrrr.............
+.............rrrddr.............
+.............rrdddd.............
+............rrd..dd.............
+..............d.dodr............
+...........r.dddoood............
+...........rddoooood............
+............oooooood............
+...........doooooloor...........
+...........oooolllyo............
+...........oolllllyod...........
+..........doylllllyyor..........
+.........royylllllyyod..........
+........rdoyylwwwwwyyod.........
+...smqq.doyywwwwwwwlyoodrqqqs...
+..ssppqqqqqqwwwwwwwlrqqqqqppss..
+..ssnpppppmmqmmmrqmqompppppnss..
+...snnmmnnmrppppooqroqqnnnnns...
+...sqqqqqmnonnrrpppprppqmmmms...
+..ssppppppporonrrnnrrpppmmppss..
+..sspnnnnmmn........nnnnmmnpss..
+uttunnn..................nnnttut
+"""
+
+[[blocks.campfire.frames]]
+picture = """
+................................
+................................
+................................
+................................
+................................
+................................
+................................
+..........o.....................
+................r...............
+...............yrr..............
+...............rrr..............
+...............rdr..............
+................................
+...............ddd..............
+..............rdodd.............
+..............rdood.............
+..............dooodr............
+..............dooood............
+..........rr..ooooo.............
+..........rrr.olllood...........
+..........dddoolllyodd..........
+.........ddooollllyood..........
+........rooooollllyyoo.r........
+........doyyyllwwwyyyood........
+...smqqdoyyyylwwwwwyyyyodqqqs...
+..ssppqqqqqowwwwwwwlqqqqqqppss..
+..ssnpppppmrqmmmmqmqrmpppppnss..
+...snnmmnnmmorrrooqmrqqnnnnns...
+...sqqqqqmnrnnnnpopppppqmmmms...
+..ssppppppponnnnnnrnnpppmmppss..
+..sspnnnnmmn........nnnnmmnpss..
+uttunnn..................nnnttut
+"""
+
+[[blocks.campfire.frames]]
+picture = """
+................................
+................................
+................................
+................................
+................................
+..............o.................
+................................
+.......y........................
+................................
+................................
+................................
+................................
+.............rrr................
+.............r..................
+.............r..r...............
+............r.ddr...............
+............r.ddd..r............
+...........rddoodrr.............
+...........r.oooddd.d...........
+.........r.doooood.dd...........
+.........rddoolloooood..........
+........r.doollloooooor.........
+.......rdoooylllllooood.........
+........ooyyylllllyyyyod........
+...smqqoyyyyywwwwlyyyyyodqqqs...
+..ssppqqqqqowwwwwwwlqqqqqqppss..
+..ssnpppppmmomormqmrmmpppppnss..
+...snnmmnnmropppooqmqqqnnnnns...
+...sqqqqqmnnrnrnpopppppqmmmms...
+..ssppppppprrononnnnnpppmmppss..
+..sspnnnnmmn........nnnnmmnpss..
+uttunnn..................nnnttut
+"""
+
+[[blocks.campfire.frames]]
+picture = """
+................................
+................................
+................................
+................................
+................................
+................................
+................................
+........................y.......
+................................
+............r...................
+.............r..................
+............rrr.................
+...........r..r.................
+...........r.dd.................
+...........rdddr................
+...........dood.rrr.............
+..........rdooodrr..............
+..........rdoood.dd.............
+..........dooooodddd............
+...........oylooooodr...........
+..........ooylloooood...........
+.........doyylllooood...........
+.........ooyylllllyyod..........
+.......rdoyywwwlllyyoodr........
+...smqqooyylwwwwwwwyyooddqqqs...
+..ssppqqqqqrwwwwwwwlrqqqqqppss..
+..ssnpppppmmqrrmmqmqmmpppppnss..
+...snnmmnnmmpprproqmoqqnnnnns...
+...sqqqqqmnnnrnnpopopppqmmmms...
+..sspppppppnnonrnoorrpppmmppss..
+..sspnnnnmmn........nnnnmmnpss..
+uttunnn..................nnnttut
+"""
+
+# a furnace taking light
+[sounds.roar]
+caption = "The furnace roars"
+wave = "noise"
+pitch = [300, 180]
+length = 0.9
+attack = 0.15
+decay = 0.6
+lowpass = 700
+highpass = 60
+
+# a campfire taking something to cook
+[sounds.crackle]
+caption = "The campfire crackles"
+wave = "noise"
+pitch = 2400
+length = 0.5
+attack = 0.01
+decay = 0.12
+pulse = [18, 0.8]
+highpass = 500

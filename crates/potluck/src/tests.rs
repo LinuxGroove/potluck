@@ -127,6 +127,27 @@ fn knobs_and_hot_reload_change_creatures_but_keep_them() {
     assert!(moss[0] > 0.9 && moss[1] < 0.6, "the moss is pink now: {moss:?}");
 }
 
+/// A player's pockets with these in, put in as their game would, as the
+/// host last heard.
+trait Carry {
+    fn carry<T: Copy + Into<crate::items::Thing>>(&mut self, player: u32, survival: bool, list: &[(T, u32)], seen: u32);
+    /// How many of a thing the host thinks a player carries.
+    fn carried<T: Into<crate::items::Thing>>(&self, player: u32, thing: T) -> u32;
+}
+
+impl Carry for Scripts {
+    fn carry<T: Copy + Into<crate::items::Thing>>(&mut self, player: u32, survival: bool, list: &[(T, u32)], seen: u32) {
+        let mut slots = crate::items::Slots::default();
+        for &(t, n) in list {
+            slots.give(t.into(), n);
+        }
+        self.set_pockets(player, survival, &slots.filled(), seen);
+    }
+    fn carried<T: Into<crate::items::Thing>>(&self, player: u32, thing: T) -> u32 {
+        self.shared.lock().unwrap().pockets.get(&player).map(|p| p.count(thing.into())).unwrap_or(0)
+    }
+}
+
 fn creation(code: &str) -> Creation {
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     files.insert("potluck.toml".into(), "name = \"Test\"\nby = \"Tests\"\nkind = \"creature\"\nmain = \"main.luau\"\n".into());
@@ -154,6 +175,124 @@ fn a_creation_that_never_stops_is_stopped() {
     assert!(t.elapsed() < Duration::from_secs(5), "the interrupt ends a loop that never stops");
     let vm = &scripts.vms["test"];
     assert!(vm.error.as_deref().unwrap_or("").contains("too long"), "the creator is told: {:?}", vm.error);
+}
+
+#[test]
+fn worlds_are_kept_with_what_you_carry_and_where_you_stood() {
+    use crate::ui::{Act, Acts, Focus, Screen, WorldInfo};
+    use crate::worlds::{self, Current};
+    home();
+    let mut app = App::new();
+    app.insert_resource(Library::load())
+        .insert_resource(Scripts::default())
+        .insert_resource(Herd::default())
+        .insert_resource(crate::net::Net::default())
+        .insert_resource(crate::ui::Toasts::default())
+        .insert_resource(crate::settings::Settings::default())
+        .insert_resource(crate::player::Me::default())
+        .insert_resource(world())
+        .insert_resource(WorldInfo::default())
+        .insert_resource(Focus::default())
+        .init_resource::<Acts>()
+        .init_resource::<Current>()
+        .add_systems(Update, worlds::acts);
+    let act = |app: &mut App, a: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(a);
+        app.update();
+        app.update();
+        // what's left is `game::do_acts`'s, which this test hasn't got
+        app.world_mut().resource_mut::<Acts>().0.clear();
+    };
+    // a new world, played straight away, from a seed of its own
+    act(&mut app, Act::NewWorld(false));
+    let id = app.world().resource::<Current>().id.clone().expect("it's being played");
+    assert!(app.world().resource::<WorldInfo>().in_world);
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing);
+    let kept = worlds::list().into_iter().find(|k| k.id == id).expect("it's listed");
+    assert!(kept.name.starts_with("World "), "{}", kept.name);
+    assert_eq!(app.world().resource::<Voxels>().seed, kept.seed, "its own island");
+    assert!(!app.world().resource::<Scripts>().vms.is_empty(), "the base game runs in it");
+    // build, carry, move and get hurt
+    let spot = IVec3::new(200, 70, 200);
+    let planks = crate::blocks::by_name("Planks").unwrap();
+    {
+        let w = app.world_mut();
+        w.resource_mut::<Voxels>().set(spot, planks);
+        let mut me = w.resource_mut::<crate::player::Me>();
+        me.pockets.0[2] = crate::items::Slot { thing: planks.into(), count: 17 };
+        // and something in the backpack, and a tool
+        me.pockets.0[30] = crate::items::Slot { thing: crate::items::STONE_AXE, count: 1 };
+        me.slot = 2;
+        me.pos = Vec3::new(205.5, 71.0, 190.5);
+        me.yaw = 1.25;
+        me.health = 13.0;
+    }
+    // the store is the world's own
+    app.world().resource::<Scripts>().shared.lock().unwrap().store.set("test", "note", Some(serde_json::json!("kept"))).unwrap();
+    act(&mut app, Act::Leave);
+    assert!(app.world().resource::<Current>().id.is_none());
+    // the title's island and a fresh player, as after leaving
+    {
+        let w = app.world_mut();
+        *w.resource_mut::<Voxels>() = world();
+        *w.resource_mut::<crate::player::Me>() = crate::player::Me::default();
+        w.resource::<Scripts>().shared.lock().unwrap().store = Default::default();
+        w.resource_mut::<WorldInfo>().in_world = false;
+    }
+    act(&mut app, Act::OpenWorlds(false));
+    assert!(app.world().resource::<Focus>().worlds.iter().any(|k| k.id == id), "the list has it");
+    {
+        let w = app.world();
+        let (title, items) = crate::ui::menu_items(w.resource::<Focus>(), w.resource::<Library>(), w.resource::<Scripts>(), w.resource::<crate::settings::Settings>(), w.resource::<WorldInfo>());
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(title, "Your worlds");
+        assert_eq!(labels[0], "A new world");
+        assert!(labels.iter().any(|l| l.starts_with(&format!("{}  \u{b7}  ", kept.name))), "{labels:?}");
+        assert!(labels.contains(&"Back"));
+    }
+    act(&mut app, Act::PlayWorld(id.clone(), false));
+    {
+        let w = app.world();
+        assert_eq!(w.resource::<Voxels>().at(spot), planks, "what was built is still there");
+        let me = w.resource::<crate::player::Me>();
+        assert_eq!((me.pockets.0[2], me.slot), (crate::items::Slot { thing: planks.into(), count: 17 }, 2), "and what was carried");
+        assert_eq!(me.pockets.0[30], crate::items::Slot { thing: crate::items::STONE_AXE, count: 1 }, "in the backpack too");
+        assert!(me.pos.distance(Vec3::new(205.5, 71.0, 190.5)) < 0.01 && (me.yaw - 1.25).abs() < 1e-4, "where they stood: {:?}", me.pos);
+        assert_eq!(me.health, 13.0);
+        assert_eq!(w.resource::<Scripts>().shared.lock().unwrap().store.get("test", "note").cloned(), Some(serde_json::json!("kept")));
+    }
+    // an open world can't be deleted; renamed, it keeps its folder
+    act(&mut app, Act::ForgetWorld(id.clone()));
+    assert!(worlds::list().iter().any(|k| k.id == id), "still there while it's open");
+    act(&mut app, Act::Leave);
+    app.world_mut().resource_mut::<Focus>().fields.insert("world_name".into(), "  Ada's island  ".into());
+    act(&mut app, Act::RenameWorld(id.clone()));
+    assert_eq!(worlds::list().iter().find(|k| k.id == id).map(|k| k.name.as_str()), Some("Ada's island"));
+    act(&mut app, Act::ForgetWorld(id.clone()));
+    assert!(!worlds::list().iter().any(|k| k.id == id), "deleted for good");
+    // nothing outside the worlds folder can be named
+    assert!(worlds::forget("../creations").is_err() && worlds::load("a/b").is_err());
+}
+
+#[test]
+fn time_the_machine_gives_to_others_isnt_held_against_a_creation() {
+    use crate::script::Slice;
+    let ms = Duration::from_millis;
+    // off the core past its slice, as when a busy machine runs something else
+    let slice = Slice::new(ms(5));
+    std::thread::sleep(ms(15));
+    if cfg!(unix) {
+        assert!(!slice.over(), "waiting isn't running");
+    }
+    // on it, the slice runs out
+    let t = Instant::now();
+    while !slice.over() {
+        assert!(t.elapsed() < Duration::from_secs(5), "running uses it up");
+    }
+    // and however busy the machine, the wall has the last word
+    let slice = Slice::new(ms(5));
+    std::thread::sleep(ms(45));
+    assert!(slice.over(), "eight slices of waiting is too long");
 }
 
 #[test]
@@ -2120,7 +2259,7 @@ for i = 1, 15 do net.send("spam") end
     lib.world = 1;
     let mut halves = [Halves::default(), Halves::default()];
     for (h, p) in halves.iter_mut().zip([&ada, &bo]) {
-        h.sync(Some(&lib), p);
+        h.sync(Some(&lib), p, None);
         assert_eq!(h.list["test"].error, None);
     }
     let out = halves[0].take();
@@ -2151,8 +2290,8 @@ for i = 1, 15 do net.send("spam") end
     assert_eq!(for_ada.iter().filter(|n| n.topic == "hi").count(), 1);
     assert_eq!(notes.iter().filter(|(p, _)| *p == 8).count(), 31);
     assert!(scripts.net_changes(&[7, 8]).is_empty(), "sent once");
-    halves[0].frame(0.1, &ada, for_ada);
-    halves[0].frame(0.45, &ada, vec![]);
+    halves[0].frame(0.1, &ada, for_ada, None);
+    halves[0].frame(0.45, &ada, vec![], None);
     let out = halves[0].take();
     let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     assert!(out.pieces.contains(&("test".into(), "hi".into(), piece("hi 2 b 2", "bottom"))), "{:?}", out.pieces);
@@ -2164,25 +2303,25 @@ for i = 1, 15 do net.send("spam") end
     let mut c2 = c.clone();
     c2.files.insert("client.luau".into(), format!("{client}\nprint(\"again\")"));
     lib.list.insert("test".into(), c2.clone());
-    halves[0].sync(Some(&lib), &ada);
+    halves[0].sync(Some(&lib), &ada, None);
     let out = halves[0].take();
     assert!(out.pieces.contains(&("test".into(), "hi".into(), None)) && out.pieces.contains(&("test".into(), "got".into(), None)), "{:?}", out.pieces);
     assert!(halves[0].list["test"].log.join("\n").contains("again"));
     // so does a new world
     lib.world = 2;
-    halves[0].sync(Some(&lib), &ada);
+    halves[0].sync(Some(&lib), &ada, None);
     assert_eq!(halves[0].take().notes.len(), 10, "a new half says hello again");
 
     // a half that fails stops and says why; one that never stops is stopped
-    halves[0].frame(0.1, &ada, vec![Note { creation: "test".into(), topic: "boom".into(), value: serde_json::Value::Null }]);
+    halves[0].frame(0.1, &ada, vec![Note { creation: "test".into(), topic: "boom".into(), value: serde_json::Value::Null }], None);
     assert!(halves[0].list["test"].error.as_deref().unwrap_or("").contains("oops"), "{:?}", halves[0].list["test"].error);
     let mut c3 = c.clone();
     c3.files.insert("client.luau".into(), "while true do end".into());
     lib.list.insert("test".into(), c3);
-    halves[0].sync(Some(&lib), &ada);
+    halves[0].sync(Some(&lib), &ada, None);
     assert!(halves[0].list["test"].error.as_deref().unwrap_or("").contains("too long"));
     // and leaving the world stops them all
-    halves[1].sync(None, &bo);
+    halves[1].sync(None, &bo, None);
     assert!(halves[1].list.is_empty());
 
     // what goes between devices
@@ -2235,29 +2374,65 @@ fn the_rodeo_rams_clock_runs_on_the_riders_game() {
     mine.running.push(ram.id.clone());
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
     let mut h = Halves::default();
-    h.sync(Some(&mine), &ada);
+    h.sync(Some(&mine), &ada, None);
     assert_eq!(h.list["rodeo-ram"].error, None);
     let note = |topic: &str, value: serde_json::Value| crate::script::Note { creation: "rodeo-ram".into(), topic: topic.into(), value };
-    h.frame(0.05, &ada, vec![note("ride", serde_json::json!({ "best": 1.0 }))]);
+    h.frame(0.05, &ada, vec![note("ride", serde_json::json!({ "best": 1.0 }))], None);
     for _ in 0..12 {
-        h.frame(0.1, &ada, vec![]);
+        h.frame(0.1, &ada, vec![], None);
     }
     let out = h.take();
     let last = out.pieces.iter().rev().find(|p| p.1 == "ride").and_then(|p| p.2.clone()).expect("a clock");
     assert!(last.text.starts_with("Riding 1.") && last.text.contains("past the record"), "{}", last.text);
     assert_eq!(out.sounds.iter().filter(|s| s.name == "sparkle").count(), 1, "once, as it passes");
-    h.frame(0.1, &ada, vec![note("done", serde_json::json!({ "time": 1.3, "record": true }))]);
+    h.frame(0.1, &ada, vec![note("done", serde_json::json!({ "time": 1.3, "record": true }))], None);
     let out = h.take();
     assert_eq!(out.pieces.last().and_then(|p| p.2.clone()).map(|p| p.text), Some("You rode 1.3 s, the longest yet!".into()));
     for _ in 0..41 {
-        h.frame(0.1, &ada, vec![]);
+        h.frame(0.1, &ada, vec![], None);
     }
     assert_eq!(h.take().pieces.last().map(|p| p.2.clone()), Some(None), "gone after a while");
     assert_eq!(h.list["rodeo-ram"].error, None);
 }
 
 #[test]
-fn creations_give_and_take_the_blocks_survival_players_carry() {
+fn the_balloon_shows_its_rider_how_high_they_are() {
+    use crate::halves::{Halves, Seen};
+    home();
+    let lib = Library::load();
+    let balloon = lib.list["balloon"].clone();
+    assert_eq!(balloon.manifest.client.as_deref(), Some("client.luau"));
+    let mut mine = Library::default();
+    mine.list.insert(balloon.id.clone(), balloon.clone());
+    mine.running.push(balloon.id.clone());
+    let mut voxels = world();
+    let (x, z) = (20, 20);
+    let ground = voxels.top(x, z);
+    voxels.set(IVec3::new(x, ground, z), crate::blocks::SAND);
+    let at = |up: f32| PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(x as f32 + 0.5, ground as f32 + 1.0 + up, z as f32 + 0.5) };
+    let seen = |p: &PlayerInfo| Seen { voxels: &voxels, players: vec![p.clone()], look: Vec3::NEG_Z, aim: None };
+    let mut h = Halves::default();
+    h.sync(Some(&mine), &at(0.0), Some(&seen(&at(0.0))));
+    assert_eq!(h.list["balloon"].error, None, "{:?}", h.list["balloon"].log);
+    let out = h.take();
+    assert!(out.notes.iter().any(|n| n.topic == "hello"), "it asks whether it's aboard: {:?}", out.notes);
+    let note = |on: bool| crate::script::Note { creation: "balloon".into(), topic: "aboard".into(), value: serde_json::json!(on) };
+    let mut line = String::new();
+    for (i, up) in [0.0, 3.0, 8.0, 12.2].into_iter().enumerate() {
+        let notes = if i == 0 { vec![note(true)] } else { vec![] };
+        h.frame(0.2, &at(up), notes, Some(&seen(&at(up))));
+        if let Some(l) = h.take().pieces.iter().rev().find(|p| p.1 == "height").and_then(|p| p.2.clone()) {
+            line = l.text;
+        }
+    }
+    assert_eq!(line, "12 m up, rising · over sand");
+    h.frame(0.2, &at(4.0), vec![note(false)], Some(&seen(&at(4.0))));
+    assert_eq!(h.take().pieces.iter().rev().find(|p| p.1 == "height").map(|p| p.2.clone()), Some(None), "gone once they're out");
+    assert_eq!(h.list["balloon"].error, None);
+}
+
+#[test]
+fn creations_give_and_take_what_survival_players_carry() {
     use crate::blocks::{by_name, PLANKS, SAND, STONE};
     use crate::game::Action;
     use crate::net::{decode, frame_msg, Event, Msg};
@@ -2287,13 +2462,19 @@ world.after(0.1, function()
 		world.give(7, b)
 	end
 	print("tenth " .. world.give(7, "Lantern") .. " more " .. world.give(7, "Stone", 3))
+	-- a pickaxe comes one to a slot, and they fill the rest
+	local picks = 0
+	for _ = 1, 40 do
+		picks += world.give(7, "Wooden pickaxe")
+	end
+	print("picks " .. picks .. " then " .. world.give(7, "Stone", 64) .. " stone and " .. world.give(7, "Cobblestone") .. " cobble")
 end)
 "#;
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
     let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO };
     let cy = PlayerInfo { id: 9, name: "Cy".into(), pos: Vec3::ZERO };
     scripts.players = vec![ada.clone(), bo.clone(), cy.clone()];
-    scripts.set_pockets(7, true, &[(log_id, 3), (SAND, 2)], 0);
+    scripts.carry(7, true, &[(log_id, 3), (SAND, 2)], 0);
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&creation(code), &mut herd).unwrap();
     run(&mut scripts, &mut voxels, &mut herd, 0.3);
@@ -2312,7 +2493,8 @@ end)
         "no 65",
         "no half",
         "no unob",
-        "tenth 0 more 3",
+        "tenth 1 more 3",
+        "picks 26 then 64 stone and 0 cobble",
     ] {
         assert!(l.contains(want), "{want}: {l}");
     }
@@ -2321,27 +2503,28 @@ end)
     assert_eq!(changes.len(), 1, "{changes:?}");
     let (pid, seq, list) = changes[0].clone();
     assert_eq!((pid, seq), (7, 1));
-    assert_eq!(&list[..3], &[(log_id, -2), (PLANKS, 8), (STONE, 1)]);
+    let t = |b: crate::blocks::BlockId| crate::items::of_block(b);
+    assert_eq!(&list[..3], &[(t(log_id), -2), (t(PLANKS), 8), (t(STONE), 1)]);
     assert!(scripts.pocket_changes().is_empty());
     // a report from before they arrived changes nothing
-    scripts.set_pockets(7, true, &[(log_id, 3), (SAND, 2)], 0);
-    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].items[&log_id], 1);
+    scripts.carry(7, true, &[(log_id, 3), (SAND, 2)], 0);
+    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].count(t(log_id)), 1);
 
-    // on Ada's game: the hotbar takes them, and says so next time
+    // on Ada's game: the pockets take them, as the host worked out, and say so next time
     let mut me = Me::default();
-    me.hotbar[0] = log_id;
-    me.counts[0] = 3;
-    me.hotbar[1] = SAND;
-    me.counts[1] = 2;
+    me.pockets.0[0] = crate::items::Slot { thing: t(log_id), count: 3 };
+    me.pockets.0[1] = crate::items::Slot { thing: t(SAND), count: 2 };
     me.change_pockets(&list);
     me.pockets_seen = seq;
     let carried = me.carried();
-    assert!(carried.contains(&(log_id, 1)) && carried.contains(&(PLANKS, 8)) && carried.contains(&(STONE, 4)) && carried.contains(&(SAND, 2)), "{carried:?}");
-    assert_eq!(carried.len(), 9, "a full hotbar: {carried:?}");
-    me.change_pockets(&[(SAND, -5)]);
-    assert!(!me.carried().iter().any(|c| c.0 == SAND), "never fewer than none");
-    scripts.set_pockets(7, true, &me.carried(), me.pockets_seen);
-    assert!(!scripts.shared.lock().unwrap().pockets[&7].items.contains_key(&SAND), "an up to date report counts");
+    let pick = crate::items::WOODEN_PICKAXE;
+    assert!(carried.contains(&(t(log_id), 1)) && carried.contains(&(t(PLANKS), 8)) && carried.contains(&(t(STONE), 68)) && carried.contains(&(t(SAND), 2)) && carried.contains(&(pick, 26)), "{carried:?}");
+    assert_eq!(me.pockets.filled(), scripts.shared.lock().unwrap().pockets[&7].slots.filled(), "slot for slot as the host has them");
+    assert_eq!((me.pockets.room_for(pick), me.pockets.room_for(t(crate::blocks::COBBLE)), me.pockets.room_for(t(STONE))), (0, 0, 31), "full, but for more stone");
+    me.change_pockets(&[(t(SAND), -5)]);
+    assert!(!me.carried().iter().any(|c| c.0 == t(SAND)), "never fewer than none");
+    scripts.set_pockets(7, true, &me.pockets.filled(), me.pockets_seen);
+    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].count(t(SAND)), 0, "an up to date report counts");
 
     // Ada goes, and what she carried with her
     scripts.players = vec![bo.clone(), cy.clone()];
@@ -2357,8 +2540,7 @@ end)
         app.add_plugins(MinimalPlugins);
         crate::sim(&mut app, crate::SEED);
         let mut me = Me::default();
-        me.hotbar[0] = log_id;
-        me.counts[0] = 2;
+        me.pockets.0[0] = crate::items::Slot { thing: t(log_id), count: 2 };
         app.insert_resource(Settings { survival: true, ..default() }).insert_resource(me);
         app.world_mut().resource_mut::<WorldInfo>().in_world = true;
         let gift = creation("local world = require(\"@potluck/world@0.3\")\nworld.after(0.1, function() for _, p in world.players() do world.give(p, \"Lantern\", world.has(p, \"Oak log\")) end end)");
@@ -2376,12 +2558,12 @@ end)
         });
         app.world_mut().run_system_once(crate::game::host_step).unwrap();
         let me = app.world().resource::<Me>();
-        assert!(me.carried().contains(&(crate::blocks::by_name("Lantern").unwrap(), 2)), "{:?}", me.carried());
+        assert!(me.carried().contains(&(t(crate::blocks::LANTERN), 2)), "{:?}", me.carried());
         assert_eq!(me.pockets_seen, 1);
     }
 
     // what goes between devices
-    for m in [Msg::Pockets { seq: 2, changes: vec![(PLANKS, 4), (log_id, -1)] }, Msg::Act(Action::Pockets { survival: true, items: vec![(PLANKS, 4)], seen: 2 })] {
+    for m in [Msg::Pockets { seq: 2, changes: vec![(t(PLANKS), 4), (pick, -1)] }, Msg::Act(Action::Pockets { survival: true, slots: vec![(0, t(PLANKS), 4), (35, pick, 1)], seen: 2 })] {
         let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
         assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
     }
@@ -2400,7 +2582,7 @@ fn villagers_trade_what_survival_players_gathered() {
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
     let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO };
     scripts.players = vec![ada.clone(), bo.clone()];
-    scripts.set_pockets(7, true, &[(log_id, 2)], 0);
+    scripts.carry(7, true, &[(log_id, 2)], 0);
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&villagers, &mut herd).unwrap();
     run(&mut scripts, &mut voxels, &mut herd, 0.3);
@@ -2413,14 +2595,13 @@ fn villagers_trade_what_survival_players_gathered() {
     assert_eq!(panel.choices.len(), 4);
     scripts.answer(7, panel.ask, Some(0));
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
-    let items = scripts.shared.lock().unwrap().pockets[&7].items.clone();
-    assert_eq!((items.get(&log_id).copied(), items.get(&PLANKS).copied()), (Some(1), Some(4)), "{items:?}");
+    assert_eq!((scripts.carried(7, log_id), scripts.carried(7, PLANKS)), (1, 4));
     // a trade she can't pay for takes nothing
     scripts.event(&mut voxels, &mut herd, rowan, "used", &ada);
     let panel = asked(&mut scripts, 7).unwrap();
     scripts.answer(7, panel.ask, Some(3));
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
-    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].items.get(&PLANKS).copied(), Some(4));
+    assert_eq!(Some(scripts.carried(7, PLANKS)).filter(|n| *n > 0), Some(4));
     assert!(herd.bodies[&rowan].says.as_ref().is_some_and(|s| s.0.contains("You'll need 6 Planks")), "{:?}", herd.bodies[&rowan].says);
     // in creative, there's nothing to trade for
     scripts.event(&mut voxels, &mut herd, rowan, "used", &bo);
@@ -2596,10 +2777,10 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
     assert!(!herd.bodies.contains_key(&id));
     // a sword pops one at once (world.held)
     if let Some(&other) = ids.get(1) {
-        scripts.set_held(7, crate::blocks::by_name("Wooden sword").unwrap());
+        scripts.set_held(7, crate::items::by_name("Wooden sword").unwrap());
         scripts.event(&mut voxels, &mut herd, other, "hit", &ada);
         assert!(!herd.bodies.contains_key(&other), "a sword pops it");
-        scripts.set_held(7, crate::blocks::AIR);
+        scripts.set_held(7, 0);
     }
     // in the morning they fade away
     scripts.set_day(0.4);
@@ -2755,12 +2936,11 @@ fn a_table_is_a_workbench_for_survival_players() {
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
     scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
-    scripts.set_pockets(7, true, &[(oak, 2), (glass, 1), (cobble, 2)], 0);
+    scripts.carry(7, true, &[(oak, 2), (glass, 1), (cobble, 2)], 0);
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&bench, &mut herd).unwrap();
     let at = IVec3::new(5, 60, 5);
     let asked = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.panels.get(&pid).and_then(|q| q.front().cloned());
-    let items = |scripts: &Scripts| scripts.shared.lock().unwrap().pockets[&7].items.clone();
     let mut answer = |scripts: &mut Scripts, voxels: &mut Voxels, herd: &mut Herd, choice: Option<u32>| {
         let panel = asked(scripts, 7).expect("a question for Ada");
         scripts.answer(7, panel.ask, choice);
@@ -2780,8 +2960,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     // it asks again with how it went, so making several is quick
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).expect("asks again");
     assert!(panel.text.starts_with("Made 4 Planks."), "{}", panel.text);
-    let have = items(&scripts);
-    assert_eq!((have.get(&oak).copied(), have.get(&PLANKS).copied()), (Some(1), Some(4)), "{have:?}");
+    assert_eq!((scripts.carried(7, oak), scripts.carried(7, PLANKS)), (1, 4));
     // closing it and using the table again opens it at once
     assert!(answer(&mut scripts, &mut voxels, &mut herd, None).is_none());
     scripts.use_block(7, at, table);
@@ -2789,16 +2968,16 @@ fn a_table_is_a_workbench_for_survival_players() {
     assert!(asked(&scripts, 7).is_some(), "using the table again asks again");
     // a choice too long to fit says what it takes in the question
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
-    assert_eq!(panel.choices[1], "1 Lantern", "{:?}", panel.choices);
+    assert!(panel.choices[0].contains("Torch"), "torches come first: {:?}", panel.choices);
+    assert_eq!(panel.choices[2], "1 Lantern", "{:?}", panel.choices);
     assert!(panel.text.contains("1 Lantern takes 1 Glass and 2 Cobblestone."), "{}", panel.text);
-    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(1)).unwrap();
-    assert!(panel.text.starts_with("Made 1 Lantern."), "{}", panel.text);
-    let have = items(&scripts);
-    assert_eq!((have.get(&b("Lantern")).copied(), have.get(&glass).copied(), have.get(&cobble).copied()), (Some(1), Some(0), Some(0)), "{have:?}");
-    // one she can't pay for takes nothing
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
+    assert!(panel.text.starts_with("Made 1 Lantern."), "{}", panel.text);
+    assert_eq!((scripts.carried(7, b("Lantern")), scripts.carried(7, glass), scripts.carried(7, cobble)), (1, 0, 0));
+    // one she can't pay for takes nothing
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(3)).unwrap();
     assert!(panel.text.starts_with("You'll need 1 Oak log and 4 Cobblestone for that."), "{}", panel.text);
-    assert_eq!(items(&scripts).get(&oak).copied(), Some(1));
+    assert_eq!(scripts.carried(7, oak), 1);
     answer(&mut scripts, &mut voxels, &mut herd, None);
     // in creative there's nothing to make
     scripts.use_block(8, at, table);
@@ -2811,22 +2990,22 @@ fn a_table_is_a_workbench_for_survival_players() {
     let inputs = [
         vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone"],
         vec!["Planks"],
-        vec!["Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
+        vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat"],
-        vec!["Planks", "Cobblestone"],
+        vec!["Planks", "Cobblestone", "Flint", "Iron ingot"],
         vec!["Planks", "Cobblestone"],
         vec!["Cream wool", "Planks", "Lantern"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
-        let carry: Vec<_> = want.iter().map(|n| (b(n), 64)).collect();
-        scripts.set_pockets(7, true, &carry, 1000);
+        let carry: Vec<_> = want.iter().map(|n| (crate::items::by_name(n).unwrap(), 64)).collect();
+        scripts.carry(7, true, &carry, 1000);
         scripts.use_block(7, at, table);
         run(&mut scripts, &mut voxels, &mut herd, 0.2);
         let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
         assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
         for i in 0..panel.choices.len() {
-            let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap();
+            let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap_or_else(|| panic!("{} {i}: {:?} {:?}", panel.title, scripts.vms["workbench"].error, scripts.vms["workbench"].log));
             assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
         }
         answer(&mut scripts, &mut voxels, &mut herd, None);
@@ -2847,7 +3026,7 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
     scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
-    scripts.set_pockets(7, true, &[(wheat, 3), (carrots, 1)], 0);
+    scripts.carry(7, true, &[(wheat, 3), (carrots, 1)], 0);
     scripts.set_pockets(8, false, &[], 0);
     scripts.set_day(0.5);
     scripts.start(&farming, &mut herd).unwrap();
@@ -2858,7 +3037,7 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     }
     voxels.set(at(4) + IVec3::X * 2, WATER);
     let up = IVec3::Y;
-    let carried = |scripts: &Scripts, block| scripts.shared.lock().unwrap().pockets[&7].items.get(&block).copied().unwrap_or(0);
+    let carried = |scripts: &Scripts, block| scripts.carried(7, block);
     let plant = |scripts: &mut Scripts, voxels: &mut Voxels, i: i32, crop| {
         voxels.set(at(i) + up, crop);
         scripts.player_block(7, at(i) + up, AIR, crop);
@@ -3030,7 +3209,7 @@ print(pcall(ui.meter, 7, "", 0.5) and "blank ok" or "no blank")
 /// hungry, an empty belly stops healing and a full one speeds it up.
 #[test]
 fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
-    use crate::blocks::by_name;
+    use crate::blocks::{by_name, GLASS, STONE};
     home();
     let mut hunger = Library::load().list.remove("hunger").expect("the base game has hunger");
     hunger.knobs.insert("minutes".into(), KnobValue::Number(5.0));
@@ -3039,11 +3218,11 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
     scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
-    scripts.set_pockets(7, true, &[(carrots, 1), (wheat, 1)], 0);
+    scripts.carry(7, true, &[(carrots, 1), (wheat, 1)], 0);
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&hunger, &mut herd).unwrap();
     let bar = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(pid), "hunger".into(), "food".into())).and_then(|p| p.meter).map(|m| m.0);
-    let carried = |scripts: &Scripts, b| scripts.shared.lock().unwrap().pockets[&7].items.get(&b).copied().unwrap_or(0);
+    let carried = |scripts: &Scripts, b| scripts.carried(7, b);
     let shown = |scripts: &Scripts, id: &str| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(7), "hunger".into(), id.into())).map(|p| p.text.clone());
     run(&mut scripts, &mut voxels, &mut herd, 1.5);
     assert_eq!(bar(&scripts, 7), Some(1.0), "a full bar to start");
@@ -3072,7 +3251,7 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     assert_eq!(scripts.health_changes(), vec![(7, -2.0, 10.0)], "one every five seconds");
     // a carrot again: eaten at once, healing as usual and no more hurting
     scripts.pocket_changes();
-    scripts.set_pockets(7, true, &[(carrots, 1)], 1000);
+    scripts.carry(7, true, &[(carrots, 1)], 1000);
     run(&mut scripts, &mut voxels, &mut herd, 1.5);
     assert_eq!(carried(&scripts, carrots), 0);
     assert_eq!(scripts.healing_changes(), vec![(7, 1.0)]);
@@ -3097,38 +3276,38 @@ fn tools_dig_faster_wear_out_and_break() {
     use crate::player::Me;
     home();
     let tools = Library::load().list.remove("tools").expect("the base game has tools");
-    let (pick, axe, sword) = (by_name("Wooden pickaxe").unwrap(), by_name("Stone axe").unwrap(), by_name("Wooden sword").unwrap());
-    assert!(crate::blocks::is_item(pick) && !crate::blocks::is_solid(pick) && !crate::blocks::is_item(STONE));
+    let thing = |n: &str| crate::items::by_name(n).unwrap();
+    let (pick, axe, sword) = (thing("Wooden pickaxe"), thing("Stone axe"), thing("Wooden sword"));
+    assert!(crate::items::is_item(pick) && by_name("Wooden pickaxe").is_none() && !crate::items::is_item(STONE.into()), "tools are things to hold, never blocks");
+    assert_eq!((pick, crate::items::stack(pick), crate::items::stack(STONE.into())), (crate::items::WOODEN_PICKAXE, 1, 99), "one to a slot");
     let mut voxels = world();
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
     scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
-    scripts.set_pockets(7, true, &[(pick, 1), (axe, 1)], 0);
+    scripts.carry(7, true, &[(pick, 1), (axe, 1)], 0);
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&tools, &mut herd).unwrap();
     let digging = scripts.digging_changes().expect("the tools say how they dig");
     assert_eq!(digging.len(), 6, "{digging:?}");
     let speeds = |b| digging.iter().find(|d| d.0 == b).map(|d| d.1).unwrap();
-    assert_eq!(speeds(pick), [1.0, 2.5, 1.0, 1.0, 1.0], "a wooden pickaxe digs stone faster");
-    assert_eq!(speeds(axe)[2], 4.0, "a stone axe chops faster");
+    assert_eq!(speeds(pick), crate::items::Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 }, "a wooden pickaxe digs stone faster");
+    assert_eq!((speeds(axe).speeds[2], speeds(axe).level), (4.0, 2), "a stone axe chops faster, and reaches further");
     assert!(scripts.digging_changes().is_none(), "only told again when it changes");
 
     // on the player's game: faster with the right tool, as usual by hand or with the wrong one
     let mut me = Me::default();
-    me.digging = digging.iter().copied().collect();
-    me.hotbar[0] = pick;
-    me.counts[0] = 1;
+    me.rules.digging = digging.iter().copied().collect();
+    me.pockets.0[0] = crate::items::Slot { thing: pick, count: 1 };
     let (oak, dirt) = (by_name("Oak log").unwrap(), by_name("Dirt").unwrap());
     assert_eq!((me.dig_speed(STONE), me.dig_speed(oak), me.dig_speed(dirt)), (2.5, 1.0, 1.0));
-    me.counts[0] = 0;
+    me.pockets.0[0].count = 0;
     assert_eq!(me.dig_speed(STONE), 1.0, "an empty slot in survival is an empty hand");
-    me.hotbar[0] = axe;
-    me.counts[0] = 1;
+    me.pockets.0[0] = crate::items::Slot { thing: axe, count: 1 };
     assert_eq!(me.dig_speed(oak), 4.0);
 
     // the wear bar shows while a tool is in hand, with a line saying what it is
     let piece = |scripts: &Scripts, pid: u32, id: &str| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(pid), "tools".into(), id.into())).cloned();
-    let carried = |scripts: &Scripts, b| scripts.shared.lock().unwrap().pockets[&7].items.get(&b).copied().unwrap_or(0);
+    let carried = |scripts: &Scripts, b: crate::items::Thing| scripts.carried(7, b);
     run(&mut scripts, &mut voxels, &mut herd, 0.6);
     assert!(piece(&scripts, 7, "wear").is_none(), "nothing in hand, no bar");
     scripts.set_held(7, pick);
@@ -3182,21 +3361,119 @@ world.after(0.1, function()
 	world.digging("Stone", nil)
 end)
 "#;
-    scripts.set_held(7, AIR);
+    scripts.set_held(7, 0);
     scripts.start(&creation(code), &mut herd).unwrap();
     let log = scripts.vms["test"].log.join("\n");
     assert_eq!(scripts.vms["test"].error, None, "{log}");
     for want in ["kinds hard wood soft plant glass water air", "held nil", "no mud", "no air", "no kind", "no fast", "no slow"] {
         assert!(log.contains(want), "{want}: {log}");
     }
-    assert_eq!(scripts.digging_changes(), Some(vec![(STONE, [1.0, 3.0, 1.0, 1.0, 1.0])]), "said twice the same, told once");
+    assert_eq!(scripts.digging_changes(), Some(vec![(STONE.into(), crate::items::Digging { speeds: [1.0, 3.0, 1.0, 1.0, 1.0], level: 0 })]), "said twice the same, told once");
     scripts.set_held(7, sword);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let log = scripts.vms["test"].log.join("\n");
     assert!(log.contains("held now Wooden sword") && log.contains("no set"), "{log}");
     assert_eq!(scripts.digging_changes(), Some(vec![]), "nil takes it away");
     // what goes between devices
-    let m = Msg::Digging(vec![(pick, [1.0, 2.5, 1.0, 1.0, 1.0])]);
+    let m = Msg::Digging(vec![(pick, crate::items::Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 })]);
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+}
+
+#[test]
+fn ores_need_a_good_enough_pickaxe_and_break_into_what_they_hold() {
+    use crate::blocks::{by_name, GLASS, STONE};
+    use crate::items::{self, Digging, Drop, Rules};
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::Me;
+    let (coal, iron, chest) = (crate::blocks::COAL_ORE, crate::blocks::IRON_ORE, crate::blocks::OLD_CHEST);
+    assert_eq!((by_name("Coal ore"), by_name("Moonsilver ore"), by_name("Old chest"), by_name("Glowcap")), (Some(coal), Some(crate::blocks::MOONSILVER_ORE), Some(chest), Some(crate::blocks::GLOWCAP)));
+    assert_eq!((crate::sound::material(iron).name(), crate::sound::material(chest).name(), crate::sound::material(crate::blocks::GLOWCAP).name()), ("hard", "wood", "plant"));
+    assert_eq!((items::by_name("Raw iron"), items::stack(items::RAW_IRON), items::name(items::CRYSTAL)), (Some(items::RAW_IRON), 99, "Crystal"), "what ores give stacks as blocks do");
+
+    // the rules on their own: a level for the kinds a tool digs faster
+    let mut rules = Rules::default();
+    let (wood, stone) = (items::WOODEN_PICKAXE, items::STONE_PICKAXE);
+    rules.digging.insert(wood, Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 });
+    rules.digging.insert(stone, Digging { speeds: [1.0, 4.0, 1.0, 1.0, 1.0], level: 2 });
+    rules.digging.insert(items::STONE_AXE, Digging { speeds: [1.0, 1.0, 4.0, 1.0, 1.0], level: 2 });
+    rules.drops.insert(iron, Drop { gives: items::RAW_IRON, least: 1, most: 1, level: 2 });
+    rules.drops.insert(coal, Drop { gives: items::COAL, least: 1, most: 3, level: 1 });
+    rules.drops.insert(GLASS, Drop { gives: 0, least: 0, most: 0, level: 0 });
+    assert!(!rules.can_break(0, iron) && !rules.can_break(wood, iron) && rules.can_break(stone, iron));
+    assert!(!rules.can_break(items::STONE_AXE, iron), "an axe's level is for wood");
+    assert!(rules.can_break(0, STONE) && rules.can_break(0, GLASS), "blocks with no level break by hand");
+    assert_eq!(rules.tool_for(iron), Some(stone));
+    assert_eq!(crate::player::needs(&rules, iron), "Iron ore needs a stone pickaxe or better");
+    rules.digging.clear();
+    assert_eq!(crate::player::needs(&rules, iron), "Iron ore needs a better tool");
+    assert_eq!((rules.gives(coal, 0.0), rules.gives(coal, 0.5), rules.gives(coal, 1.0)), (Some((items::COAL, 1)), Some((items::COAL, 2)), Some((items::COAL, 3))));
+    assert_eq!((rules.gives(GLASS, 0.5), rules.gives(STONE, 0.5)), (None, Some((items::of_block(STONE), 1))), "nothing, or the block itself");
+
+    // the API, from creations
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.13")
+print(pcall(world.drops, "Mud", { gives = "Coal" }) and "mud ok" or "no mud")
+print(pcall(world.drops, "Raw iron", { gives = "Coal" }) and "item ok" or "no item")
+print(pcall(world.drops, "Air", {}) and "air ok" or "no air")
+print(pcall(world.drops, "Iron ore", { gives = "Water" }) and "water ok" or "no water")
+print(pcall(world.drops, "Iron ore", { gives = "Mud" }) and "gives ok" or "no gives")
+print(pcall(world.drops, "Iron ore", { count = 65 }) and "many ok" or "no many")
+print(pcall(world.drops, "Iron ore", { count = { 3, 1 } }) and "back ok" or "no back")
+print(pcall(world.drops, "Iron ore", { level = 10 }) and "level ok" or "no level")
+print(pcall(world.drops, "Iron ore", { colour = "red" }) and "colour ok" or "no colour")
+print(pcall(world.digging, "Stone pickaxe", { hard = 4, level = 1.5 }) and "half ok" or "no half")
+world.digging("Stone pickaxe", { hard = 4, level = 2 })
+world.drops("Iron ore", { gives = "Raw iron", level = 2 })
+world.drops("Coal ore", { gives = "Coal", count = { 1, 2 } })
+world.drops("Glass", { gives = false })
+world.drops("Gold ore", { level = 3 })
+"#;
+    scripts.start(&creation(code), &mut herd).unwrap();
+    let log = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{log}");
+    for want in ["no mud", "no item", "no air", "no water", "no gives", "no many", "no back", "no level", "no colour", "no half"] {
+        assert!(log.contains(want), "{want}: {log}");
+    }
+    let drops = scripts.drops_changes().expect("told what blocks give");
+    let gold = crate::blocks::GOLD_ORE;
+    assert_eq!(
+        drops,
+        vec![
+            (GLASS, Drop { gives: 0, least: 1, most: 1, level: 0 }),
+            (coal, Drop { gives: items::COAL, least: 1, most: 2, level: 0 }),
+            (iron, Drop { gives: items::RAW_IRON, least: 1, most: 1, level: 2 }),
+            (gold, Drop { gives: items::of_block(gold), least: 1, most: 1, level: 3 }),
+        ]
+    );
+    assert_eq!(scripts.digging_changes().map(|d| d[0].1.level), Some(2));
+    assert!(scripts.drops_changes().is_none(), "only told again when it changes");
+    // another creation that says it later has the last word, until it stops
+    let mut other = creation("local world = require(\"@potluck/world@0.13\")\nworld.drops(\"Iron ore\", { gives = \"Coal\" })");
+    other.id = "other".into();
+    scripts.start(&other, &mut herd).unwrap();
+    let rules = scripts.rules();
+    assert_eq!(rules.drops[&iron], Drop { gives: items::COAL, least: 1, most: 1, level: 0 });
+    scripts.stop("other", &mut herd);
+    assert_eq!(scripts.rules().drops[&iron].gives, items::RAW_IRON, "the first one's again");
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.drops_changes(), Some(vec![]), "and none once both stop");
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+
+    // on the player's game: the block doesn't give until the hand can break it
+    let mut me = Me::default();
+    me.rules = rules;
+    me.pockets.0[0] = crate::items::Slot { thing: wood, count: 1 };
+    me.rules.drops.insert(iron, Drop { gives: items::RAW_IRON, least: 1, most: 1, level: 2 });
+    assert_eq!(me.dig_speed(iron), 0.0, "a wooden pickaxe makes no headway on iron");
+    me.pockets.0[0] = crate::items::Slot { thing: stone, count: 1 };
+    assert_eq!(me.dig_speed(iron), 4.0);
+
+    // what goes between devices
+    let m = Msg::Drops(drops);
     let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
     assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
@@ -3331,7 +3608,7 @@ fn a_basket_fills_into_a_balloon_that_rises_lands_and_packs_away() {
     home();
     let balloon = Library::load().list.remove("balloon").expect("the base game has the balloon");
     let basket = by_name("Balloon basket").unwrap();
-    assert!(!crate::blocks::is_item(basket) && crate::blocks::is_solid(basket), "a basket is a block to put down");
+    assert!(crate::items::block(basket.into()) == Some(basket) && crate::blocks::is_solid(basket), "a basket is a block to put down");
     let mut voxels = world();
     let (mid, ground) = pad(&mut voxels);
     let mut herd = Herd::default();
@@ -3418,7 +3695,7 @@ fn a_basket_fills_into_a_balloon_that_rises_lands_and_packs_away() {
     // landed and empty, a bop packs it back into a basket
     scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
     assert!(herd.bodies.is_empty(), "packed up");
-    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].items.get(&basket).copied(), Some(1));
+    assert_eq!(Some(scripts.carried(7, basket)).filter(|n| *n > 0), Some(1));
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     assert_eq!(kept(&scripts), 0, "and forgotten");
     assert_eq!(scripts.vms["balloon"].error, None, "{}", log(&scripts));
@@ -3427,7 +3704,7 @@ fn a_basket_fills_into_a_balloon_that_rises_lands_and_packs_away() {
 /// Woollies in survival: patting one shears it for wool, and it grows back.
 #[test]
 fn survival_players_shear_woollies_for_wool() {
-    use crate::blocks::by_name;
+    use crate::blocks::{by_name, GLASS, STONE};
     home();
     let mut woolly = Library::load().list.remove("woolly").expect("the base game has woollies");
     woolly.knobs.insert("regrow".into(), KnobValue::Number(0.5));
@@ -3443,7 +3720,7 @@ fn survival_players_shear_woollies_for_wool() {
     let at = herd.bodies[&id].pos;
     let (ada, bo) = (PlayerInfo { id: 7, name: "Ada".into(), pos: at }, PlayerInfo { id: 8, name: "Bo".into(), pos: at });
     scripts.players = vec![ada.clone(), bo.clone()];
-    let wool_of = |scripts: &Scripts| scripts.shared.lock().unwrap().pockets[&7].items.get(&wool).copied().unwrap_or(0);
+    let wool_of = |scripts: &Scripts| scripts.carried(7, wool);
     // creative: just a pat
     scripts.event(&mut voxels, &mut herd, id, "used", &bo);
     assert_eq!(herd.bodies[&id].kind, "Woolly");
@@ -3666,7 +3943,7 @@ fn a_coding_helper_works_on_creations_through_the_dev_bridge() {
     let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }).to_string());
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let names: Vec<&str> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "test", "tweak", "look_around", "screenshot"]);
+    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "test", "check", "tweak", "look_around", "screenshot"]);
     let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "fly" } }).to_string());
     assert!(body.contains("-32602"), "an unknown tool is a protocol error: {body}");
 
@@ -3765,7 +4042,13 @@ end)
     assert!(!err && text.contains("1 of 2 cases passed") && text.contains("FAIL  three moths: test.luau:7: moths: got 2, wanted 3"), "{text}");
     assert_eq!(cx.herd.bodies.len(), before, "the world's own creatures are left alone");
     let (text, err) = bridge_tool(&open, &mut cx, "test", json!({ "creation": "balloon" }));
-    assert!(!err && text.contains("4 of 4 cases passed"), "{text}");
+    assert!(!err && text.contains("5 of 5 cases passed"), "{text}");
+    // the type checker, on the folder as saved
+    let (text, err) = bridge_tool(&open, &mut cx, "check", json!({ "creation": "balloon" }));
+    assert!(!err && text.contains("found nothing it's sure is wrong"), "{text}");
+    std::fs::write(dir.join("main.luau"), "local world = require(\"@potluck/world\")\nworld.spwan()\n").unwrap();
+    let (text, err) = bridge_tool(&open, &mut cx, "check", json!({ "creation": id }));
+    assert!(!err && text.contains("sure of 1 thing\nmain.luau line 2: world has no spwan (did you mean world.spawn?)"), "{text}");
     // a screenshot needs the game's screen, which this test hasn't got
     assert!(bridge_tool(&open, &mut cx, "screenshot", json!({})).1);
     drop(open);
@@ -3800,13 +4083,29 @@ fn the_map_shows_the_world_from_above_and_keeps_up_with_changes() {
         v.set(IVec3::new(x, y, z), crate::blocks::PLANKS);
     }
     let rev = m.rev;
-    m.draw_changes(&mut v);
+    let here = Vec2::new(sx, sz);
+    m.draw_changes(&mut v, here);
     assert_eq!(m.height(x as f32, z as f32), top + 8);
     assert!(m.rev > rev && v.map_dirty.is_empty());
+    // land past the island is drawn as it comes in, and kept when the map
+    // moves away from it and back
+    let far = IVec2::new(world::CX + 4, 3);
+    let (fx, fz) = ((far.x * world::CHUNK + 9) as f32, (far.y * world::CHUNK + 9) as f32);
+    assert_eq!(m.at(fx, fz), map::UNSEEN, "nobody's been there");
+    v.ensure(far);
+    m.draw_changes(&mut v, here);
+    assert_ne!(m.at(fx, fz), map::UNSEEN, "drawn once it's made");
+    assert_eq!(m.height(fx, fz), map::surface(&v, fx as i32, fz as i32, world::WY - 1).top());
+    let seen = m.at(fx, fz);
+    m.follow(&v, Vec2::new(5000.0, 5000.0));
+    assert!(m.origin.x > 4000, "the picture follows the player");
+    v.unload(far);
+    m.follow(&v, here);
+    assert_eq!(m.at(fx, fz), seen, "and what was seen is kept");
     // a different world is drawn whole
     let other = world::generate(7);
     let mut other = other;
-    m.draw_changes(&mut other);
+    m.draw_changes(&mut other, here);
     assert_eq!(m.height(sx, sz), other.top(sx as i32, sz as i32));
 }
 
@@ -3827,7 +4126,7 @@ fn under_a_roof_the_map_shows_the_level_youre_on() {
     let mut m = map::MapImage::default();
     m.draw_all(&v);
     let from_above = m.at(x as f32, z as f32);
-    m.show_level(&v, map::roof_level(&v, eye));
+    m.show_level(&v, map::roof_level(&v, eye), Vec2::new(eye.x, eye.z));
     assert_ne!(m.at(x as f32, z as f32), from_above, "the floor, not the roof");
 }
 
@@ -3983,7 +4282,7 @@ fn chat_hides_listed_words_keeps_younger_players_to_quick_lines_and_slows_floods
     assert_eq!(l.place.as_ref().unwrap().name, "the mill");
     assert!(l.may_leave());
     chat.keep(l, 50.0);
-    assert!(chat.hear(Speaker { ..drew }, Say { text: String::new(), place: Some(crate::chat::Place { name: "x".into(), at: [-5, 30, 10] }) }, true, 60.0).is_err(), "places in the world only");
+    assert!(chat.hear(Speaker { ..drew }, Say { text: String::new(), place: Some(crate::chat::Place { name: "x".into(), at: [crate::world::BORDER + 5, 30, 10] }) }, true, 60.0).is_err(), "places in the world only");
     assert_eq!(chat.places(99).len(), 1);
     assert_eq!(chat.outbox.len(), 1, "only Drew's line may go to a bridge");
 }
@@ -4379,7 +4678,7 @@ end)
 /// say what's wrong.
 #[test]
 fn behaviours_make_a_creature_with_no_code() {
-    use crate::blocks::by_name;
+    use crate::blocks::{by_name, GLASS, STONE};
     let mut voxels = world();
     let (mid, _) = pad(&mut voxels);
     let code = |extra: &str| {
@@ -4405,12 +4704,12 @@ local Hen = world.creature {{
     // someone with wheat in hand, eight blocks off: it comes, and stops short
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: start + Vec3::new(8.0, 0.0, 0.0) };
     scripts.players = vec![ada.clone()];
-    scripts.set_held(7, by_name("Wheat").unwrap());
+    scripts.set_held(7, by_name("Wheat").unwrap().into());
     run(&mut scripts, &mut voxels, &mut herd, 6.0);
     let d = flat(hen(&scripts, &herd).pos, ada.pos);
     assert!((1.0..3.2).contains(&d), "came for the wheat: {d}");
     // stone in hand, and it loses interest
-    scripts.set_held(7, by_name("Stone").unwrap());
+    scripts.set_held(7, by_name("Stone").unwrap().into());
     run(&mut scripts, &mut voxels, &mut herd, 0.3);
     assert!(hen(&scripts, &herd).goal.is_none_or(|g| flat(g, ada.pos) > 0.5), "stops going after them");
     // used: it follows for its five seconds, then doesn't
@@ -4441,7 +4740,7 @@ local Hen = world.creature {{
     let h = hen(&scripts, &herd);
     assert!(h.goal.is_none() && h.says.map(|s| s.0) == Some("Hmph.".into()), "the code's say and stop win");
     // mistakes say what's wrong
-    for (bad, says) in [("flee = true", "there's no behaviour called \"flee\""), ("follow_food = \"Cake\"", "no block called \"Cake\""), ("sound = \"moo\"", "no sound called \"moo\""), ("flee_when_hit = \"far\"", "flee_when_hit takes true, or a number")] {
+    for (bad, says) in [("flee = true", "there's no behaviour called \"flee\""), ("follow_food = \"Cake\"", "nothing called \"Cake\""), ("sound = \"moo\"", "no sound called \"moo\""), ("flee_when_hit = \"far\"", "flee_when_hit takes true, or a number")] {
         let src = format!("local world = require(\"@potluck/world\")\nworld.creature {{ name = \"Hen\", behaviours = {{ {bad} }} }}\n");
         let err = Scripts::default().start(&creation(&src), &mut Herd::default()).err().unwrap_or_default();
         assert!(err.contains(says), "{bad}: {err}");
@@ -4554,14 +4853,23 @@ fn creations_make_blocks_of_their_own() {
     // the world saves its made blocks with it, and takes them back
     voxels.set(IVec3::new(4, 90, 3), lantern);
     let saved = made::world_bytes(&voxels);
-    assert!(saved.starts_with(b"POTLUCKW2"));
+    assert!(saved.starts_with(b"POTLUCKW3"));
     let back = made::read_world(&saved).unwrap();
     assert_eq!((back.at(IVec3::new(3, 90, 3)), back.at(IVec3::new(4, 90, 3))), (marble, lantern));
     assert!(back.lanterns.contains(&IVec3::new(4, 90, 3)), "a made light is a light");
     let mut old = b"POTLUCKW1".to_vec();
     old.extend_from_slice(&voxels.seed.to_le_bytes());
-    old.extend_from_slice(&world().encode());
+    old.extend_from_slice(&world().encode_island());
     assert!(made::read_world(&old).is_some(), "worlds saved before still load");
+    // and those saved before the world went on past the island, with the
+    // made blocks in them
+    let mut island = b"POTLUCKW2".to_vec();
+    island.extend_from_slice(&saved[9..13]);
+    let n = u32::from_le_bytes(saved[13..17].try_into().unwrap()) as usize;
+    island.extend_from_slice(&saved[13..17 + n]);
+    island.extend_from_slice(&voxels.encode_island());
+    let back = made::read_world(&island).expect("an island world");
+    assert_eq!((back.at(IVec3::new(3, 90, 3)), back.at(IVec3::new(4, 90, 3))), (marble, lantern));
     assert!(made::read_world(&saved[..40]).is_none(), "a damaged world is refused");
 
     // a saved block whose id something else has here moves
@@ -4619,4 +4927,751 @@ fn made_blocks_are_drawn_into_the_atlas() {
         assert!(n < 256);
     }
     assert!(n > 40, "room for plenty of made blocks: {n}");
+}
+
+/// world 0.14: a made block's frames, read and checked like its picture,
+/// and drawn once each so the game only sends the frame it shows.
+#[test]
+fn made_blocks_can_move() {
+    use crate::made;
+    let spec = |t: &str| -> serde_json::Value { serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()).unwrap() };
+    let pic = |c: char| format!("[{}]", vec![format!("\"{}\"", c.to_string().repeat(8)); 8].join(", "));
+    let base = format!("colors = {{ a = \"#c83c28\", b = \"#ffd27a\" }}\nglow = \"b\"\nlight = true\npicture = {}\n", pic('a'));
+    // what's wrong is said plainly
+    for (bad, says) in [
+        (format!("{base}speed = 2\n"), "speed is for a block with frames"),
+        (format!("{base}frames = []\n"), "frames is a list of 1 to 7"),
+        (format!("{base}frames = \"fast\"\n"), "frames is a list"),
+        (format!("{base}[[frames]]\ncolour = \"#fff\"\n"), "there's no colour for a frame"),
+        (format!("{base}[[frames]]\npicture = [\"ccc\"]\n"), "frames[1].picture"),
+        (format!("{base}speed = 9\n[[frames]]\npicture = {}\n", pic('b')), "speed is how many pictures a second"),
+        (format!("{base}{}", (0..8).map(|_| format!("[[frames]]\npicture = {}\n", pic('b'))).collect::<String>()), "1 to 7"),
+    ] {
+        let e = made::read("flicker", &spec(&bad)).err().unwrap_or_else(|| panic!("{bad} should be refused"));
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    // a frame that gives only a side keeps the block's own top and bottom
+    let def = made::read("flicker", &spec(&format!("{base}speed = 2\n[[frames]]\nside = {}\n[[frames]]\npicture = {}\n", pic('b'), pic('a')))).unwrap();
+    assert_eq!((def.frames.len(), def.speed), (2, 2.0));
+    assert!(def.moves(1) && !def.moves(0) && !def.moves(2), "only the side changes");
+    assert_eq!(def.same, [0, 1, 0], "the side has a tile of its own, the top and bottom share one");
+    assert!(def.frames[0][1].glow[0] && !def.faces[1].glow[0], "frames glow by the block's letters");
+    let still = made::read("flicker", &spec(&base)).unwrap();
+    assert!(still.frames.is_empty() && !(0..3).any(|f| still.moves(f)));
+
+    // frames go round at the block's speed, and stay on the first with Reduce flashing
+    assert_eq!((0..8).map(|i| made::frame_at(i as f64 * 0.25, 4.0, 3, false)).collect::<Vec<_>>(), [0, 1, 2, 0, 1, 2, 0, 1]);
+    assert_eq!(made::frame_at(1.6, 0.5, 4, false), 0);
+    assert_eq!(made::frame_at(2.0, 0.5, 4, false), 1);
+    assert!((0..40).all(|i| made::frame_at(i as f64 * 0.1, 8.0, 4, true) == 0), "still with Reduce flashing on");
+    assert_eq!(made::frame_at(5.0, 4.0, 1, false), 0);
+
+    // each frame's writes are worked out once, all into the same tile
+    let mut images = Assets::<Image>::default();
+    let mut atlas = crate::textures::build(&mut images);
+    let (red, gold) = (vec![[200u8, 60, 40, 255]; 64], vec![[255u8, 210, 120, 255]; 64]);
+    let (dark, lit) = (vec![false; 64], vec![true; 64]);
+    let frames = atlas.put_moving(&mut images, "test/flicker/side", &[(&red[..], &dark[..], 8), (&gold[..], &lit[..], 8)]).expect("room in the atlas");
+    let slot = atlas.tile("test/flicker/side");
+    let plain = atlas.put(&mut images, "test/plain/top", &red, 8, &dark).unwrap();
+    assert!(slot > plain + crate::textures::GRID as u16, "kept with the glowing tiles, since a frame glows: {slot} {plain}");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].len(), frames[1].len(), "every frame writes the same cells");
+    let first = |f: &Vec<crate::textures::TileWrite>, image| f.iter().find(|w| w.image == image && w.level == 0).unwrap().clone();
+    assert_eq!(&first(&frames[0], atlas.color.id()).data[..3], &[200, 60, 40]);
+    assert_eq!(&first(&frames[1], atlas.color.id()).data[..3], &[255, 210, 120]);
+    assert_eq!(&first(&frames[0], atlas.glow.id()).data[..3], &[0, 0, 0], "the first frame doesn't glow");
+    assert_eq!(&first(&frames[1], atlas.glow.id()).data[..3], &[255, 210, 120], "the second does");
+    let (a, b) = (first(&frames[0], atlas.color.id()), first(&frames[1], atlas.color.id()));
+    assert_eq!((a.x, a.y, a.size), (b.x, b.y, b.size));
+    assert_eq!(atlas.put_moving(&mut images, "test/flicker/side", &[(&gold[..], &lit[..], 8), (&red[..], &dark[..], 8)]).map(|_| atlas.tile("test/flicker/side")), Some(slot), "drawing it again reuses its tile");
+}
+
+#[test]
+fn creative_has_every_block_to_choose_from() {
+    use crate::blocks::{self, BlockId};
+    use crate::input::Controls;
+    use crate::settings::Settings;
+    use crate::ui::{block_shelf, menu_items, pages, Act, Acts, Focus, Kind, Screen, WorldInfo, BLOCK_PAGES};
+    use bevy::ecs::system::RunSystemOnce;
+    // every block of the game's own on one page, and never air, bedrock or a tool
+    let mut seen: Vec<BlockId> = BLOCK_PAGES[..3].iter().flat_map(|p| block_shelf(p)).collect();
+    let n = seen.len();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), n, "each on one page");
+    for id in 1..blocks::BLOCKS.len() as BlockId {
+        let b = blocks::block(id);
+        let shown = seen.contains(&id);
+        assert_eq!(shown, b.shape != blocks::Shape::Air && id != blocks::BEDROCK, "{}", b.name);
+    }
+    for (page, id) in [("Building", blocks::GLASS), ("Building", blocks::PLANKS), ("Nature", blocks::GRASS), ("Nature", blocks::FLOWER_RED), ("Nature", blocks::WATER), ("Things", blocks::LANTERN), ("Things", blocks::TABLE)] {
+        assert!(block_shelf(page).contains(&id), "{} on {page}", blocks::block(id).name);
+    }
+    // a creation's blocks have a page of their own
+    let tile = serde_json::json!({ "name": "Picker test tile", "colors": { "a": "#c86432" }, "picture": vec!["aaaaaaaa"; 8] });
+    let made = crate::made::register("picker-test", &BTreeMap::from([("tile".to_string(), tile)])).unwrap();
+    assert!(block_shelf("From creations").contains(&made[0]));
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    let act = |app: &mut App, a: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(a);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    let press = |app: &mut App, f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        app.insert_resource(c);
+        app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    };
+    // it opens on the block in your hand, on its page
+    app.world_mut().resource_mut::<crate::player::Me>().slot = 4;
+    let hand = |app: &App, i: usize| crate::items::block(app.world().resource::<crate::player::Me>().pockets.0[i].thing).unwrap();
+    let held = hand(&app, 4);
+    act(&mut app, Act::OpenBlocks);
+    let f = app.world().resource::<Focus>();
+    assert_eq!(f.screen, Screen::Blocks);
+    let info = app.world().resource::<WorldInfo>();
+    let (page, _) = pages(f, info).map(|(list, n)| (list[n], n)).unwrap();
+    assert!(block_shelf(page).contains(&held), "{page}");
+    let (title, items) = menu_items(f, app.world().resource::<Library>(), app.world().resource::<Scripts>(), app.world().resource::<Settings>(), info);
+    assert_eq!(title, "Blocks");
+    assert_eq!(items[f.sel].kind, Kind::Tile(held));
+    // along the row and A: the next one goes in your hand, in the slot chosen
+    app.world_mut().resource_mut::<Focus>().cols = 6;
+    press(&mut app, &|c| c.right = true);
+    let sel = app.world().resource::<Focus>().sel;
+    let Kind::Tile(next) = items[sel].kind else { panic!("a block") };
+    press(&mut app, &|c| c.accept = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Hold(next)]);
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    assert_eq!((hand(&app, 4), app.world().resource::<crate::player::Me>().slot), (next, 4));
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing, "and back to the world");
+    // one already in the hotbar: that slot is chosen instead
+    let first = hand(&app, 0);
+    act(&mut app, Act::Hold(first));
+    assert_eq!((app.world().resource::<crate::player::Me>().slot, hand(&app, 4)), (0, next));
+    // air isn't put in a hand
+    act(&mut app, Act::Hold(blocks::AIR));
+    assert_eq!(hand(&app, 0), first);
+    // the middle button puts the block aimed at in your hand
+    app.world_mut().resource_mut::<crate::player::Me>().target = Some(crate::player::Hit { block: IVec3::new(3, 40, 3), normal: IVec3::Y, id: blocks::SAND });
+    let mut c = Controls::default();
+    c.pick = true;
+    app.insert_resource(c);
+    app.world_mut().run_system_once(crate::game::interact).unwrap();
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    let slot = app.world().resource::<crate::player::Me>().slot;
+    assert_eq!(hand(&app, slot), blocks::SAND);
+    // B or the key that opened it close it
+    act(&mut app, Act::OpenBlocks);
+    press(&mut app, &|c| c.back = true);
+    press(&mut app, &|c| c.blocks = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Resume, Act::Resume]);
+    app.world_mut().resource_mut::<Acts>().0.clear();
+    // in survival the same key opens the backpack instead
+    app.world_mut().resource_mut::<Focus>().go(Screen::Playing);
+    app.world_mut().resource_mut::<Settings>().survival = true;
+    act(&mut app, Act::OpenBlocks);
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Backpack);
+    act(&mut app, Act::Hold(blocks::STONE));
+    assert!(!app.world().resource::<crate::player::Me>().pockets.0.iter().any(|s| s.thing == blocks::STONE as u16), "nothing new in survival");
+}
+
+/// Survival pockets are the hotbar and a backpack of 27 more: blocks stack
+/// to 99 and tools one to a slot, what's given fills the hotbar first, what's
+/// taken comes from the backpack first, and the backpack's screen moves
+/// things between slots.
+#[test]
+fn a_backpack_holds_27_more_slots_and_things_move_between_them() {
+    use crate::blocks::{self, COBBLE, PLANKS, SAND, STONE};
+    use crate::items::{self, Slot, Slots, HOTBAR, POCKETS, STONE_AXE, WOODEN_PICKAXE};
+    use crate::input::Controls;
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, Act, Acts, Focus, Kind, Screen, WorldInfo};
+    use bevy::ecs::system::RunSystemOnce;
+    let t = items::of_block;
+    // things by name: blocks first, then items; air and water aren't carried
+    assert_eq!((items::by_name("stone axe"), items::by_name("Planks"), items::by_name("Air")), (Some(STONE_AXE), Some(t(PLANKS)), None));
+    assert!(!items::carriable(t(blocks::WATER)) && !items::carriable(t(blocks::BEDROCK)) && items::carriable(WOODEN_PICKAXE));
+    assert_eq!((items::name(WOODEN_PICKAXE), items::icon(WOODEN_PICKAXE), items::icon(t(PLANKS))), ("Wooden pickaxe", "pickaxe_wood", "planks"));
+    assert!(items::ITEMS.iter().all(|i| blocks::by_name(i.name).is_none()), "no item shares a block's name");
+
+    let mut p = Slots::default();
+    assert_eq!(p.give(t(STONE), 250), 250);
+    assert_eq!(&p.0[..3], &[Slot { thing: t(STONE), count: 99 }, Slot { thing: t(STONE), count: 99 }, Slot { thing: t(STONE), count: 52 }], "99 to a slot, the hotbar first");
+    assert_eq!(p.give(WOODEN_PICKAXE, 2), 2);
+    assert_eq!((p.0[3], p.0[4]), (Slot { thing: WOODEN_PICKAXE, count: 1 }, Slot { thing: WOODEN_PICKAXE, count: 1 }), "tools one to a slot");
+    // fill the hotbar, and the backpack takes the rest
+    assert_eq!(p.give(t(SAND), 99 * 5 + 10), 505);
+    assert_eq!((p.0[8], p.0[HOTBAR], p.0[HOTBAR + 1]), (Slot { thing: t(SAND), count: 99 }, Slot { thing: t(SAND), count: 99 }, Slot { thing: t(SAND), count: 10 }));
+    // taking empties the backpack first, so the hotbar keeps what's in hand
+    assert!(p.take(t(SAND), 120));
+    assert_eq!((p.0[5].count, p.0[8].count, p.0[HOTBAR].count, p.0[HOTBAR + 1].count), (99, 88, 0, 0));
+    assert!(!p.take(t(SAND), 1000), "not that many");
+    assert_eq!(p.count(t(SAND)), 505 - 120, "and nothing taken");
+    // a hotbar slot that runs out takes the backpack's next lot of it
+    p.0[20] = Slot { thing: t(SAND), count: 40 };
+    p.0[8].count = 0;
+    p.refill(8);
+    assert_eq!((p.0[8], p.0[20].count), (Slot { thing: t(SAND), count: 40 }, 0));
+    // full: only what stacks onto what's there
+    let mut full = Slots::default();
+    full.give(WOODEN_PICKAXE, 100);
+    assert_eq!((full.count(WOODEN_PICKAXE), full.give(t(COBBLE), 1), full.room_for(t(COBBLE))), (POCKETS as u32, 0, 0));
+
+    // moving: into an empty slot, half, onto the same (as far as it stacks), swapping
+    let mut p = Slots::default();
+    p.0[0] = Slot { thing: t(PLANKS), count: 60 };
+    p.0[1] = Slot { thing: t(PLANKS), count: 70 };
+    p.0[2] = Slot { thing: STONE_AXE, count: 1 };
+    assert!(p.shift(0, 20, true));
+    assert_eq!((p.0[0].count, p.0[20]), (30, Slot { thing: t(PLANKS), count: 30 }), "half, rounded up");
+    assert!(p.shift(1, 20, false));
+    assert_eq!((p.0[1].count, p.0[20].count), (1, 99), "onto the same thing, as far as it stacks");
+    assert!(p.shift(2, 0, false));
+    assert_eq!((p.0[0], p.0[2]), (Slot { thing: STONE_AXE, count: 1 }, Slot { thing: t(PLANKS), count: 30 }), "swapped");
+    assert!(!p.shift(2, 0, true) && !p.shift(5, 6, false) && !p.shift(3, 3, false), "half can't swap; nothing moves nothing");
+    // tidying packs the backpack and leaves the hotbar alone
+    p.0[30] = Slot { thing: t(PLANKS), count: 5 };
+    p.0[12] = Slot { thing: t(COBBLE), count: 7 };
+    p.tidy();
+    let back: Vec<Slot> = p.0[HOTBAR..].iter().copied().filter(|s| !s.empty()).collect();
+    assert_eq!(back, [Slot { thing: t(COBBLE), count: 7 }, Slot { thing: t(PLANKS), count: 99 }, Slot { thing: t(PLANKS), count: 5 }]);
+    assert_eq!(p.0[0].thing, STONE_AXE);
+    // what goes to the host, and back
+    assert_eq!(Slots::from_filled(&p.filled()).filled(), p.filled());
+
+    // the screen: the same key that opens Blocks in creative
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    let mut me = crate::player::Me::default();
+    me.pockets = Slots::default();
+    me.pockets.give(t(PLANKS), 40);
+    me.pockets.give(STONE_AXE, 1);
+    me.pockets.0[HOTBAR + 4] = Slot { thing: t(STONE), count: 12 };
+    me.slot = 1;
+    app.insert_resource(Settings { survival: true, ..default() }).insert_resource(me).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    let act = |app: &mut App, a: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(a);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    let press = |app: &mut App, f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        app.insert_resource(c);
+        app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    act(&mut app, Act::OpenBlocks);
+    let items_now = |app: &App| {
+        let w = app.world();
+        menu_items(w.resource::<Focus>(), w.resource::<crate::creations::Library>(), w.resource::<Scripts>(), w.resource::<Settings>(), w.resource::<WorldInfo>())
+    };
+    let (title, list) = items_now(&app);
+    assert_eq!(title, "Backpack");
+    assert_eq!(list.iter().filter(|i| matches!(i.kind, Kind::Slot(_))).count(), POCKETS, "every slot");
+    assert_eq!(list[0].kind, Kind::Slot(HOTBAR), "the backpack's rows first, then the hotbar");
+    assert_eq!(list[HOTBAR + 4 - HOTBAR].label, "Stone \u{d7}12");
+    let f = app.world().resource::<Focus>();
+    assert_eq!((f.screen.clone(), list[f.sel].kind.clone()), (Screen::Backpack, Kind::Slot(1)), "on the slot in hand");
+    // rows of nine: up from the axe is the backpack's last row
+    app.world_mut().resource_mut::<Focus>().cols = HOTBAR;
+    press(&mut app, &|c| c.up = true);
+    let sel = app.world().resource::<Focus>().sel;
+    assert_eq!(list[sel].kind, Kind::Slot(POCKETS - HOTBAR + 1));
+    // the planks in the hotbar: half of them to the backpack
+    press(&mut app, &|c| c.down = true);
+    press(&mut app, &|c| c.left = true);
+    press(&mut app, &|c| c.interact = true);
+    assert_eq!(app.world().resource::<Focus>().moving, Some((0, true)));
+    act(&mut app, Act::Slot(HOTBAR, false));
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!((me.pockets.0[0].count, me.pockets.0[HOTBAR]), (20, Slot { thing: t(PLANKS), count: 20 }));
+    assert_eq!(app.world().resource::<Focus>().pockets, me.pockets, "the screen shows it");
+    // B while moving puts it back; B again leaves
+    act(&mut app, Act::Slot(1, false));
+    assert!(app.world().resource::<Focus>().moving.is_some());
+    press(&mut app, &|c| c.back = true);
+    assert!(app.world().resource::<Focus>().moving.is_none());
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Backpack);
+    // tidying
+    act(&mut app, Act::Tidy);
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!((me.pockets.0[HOTBAR], me.pockets.0[HOTBAR + 1]), (Slot { thing: t(PLANKS), count: 20 }, Slot { thing: t(STONE), count: 12 }));
+    press(&mut app, &|c| c.blocks = true);
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing, "the key that opened it closes it");
+}
+
+#[test]
+fn a_client_half_reads_this_games_copy_of_the_world() {
+    use crate::halves::{Halves, Seen};
+    let mut voxels = world();
+    let at = IVec3::new(3, 90, 3);
+    voxels.set(at, crate::blocks::WOOL_RED);
+    let client = r#"
+local net = require("@potluck/net@0.2")
+local world = require("@potluck/world@0.12")
+local me = net.me()
+print("block " .. world.block(vector.create(3.5, 90.2, 3.5)))
+print("top " .. world.top(3, 3))
+print("kind " .. world.kind("Oak log"))
+local found = world.find_block(vector.create(3, 87, 3), 4, "Red wool")
+print("found " .. found.x .. " " .. found.y)
+print("players " .. #world.players() .. " " .. world.players()[2].name)
+print("nearest " .. world.nearest_player(vector.create(2, 40, 0)).name)
+print("aim " .. me.aim.y .. " look " .. me.look.z)
+print(pcall(world.set_block, vector.create(0, 0, 0), "Stone") and "set ok" or "no set_block")
+print(pcall(world.find_light, vector.create(0, 0, 0), 4) and "light ok" or "no find_light")
+world.after(0.2, function()
+	print("later " .. world.block(vector.create(3, 90, 3)) .. " aim " .. tostring(net.me().aim))
+end)
+"#;
+    let mut c = creation("print(\"main\")");
+    c.files.insert("client.luau".into(), client.into());
+    c.manifest.client = Some("client.luau".into());
+    let mut lib = Library::default();
+    lib.list.insert("test".into(), c);
+    lib.running.push("test".into());
+    lib.world = 1;
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::new(2.0, 40.0, 0.5) };
+    let mut h = Halves::default();
+    {
+        let seen = Seen { voxels: &voxels, players: vec![ada.clone(), bo.clone()], look: Vec3::new(0.0, 0.0, -1.0), aim: Some(at) };
+        h.sync(Some(&lib), &ada, Some(&seen));
+    }
+    assert_eq!(h.list["test"].error, None, "{:?}", h.list["test"].log);
+    h.take();
+    let l = h.list["test"].log.join("\n");
+    for want in ["block Red wool", "top 90", "kind wood", "found 3.5 90.5", "players 2 Bo", "nearest Bo", "aim 90.5 look -1", "no set_block", "no find_light"] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // what changes in the world, it sees in the next frame
+    voxels.set(at, crate::blocks::STONE);
+    let seen = Seen { voxels: &voxels, players: vec![ada.clone()], look: Vec3::X, aim: None };
+    h.frame(0.25, &ada, vec![], Some(&seen));
+    h.take();
+    let l = h.list["test"].log.join("\n");
+    assert!(l.contains("later Stone aim nil"), "{l}");
+    assert_eq!(h.list["test"].error, None);
+}
+
+// ---------- type checking ----------
+
+const MISTAKES: &str = r#"--!strict
+local world = require("@potluck/world@0.12")
+local ui = require("@potluck/ui@0.2")
+local sound = require("@potluck/sound@0.2")
+
+local Frog = world.creature { name = "Frog", body = {} }
+
+world.spwan(Frog, vector.create(0, 0, 0))
+world.after("two", function() end)
+pritn("hello")
+local n = math.flor(2.5)
+ui.show(nil, "hi", "Hello", { at = "middle" })
+sound.play()
+world.set_block(vector.create(0, 0, 0))
+local function hop(height: number) return height end
+hop("high")
+function Frog:tick(dt)
+	-- what the checker guesses about self isn't sure enough to show
+	self.mood = "happy"
+	sound.play("croak", { at = self })
+	print(self.mood .. n)
+end
+"#;
+
+#[test]
+fn the_type_checker_says_only_what_its_sure_of() {
+    use crate::check::{check, files_hash, keep_checking, Hints};
+    home();
+    let mut c = creation(MISTAKES);
+    c.files.insert("client.luau".into(), "local net = require(\"@potluck/net@0.2\")\nnet.sned(\"hello\")\nprint(net.me().name)\n".into());
+    c.manifest.client = Some("client.luau".into());
+    let hints: Vec<String> = check(&c).iter().map(|h| h.to_string()).collect();
+    assert_eq!(
+        hints,
+        [
+            "client.luau line 2: net has no sned (did you mean net.send?)",
+            "main.luau line 8: world has no spwan (did you mean world.spawn?)",
+            "main.luau line 9: this should be a number, not some text",
+            "main.luau line 10: there's nothing called pritn here (did you mean print?)",
+            "main.luau line 11: math has no flor (did you mean math.floor?)",
+            "main.luau line 12: this should be one of \"bottom\", \"left\" or \"right\", not \"middle\"",
+            "main.luau line 13: this call takes 1 to 2 values, and it's given none",
+            "main.luau line 14: this call takes 2 values, and it's given 1",
+            "main.luau line 16: this should be a number, not some text",
+        ]
+    );
+    // the base game's creations have nothing it's sure of
+    let lib = Library::load();
+    for c in lib.list.values().filter(|c| matches!(c.origin, Origin::Base)) {
+        assert_eq!(check(c), vec![], "{}", c.id);
+    }
+    // the player's own creations are checked as they change, off the frame
+    let mut app = App::new();
+    let mut mine = Library::default();
+    mine.list.insert(c.id.clone(), c.clone());
+    app.insert_resource(mine).init_resource::<Hints>().add_systems(Update, keep_checking);
+    let started = std::time::Instant::now();
+    while app.world().resource::<Hints>().of(&c).is_none() && started.elapsed().as_secs() < 30 {
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.world().resource::<Hints>().of(&c).map(|h| h.len()), Some(9));
+    app.world_mut().resource_mut::<Library>().list.get_mut("test").unwrap().files.insert("main.luau".into(), "print(\"fixed\")\n".into());
+    let fixed = app.world().resource::<Library>().list["test"].clone();
+    assert_ne!(files_hash(&fixed), files_hash(&c));
+    assert!(app.world().resource::<Hints>().of(&fixed).is_none(), "what it found before is for the old files");
+    while app.world().resource::<Hints>().of(&fixed).is_none() && started.elapsed().as_secs() < 30 {
+        app.update();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(app.world().resource::<Hints>().of(&fixed).map(|h| h.len()), Some(1), "the client half's still wrong");
+}
+
+
+/// A number for the island's blocks above y = 0, so a change to how it's
+/// made shows here (galleries and saved worlds compare against it).
+fn island_print(v: &Voxels) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for y in 1..world::WY {
+        for z in 0..world::WZ {
+            for x in 0..world::WX {
+                h = (h ^ v.get(x, y, z) as u64).wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    h
+}
+
+#[test]
+fn the_island_is_made_as_it_always_was() {
+    // checked block for block against the island maker before the world
+    // went on past it
+    assert_eq!(island_print(&world::generate(26)), 0x8a20f6f4779acd69);
+    assert_eq!(island_print(&world::generate(7)), 0x794aaccb72e4082d);
+}
+
+#[test]
+fn the_world_goes_on_past_the_island_in_lands_of_many_kinds() {
+    use crate::world::{wild, Biome};
+    let seed = crate::SEED;
+    // open sea right round the island, then land
+    for (x, z) in [(-60.0, 190.0), (450.0, 190.0), (190.0, -60.0), (190.0, 450.0)] {
+        assert!(world::ground_height(seed, x as i32, z as i32) < world::SEA, "sea just off the island at {x}, {z}");
+    }
+    // far out, every kind of land turns up somewhere
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..160 {
+        for j in 0..160 {
+            let (x, z) = (-12000.0 + i as f32 * 150.0, -12000.0 + j as f32 * 150.0);
+            seen.insert(wild::biome(seed, x, z));
+        }
+    }
+    for b in [Biome::Sea, Biome::Meadow, Biome::Forest, Biome::Birchwood, Biome::Pinewood, Biome::Snowfield, Biome::Desert, Biome::Savanna, Biome::Marsh, Biome::Mountain] {
+        assert!(seen.contains(&b), "no {} anywhere", b.name());
+    }
+    // what crosses a column's edge joins up: columns made one at a time
+    // are the same as made together, trees and all
+    let mut trees = 0;
+    for k0 in [IVec2::new(30, 4), IVec2::new(-40, 70), IVec2::new(100, -100), IVec2::new(-200, -3)] {
+        for (k, together) in wild::columns(seed, k0, IVec2::new(2, 2)) {
+            let alone = world::column(seed, k);
+            for y in world::MIN_Y..world::WY {
+                for z in 0..world::CHUNK {
+                    for x in 0..world::CHUNK {
+                        let b = alone.get(x, y, z);
+                        assert_eq!(b, together.get(x, y, z), "column {k} at {x}, {y}, {z}");
+                        trees += (b == crate::blocks::LOG || b == crate::blocks::BIRCH) as u32;
+                    }
+                }
+            }
+        }
+    }
+    assert!(trees > 0, "some trees to check");
+    // a column is the same whenever it's made
+    let k = IVec2::new(-17, 23);
+    let (a, b) = (world::column(seed, k), world::column(seed, k));
+    assert!((world::MIN_Y..world::WY).all(|y| (0..32).all(|z| (0..32).all(|x| a.get(x, y, z) == b.get(x, y, z)))));
+}
+
+#[test]
+fn the_ground_goes_down_to_bedrock_far_below_the_sea() {
+    use crate::blocks::{BEDROCK, SLATE, STONE};
+    let mut v = world();
+    // under the island, and under the lands past it
+    for (x, z) in [(world::START.x as i32, world::START.z as i32), (190, 190), (-700, 1200)] {
+        v.ensure(world::key_of(x, z));
+        assert_eq!(v.get(x, world::MIN_Y, z), BEDROCK, "bedrock at the bottom");
+        assert_eq!(v.get(x, -100, z), SLATE, "slate deep down");
+        assert!(v.top(x, z) > -40);
+    }
+    assert_eq!(v.get(world::START.x as i32, -10, world::START.z as i32), STONE, "stone under the island");
+    // nobody digs through the bottom
+    assert!(!v.set(IVec3::new(5, world::MIN_Y, 5), crate::blocks::AIR));
+    assert!(v.set(IVec3::new(5, world::MIN_Y + 6, 5), crate::blocks::AIR), "but anywhere above it");
+    assert!(crate::player::blocked(&v, Vec3::new(5.2, world::MIN_Y as f32 - 0.5, 5.2), Vec3::splat(0.6)));
+}
+
+#[test]
+fn columns_come_and_go_and_keep_what_players_changed() {
+    let mut v = world();
+    let k = IVec2::new(world::CX + 6, -3);
+    let p = IVec3::new(k.x * world::CHUNK + 5, 40, k.y * world::CHUNK + 7);
+    assert!(!v.has(k), "not made until someone's near");
+    assert_eq!(v.at(p), crate::blocks::AIR);
+    assert!(v.set(p, crate::blocks::PLANKS), "building there makes it");
+    assert!(v.has(k));
+    v.unload(k);
+    assert!(!v.has(k), "let go");
+    v.ensure(k);
+    assert_eq!(v.at(p), crate::blocks::PLANKS, "and back as it was left");
+    // the island stays
+    v.unload(IVec2::new(2, 2));
+    assert!(v.has(IVec2::new(2, 2)));
+    // saved and sent: only what changed, the rest from the seed
+    let bytes = v.encode();
+    assert!(bytes.len() < 200_000, "{} bytes", bytes.len());
+    let mut back = Voxels::decode(v.seed, &bytes).unwrap();
+    back.ensure(k);
+    assert_eq!(back.at(p), crate::blocks::PLANKS);
+    let island = IVec3::new(world::START.x as i32, 30, world::START.z as i32);
+    assert_eq!(back.at(island), v.at(island));
+    assert!(Voxels::decode(v.seed, &bytes[..bytes.len() - 3]).is_none(), "damaged bytes are refused");
+    // a change from the host to land this game hasn't made waits for it
+    let mut guest = world();
+    guest.apply(p, crate::blocks::GLASS);
+    assert!(!guest.has(k));
+    guest.ensure(k);
+    assert_eq!(guest.at(p), crate::blocks::GLASS);
+    // what's wanted round players: this game's own player further than friends
+    let w = world::stream::wanted(Some(Vec3::new(10.0, 0.0, 10.0)), &[Vec3::new(1000.0, 0.0, 0.0)], 8);
+    assert_eq!(w, vec![(IVec2::ZERO, 8), (IVec2::new(31, 0), world::stream::AROUND_FRIENDS)]);
+    let mut round = world();
+    world::stream::make_round(&mut round, Vec3::new(-300.0, 0.0, 50.0), 1);
+    assert!(round.has(world::key_of(-300, 50)) && round.has(world::key_of(-332, 82)));
+}
+
+/// A pool for swimming tests: water from y 10 to 17 (its top at 17.88)
+/// over sand, with a bank on the east at the water's height.
+fn pool() -> App {
+    use crate::blocks::{SAND, WATER};
+    let mut v = Voxels::empty(1);
+    for x in -4..60 {
+        for z in -4..24 {
+            v.set(IVec3::new(x, 9, z), SAND);
+            for y in 10..=17 {
+                v.set(IVec3::new(x, y, z), if x < 16 { WATER } else { SAND });
+            }
+        }
+    }
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let mut focus = crate::ui::Focus::default();
+    focus.go(crate::ui::Screen::Playing);
+    app.insert_resource(v)
+        .insert_resource(focus)
+        .insert_resource(crate::settings::Settings { survival: true, ..Default::default() })
+        .init_resource::<crate::input::Controls>()
+        .init_resource::<crate::ui::Toasts>()
+        .init_resource::<crate::sound::Heard>()
+        .insert_resource(crate::player::Me::default());
+    app
+}
+
+/// Moves the player for `secs` at 60 frames a second, returning the
+/// highest they were.
+fn swim_for(app: &mut App, secs: f32) -> f32 {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut top = f32::MIN;
+    for _ in 0..(secs * 60.0) as i32 {
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_micros(16_667));
+        app.world_mut().run_system_once(crate::player::walk).unwrap();
+        top = top.max(app.world().resource::<crate::player::Me>().pos.y);
+    }
+    top
+}
+
+#[test]
+fn players_float_swim_up_and_down_and_climb_out() {
+    use crate::input::Controls;
+    use crate::player::Me;
+    let mut app = pool();
+    let me = |app: &App| (app.world().resource::<Me>().pos, app.world().resource::<Me>().vel, app.world().resource::<Me>().under_water);
+    app.world_mut().resource_mut::<Me>().pos = Vec3::new(6.5, 11.0, 6.5);
+    // let go under water, they come up and float with their eyes out
+    swim_for(&mut app, 4.0);
+    let (pos, vel, under) = me(&app);
+    let rest = 17.88 - 1.35;
+    assert!((pos.y - rest).abs() < 0.05 && vel.y.abs() < 0.05 && !under, "floating at {pos} {vel}");
+    // and stay there without bobbing
+    let top = swim_for(&mut app, 2.0);
+    assert!(top - rest < 0.03, "no bob: up to {top}");
+    // crouch dives, letting go comes back up
+    app.world_mut().resource_mut::<Controls>().crouch = true;
+    swim_for(&mut app, 1.0);
+    let (pos, _, under) = me(&app);
+    assert!(pos.y < rest - 2.5 && under, "dived to {pos}");
+    app.world_mut().resource_mut::<Controls>().crouch = false;
+    swim_for(&mut app, 4.0);
+    assert!((me(&app).0.y - rest).abs() < 0.05, "back up");
+    // jump swims up out of the water a little and falls back to floating
+    app.world_mut().resource_mut::<Controls>().jump = true;
+    let top = swim_for(&mut app, 1.0);
+    assert!(top > rest + 0.2, "up to {top}");
+    app.world_mut().resource_mut::<Controls>().jump = false;
+    swim_for(&mut app, 3.0);
+    // swimming east to the bank, they climb out onto it
+    {
+        let mut m = app.world_mut().resource_mut::<Me>();
+        m.yaw = -std::f32::consts::FRAC_PI_2;
+        m.pitch = 0.0;
+    }
+    app.world_mut().resource_mut::<Controls>().mv = Vec2::new(0.0, 1.0);
+    swim_for(&mut app, 6.0);
+    let (pos, _, _) = me(&app);
+    let m = app.world().resource::<Me>();
+    assert!(pos.x > 16.3 && pos.y > 17.99 && m.on_ground && !m.in_water, "out on the bank at {pos}");
+    // and water breaks a fall in survival
+    app.world_mut().resource_mut::<Controls>().mv = Vec2::ZERO;
+    {
+        let mut m = app.world_mut().resource_mut::<Me>();
+        m.pos = Vec3::new(6.5, 40.0, 6.5);
+        m.vel = Vec3::ZERO;
+    }
+    swim_for(&mut app, 4.0);
+    assert_eq!(app.world().resource::<Me>().health, crate::player::MAX_HEALTH);
+}
+
+/// Where each kind of land is nearest the island, for looking at
+/// (`cargo test -- --ignored lands_to_look_at --nocapture`).
+#[test]
+#[ignore]
+fn lands_to_look_at() {
+    use crate::world::{wild, Biome};
+    let seed = crate::SEED;
+    for b in [Biome::Meadow, Biome::Forest, Biome::Birchwood, Biome::Pinewood, Biome::Snowfield, Biome::Desert, Biome::Savanna, Biome::Marsh, Biome::Mountain] {
+        let mut found = None;
+        'out: for r in (8..400).map(|r| r * 24) {
+            for i in 0..(r / 6) {
+                let a = i as f32 / (r / 6) as f32 * std::f32::consts::TAU;
+                let (x, z) = (192.0 + a.cos() * r as f32, 192.0 + a.sin() * r as f32);
+                // a patch of it, not a corner
+                let all = (-2..=2).all(|dx| (-2..=2).all(|dz| wild::biome(seed, x + dx as f32 * 20.0, z + dz as f32 * 20.0) == b));
+                if all {
+                    found = Some((x as i32, z as i32, world::ground_height(seed, x as i32, z as i32)));
+                    break 'out;
+                }
+            }
+        }
+        println!("LAND {:?} {:?}", b, found);
+    }
+}
+
+#[test]
+fn underground_is_the_same_wherever_and_whenever_it_is_worked_out() {
+    use crate::blocks::*;
+    use crate::underground::carve;
+    // a column worked out bottom up, then top down, then again later on its own
+    let seed = 1234;
+    let up: Vec<BlockId> = (-127..=60).map(|y| carve(seed, 400, y, -77, 60, STONE)).collect();
+    let mut down: Vec<BlockId> = (-127..=60).rev().map(|y| carve(seed, 400, y, -77, 60, STONE)).collect();
+    down.reverse();
+    assert_eq!(up, down);
+    let _ = carve(seed, 9, 9, 9, 40, STONE);
+    assert_eq!(up, (-127..=60).map(|y| carve(seed, 400, y, -77, 60, STONE)).collect::<Vec<_>>());
+    assert_ne!(up, (-127..=60).map(|y| carve(seed + 1, 400, y, -77, 60, STONE)).collect::<Vec<_>>(), "another seed, another underground");
+    // only the ground changes, and nothing at the very bottom
+    for b in [WATER, SAND, LOG, BEDROCK, AIR] {
+        assert!((-127..=60).all(|y| carve(seed, 400, y, -77, 60, b) == b));
+    }
+    assert!((-127..=-120).all(|y| (0..64).all(|x| carve(seed, x, y, 5, 60, STONE) == STONE)), "a floor at the bottom");
+}
+
+#[test]
+fn caves_ores_hollows_and_old_workings_are_found_at_their_depths() {
+    use crate::blocks::*;
+    use crate::underground::carve;
+    let seed = 77;
+    let mut found: std::collections::HashMap<BlockId, Vec<i32>> = Default::default();
+    let (mut air, mut all) = (0, 0);
+    let ground = 64;
+    let started = std::time::Instant::now();
+    // a 160 x 160 stretch, every block from the bottom to the ground
+    for z in (0..160).step_by(1) {
+        for x in 0..160 {
+            for y in -127..=ground {
+                let b = carve(seed, x, y, z, ground, STONE);
+                all += 1;
+                if b == AIR {
+                    air += 1;
+                }
+                if b != STONE && b != AIR {
+                    found.entry(b).or_default().push(y);
+                }
+            }
+        }
+    }
+    let took = started.elapsed();
+    println!("{all} blocks in {took:?}: {:.0} ns a block", took.as_nanos() as f64 / all as f64);
+    let open = air as f32 / all as f32;
+    assert!((0.02..0.14).contains(&open), "caves open {:.1}% of the ground", open * 100.0);
+    for (b, from, to) in [(COAL_ORE, -16, 96), (COPPER_ORE, -48, 64), (IRON_ORE, -80, 32), (GOLD_ORE, -112, -24), (MOONSILVER_ORE, -124, -88)] {
+        let at = found.get(&b).cloned().unwrap_or_default();
+        assert!(at.len() > 20, "{}: {}", block(b).name, at.len());
+        assert!(at.iter().all(|y| (from..=to).contains(y)), "{} outside {from} to {to}", block(b).name);
+    }
+    let count = |b| found.get(&b).map_or(0, |v| v.len());
+    assert!(count(COAL_ORE) > 3 * count(MOONSILVER_ORE), "coal is common and moonsilver rare");
+    assert!(count(CRYSTAL_ORE) > 0, "crystal in veins and hollows");
+    assert!(count(LOG) > 0 && count(PLANKS) > 0, "old workings' posts and beams");
+    assert!(count(OLD_CHEST) > 0, "old chests");
+    assert!(count(GLOWCAP) > 0, "glowcaps on cave floors");
+    // chests stand on something, and the workings' corridors are open
+    for z in 0..160 {
+        for x in 0..160 {
+            for y in -127..ground {
+                if carve(seed, x, y, z, ground, STONE) == OLD_CHEST {
+                    let under = carve(seed, x, y - 1, z, ground, STONE);
+                    assert!(is_solid(under), "a chest at {x} {y} {z} over {under}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn caves_keep_away_from_the_sea_and_mostly_from_the_surface() {
+    use crate::blocks::*;
+    use crate::underground::carve;
+    let seed = 5;
+    // a sea floor: nothing opens within a few blocks of it
+    for z in 0..96 {
+        for x in 0..96 {
+            for y in 6..=12 {
+                let b = carve(seed, x, y, z, 12, STONE);
+                assert!(is_solid(b), "{x} {y} {z} under the sea: {b}");
+            }
+        }
+    }
+    // inland, caves come up to the grass only now and then (cave mouths)
+    let mut mouths = 0;
+    for z in 0..256 {
+        for x in 0..256 {
+            if carve(seed, x, 70, z, 70, GRASS) == AIR {
+                mouths += 1;
+            }
+        }
+    }
+    assert!(mouths > 0 && mouths < 256 * 256 / 50, "{mouths} holes in the grass");
 }

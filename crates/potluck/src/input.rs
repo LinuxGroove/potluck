@@ -102,6 +102,10 @@ pub struct Controls {
     pub hotbar_slot: Option<usize>,
     pub interact: bool,
     pub look_inside: bool,
+    /// Every block to choose from (I, or a tap of Y in creative).
+    pub blocks: bool,
+    /// The block aimed at into your hand (the middle mouse button, creative).
+    pub pick: bool,
     pub pause: bool,
     pub share: bool,
     pub camera: bool,
@@ -193,6 +197,8 @@ pub fn read(
     }
     c.interact = kp(KeyCode::KeyF) || kp(KeyCode::KeyE);
     c.look_inside = kp(KeyCode::KeyL) || kp(KeyCode::Tab);
+    c.blocks = kp(KeyCode::KeyI);
+    c.pick = mouse.just_pressed(MouseButton::Middle);
     c.pause = kp(KeyCode::Escape);
     c.share = kp(KeyCode::KeyP);
     c.camera = kp(KeyCode::F5);
@@ -277,8 +283,8 @@ pub fn read(
             }
         } else {
             if c.y_held > 0.0 && c.y_held < 0.35 {
-                // a tap opens it too, until there's an inventory
-                c.look_inside = true;
+                // a tap: every block in creative, the backpack in survival
+                c.blocks = true;
             }
             c.y_held = 0.0;
         }
@@ -362,7 +368,8 @@ pub fn glyph(pad: bool, action: &str) -> &'static str {
         (true, "break") => "RT",
         (true, "place") => "LT",
         (true, "interact") => "X",
-        (true, "inside") => "Y",
+        (true, "inside") => "Hold Y",
+        (true, "blocks") => "Y",
         (true, "jump") => "A",
         (true, "back") => "B",
         (true, "accept") => "A",
@@ -375,6 +382,7 @@ pub fn glyph(pad: bool, action: &str) -> &'static str {
         (false, "place") => "Right click",
         (false, "interact") => "F",
         (false, "inside") => "L",
+        (false, "blocks") => "I",
         (false, "jump") => "Space",
         (false, "back") => "Esc",
         (false, "accept") => "Enter",

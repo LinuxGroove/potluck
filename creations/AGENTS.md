@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.12")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.12. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.14")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.14. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.12
+### `@potluck/world` 0.14
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -29,6 +29,7 @@ Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` work
 - `world.model(file, scale?)` (new in 0.11) reads a Blockbench model (a `.bbmodel` file in the creation's folder, saved from Blockbench) into the list of boxes a `body` is, so code can change it first (`part.color = knobs.fur`). Each cube is a part: 16 pixels to a block (`scale` 0.1 to 4 changes that), drawn with its faces' pictures from the model's texture, as Blockbench shows them. Its `color` is the colour most of its faces show (or its marker colour if it has no texture): change it and the picture takes on the new colour, keeping its detail. Its `texture` says where its picture is in the model; set it to nil to paint the part in its colour instead, like a part you write yourself. `head = true` if its name or a group it's in says "head", `leg = true` for "leg" and `glow = true` for "glow". The front is Blockbench's north (negative z). Bodies are upright boxes, so a turned cube is drawn upright and meshes are left out; the log says so. 64 cubes at most.
 - `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
 - `world.top(x, z)` is the height of the highest solid block. `world.find_block(pos, radius, name)` is the nearest block of that name within `radius` (up to 16), or nil.
+- The world goes on past the island in every direction and down to bedrock at y = -128 (it's 128 at the top). Land is made as players come near it, so far from everyone `world.block` says `"Air"` and `world.top` says where the ground will be (before trees); `world.set_block` there makes the land first. Keep what a creation builds near players, or near the island (0 to 384 each way), which is always there.
 - `world.players()` is a list of players; `world.nearest_player(pos, radius?)` is the nearest one, or nil. A player is `{ id, name, position }`.
 - `world.spawn(kind, pos)` adds a creature; `world.creatures(kind?)` lists this creation's creatures by id.
 - `world.spot(name)` is a named place: `"green"`, `"paddock"`, `"creek"` (north-east of the Green), `"start"`.
@@ -61,13 +62,13 @@ end
 local carried = world.pockets(player)     -- { ["Oak log"] = 3, Sand = 2 }, or nil in creative
 ```
 
-- In survival a player carries what's in their hotbar, nine kinds of block at most. In creative they have every block, and nothing is counted.
-- `world.pockets(player)` is what they carry, by block name, or nil for a player in creative.
-- `world.has(player, block)` is how many of that block they carry (`math.huge` in creative).
-- `world.take(player, block, n?)` takes `n` (1 if left out) if they carry that many, and returns whether it did. In creative it returns true and takes nothing.
-- `world.give(player, block, n?)` puts `n` in their hotbar and returns how many it gave: 0 if they've nine other kinds already. In creative it returns `n` and gives nothing.
+- In survival a player carries things in 36 slots: the hotbar's nine and a backpack of 27 more. A slot holds up to 99 of a block, or one tool or sword. In creative they have every block, and nothing is counted.
+- `world.pockets(player)` is what they carry, by name, or nil for a player in creative.
+- `world.has(player, thing)` is how many of that block or item they carry (`math.huge` in creative).
+- `world.take(player, thing, n?)` takes `n` (1 if left out) if they carry that many, and returns whether it did. It takes from the backpack first, so what's in hand lasts. In creative it returns true and takes nothing.
+- `world.give(player, thing, n?)` puts up to `n` in their pockets and returns how many it gave, which is fewer when they haven't room. It tops up what they carry first, then fills empty slots, the hotbar before the backpack. In creative it returns `n` and gives nothing.
 - `n` is a whole number from 1 to 64. Players can't carry air, water or bedrock.
-- A player's blocks live on their own game, so what a creation sees is what their game last said, a moment ago. A player nobody's heard from yet carries nothing.
+- A player's pockets live on their own game, so what a creation sees is what their game last said, a moment ago. A player nobody's heard from yet carries nothing.
 
 Night and day, lights, and players' health (new in 0.4), for things that come out after dark:
 
@@ -81,7 +82,7 @@ print(world.daytime())                    -- 0.5 is noon
 
 - `world.daytime()` is the time of day, 0 to 1: 0 is midnight, 0.25 sunrise, 0.5 noon and 0.75 sunset. A day is 20 minutes.
 - `world.daylight()` is how light it is, 0 in the dead of night to 1 in full day. It's 1 through most of the day and 0 through most of the night, and moves between them in the minute or so around sunrise and sunset.
-- `world.find_light(pos, radius)` is the middle of the nearest block that gives light (a lantern, brazier or candle) within `radius` (up to 16), or nil.
+- `world.find_light(pos, radius)` is the middle of the nearest block that gives light (a lantern, brazier, candle or torch) within `radius` (up to 16), or nil.
 - `world.hurt(player, amount)` takes `amount` from a player's health and `world.heal(player, amount)` gives it back. Health is 0 to 20; at 0 the player goes back to the hill. Only players in survival have health, so both return false, and do nothing, for anyone in creative. `amount` is 0 to 20.
 
 What players do to blocks (new in 0.5), for crafting tables, farms and anything a player builds:
@@ -129,11 +130,25 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Some blocks are things to hold, not to build with: the pickaxes, axes, shovels and swords. They're carried, given and taken like any block, but never put down, and `world.set_block` with one is an error.
+- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels, swords and the Flint and steel (one to a slot), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
 - Nothing wears out by itself: count `block_broken` while `world.held` is your tool, and `world.take` it when it's done.
+
+What breaking a block gives, and tools' levels (new in 0.13), for ores, prizes and blocks that need the right tool:
+
+```luau
+world.digging("Stone pickaxe", { hard = 4, level = 2 })         -- reaches hard blocks of level 2
+world.drops("Iron ore", { gives = "Raw iron", level = 2 })      -- needs a stone pickaxe or better
+world.drops("Coal ore", { gives = "Coal", count = { 1, 2 }, level = 1 })
+world.drops("Glass", { gives = false })                        -- breaks into nothing
+world.drops("Iron ore", nil)                                    -- gives itself again, and breaks by hand
+```
+
+- `world.drops(block, rule)` says what a survival player gets for breaking `block`: `gives` (a block or item's name, false for nothing, or left out for the block itself), `count` (a number from 0 to 64, or `{ least, most }` for somewhere between, 1 if left out) and `level`, the level of tool it needs (0 to 9, 0 if left out). nil puts it back to giving itself. When several creations say what a block gives, the one that said it last counts; a creation's rules go when it stops.
+- `level` in `world.digging` is how hard a block a thing reaches, 0 to 9, among the kinds it digs faster than a hand (speed above 1). A block whose drop has a level doesn't break at all until the player holds something of that level or more, and the game tells them which tool would. Empty hands are level 0. When several creations give the same thing a level, the highest counts.
+- The base game's levels: wooden tools 1 and stone 2. The mining creation's coal ore needs level 1 and its other ores 2, for now.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 
@@ -195,7 +210,7 @@ local Woolly = world.creature {
 
 #### Blocks of its own (0.12)
 
-A creation makes blocks in `potluck.toml`, one table each, drawn in letters: each letter in a picture is one pixel, coloured by `colors`, and `.` is see-through. Players and code use them by name like the game's own (`world.set_block(at, "Red bricks")`, `world.give`, `follow_food`), and they stay in the world as long as it lasts, even if the creation goes. Require `@potluck/world@0.12` so an older game says it needs updating instead of running the code without its blocks.
+A creation makes blocks in `potluck.toml`, one table each, drawn in letters: each letter in a picture is one pixel, coloured by `colors`, and `.` is see-through. Players and code use them by name like the game's own (`world.set_block(at, "Red bricks")`, `world.give`, `follow_food`), and they stay in the world as long as it lasts, even if the creation goes. Require `@potluck/world@0.12` (or newer) so an older game says it needs updating instead of running the code without its blocks.
 
 ```toml
 [blocks.red_bricks]
@@ -221,6 +236,36 @@ mmmmmmmm
 - `light = true` lights up what's round it, and the letters in `glow` (`glow = "yo"`) shine; a light with no `glow` shines in its brightest pixels.
 - Up to 16 blocks, 24 colours each. A block's name in `potluck.toml` is lowercase letters, digits and `_`; what players see it called can't be one of the game's blocks. Names are shared by every creation in a world, so pick one nobody else has.
 - Change a colour or a row and save, and the world shows it. Each world gives a creation's blocks their ids the first time it runs there and keeps them.
+
+#### Moving pictures (0.14)
+
+A block can flicker, flow or glow on and off: `frames` gives it more pictures, shown in turn, and `speed` how many a second (0.5 to 8, 4 if left out). Require `@potluck/world@0.14` for them.
+
+```toml
+[blocks.fire]
+shape = "plant"
+light = true
+glow = "oyw"
+speed = 4
+colors = { r = "#7a1c08", o = "#e8661c", y = "#ffaa2c", w = "#fff2c0" }
+picture = """
+...
+"""
+
+[[blocks.fire.frames]]
+picture = """
+...
+"""
+
+[[blocks.fire.frames]]
+picture = """
+...
+"""
+```
+
+- Each `[[blocks.name.frames]]` is one more picture, up to 7 (8 with the block's own), with `picture`, `top`, `side` or `bottom` as the block has them; a side a frame leaves out stays as the block has it. They share the block's `colors` and `glow`.
+- The block's own picture is the first frame, and what players with Reduce flashing on (in Settings, Picture and sound) always see, so draw it as a still picture that stands for the rest.
+- Every world shares about 32 MB for moving pictures; past that, new ones stay still. Fire, the lit furnace and the campfire in the base game are examples.
 
 ### `@potluck/tweak` 0.1
 
@@ -252,7 +297,7 @@ print(store.used() .. " bytes of 65536")
 
 - `store.get(key)` is the value kept under `key`, or nil. `store.set(key, value)` keeps it; nil forgets it. Keys are 1 to 64 letters. Values are numbers, strings, true or false, vectors and tables of those (six deep); functions and creatures aren't kept.
 - `store.keys()` lists the keys; `store.used()` is the bytes they take as JSON. Each creation has 64 KB in each world, and `store.set` fails with an error past it.
-- Each world keeps its own: a server saves it with the world (`store.json`), and a world you play in the game keeps it while it's open.
+- Each world keeps its own: a server saves it with the world (`store.json`), and so does each world a player keeps in the game (Play alone's list). A friend's world keeps it on the friend's game.
 
 ### `@potluck/input` 0.1
 
@@ -374,9 +419,9 @@ sound.play_for(player, "tada")
 - Every sound is made as loud as the game's own, so set how loud it plays with `volume`. A sound is made once on each game and again only when its table changes, so tweak it, save, and play it again to hear the difference.
 - A table that can't be read (`piitch`, a wave that isn't one) stops the creation loading, and Look inside says which and why. The market checks them too.
 
-### `@potluck/net` 0.1
+### `@potluck/net` 0.2
 
-A creation can have a **client half**: a second file, named by `client` in potluck.toml, that runs on each player's own game while the main file runs on the world's host. Use it for what only that player sees and that would otherwise mean a message ten times a second: a clock ticking down, a line that follows what they do, a sound only for them. The half never sees or changes the world; it gets only what its creation sends it, and answers the same way.
+A creation can have a **client half**: a second file, named by `client` in potluck.toml, that runs on each player's own game while the main file runs on the world's host. Use it for what only that player sees and that would otherwise mean a message ten times a second: a clock ticking down, a line that follows what they do, a sound only for them. The half never changes the world. It hears what its creation sends it and answers the same way, and from net 0.2 it reads that player's game's copy of the world: the blocks, the ground and the players near enough to see. The balloon's half shows its rider how high they are.
 
 ```luau
 -- main.luau, on the host
@@ -401,10 +446,11 @@ net.send("ready", { name = net.me().name })
 ```
 
 - In the main file: `net.send(player, topic, value?)` sends a message to that player's half, and `net.send(nil, topic, value?)` to every player in the world now (not to those who come later). `net.on(topic, fn(player, value))` is called on the next tick for each message a player's half sends.
-- In the client half: `net.send(topic, value?)` sends a message to the main file, `net.on(topic, fn(value))` is called for each message the main file sends this player, and `net.me()` is this player (`id`, `name` and where they stand).
+- In the client half: `net.send(topic, value?)` sends a message to the main file, `net.on(topic, fn(value))` is called for each message the main file sends this player, and `net.me()` is this player (`id`, `name` and where they stand, and from 0.2 `look`, which way they look, and `aim`, the middle of the block they aim at, or nil).
 - A topic is 1 to 32 letters. A value is what the store keeps (numbers, strings, true or false, vectors, and tables of those), at most 4 KB as JSON.
 - The main file sends at most 30 messages a second, and each player's half 10; past that, `send` returns false and the message isn't sent. The host drops what a half sends beyond that too.
 - What a client half has: `@potluck/net`; `@potluck/ui`'s `show` and `hide`, for this player only (`player` is nil, or `net.me()`), at most 8 lines; `@potluck/sound`'s `play`, heard only by this player; and from `@potluck/world` its timers (`after`, `every`, `cancel`), `time` (seconds since this half started, so send it lengths of time rather than the host's times), `random`, `spot`, `daytime` and `daylight` (this game's clock). The rest of the API is the main file's, and says so if a half calls it.
+- From net 0.2 a client half reads too: `world.block`, `world.top`, `world.find_block` and `world.kind` from this game's copy of the world, and `world.players` and `world.nearest_player` for the players it knows of (this player first, then those near enough to see). A guest's copy is the host's as it last heard, so it can be a moment behind; anything that matters (who won, what's in a chest) stays the main file's to decide and send.
 - A half starts when its player arrives or the creation loads, and starts again, fresh, whenever any of the creation's files change. If it needs to know what's going on, have it say hello (`net.send("hello")`) and answer that from the main file.
 - Its lines share ids with the main file's lines for that player, so the last to show one wins. Its lines go when it stops.
 - A half has 16 MB and 4 ms of each frame. One that fails or runs too long stops, and Look inside shows why (its prints show there too, marked `client:`).
@@ -428,12 +474,12 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.2
+### `@potluck/test` 0.3
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
 ```luau
-local test = require("@potluck/test@0.2")
+local test = require("@potluck/test@0.3")
 local world = require("@potluck/world@0.12")
 
 test.case("a basket put down fills up into a balloon", function()
@@ -456,15 +502,15 @@ end)
 - `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
-- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), and `test.hold(player, block)` for what's in their hand (nil for nothing). Placing, digging, using a block, pressing and answering pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
-- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2).
+- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
 
 ## Rules of the sandbox
 
 - No files, no network, no other creation's memory. `os`, `io` and loading bytecode aren't there.
-- Each creation gets 32 MB and a slice of each tick (15 ms for its timers, events and creatures together); a loop that never ends is stopped with an error. A client half gets 16 MB and 4 ms a frame on its player's game.
+- Each creation gets 32 MB and a slice of each tick (15 ms for its timers, events and creatures together, counting only while its code runs, not while the computer is busy with something else); a loop that never ends is stopped with an error. A client half gets 16 MB and 4 ms a frame on its player's game.
 - At most 64 creatures and 16 kinds per creation.
 - Creations can't shake, roll or zoom the player's camera, and can't cover the game's own menus: their lines and questions sit under them.
 
@@ -473,6 +519,17 @@ end)
 Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error, and for how it's doing against its budgets: how long its ticks take of their 15 ms, on average and at most lately, and its memory of 32 MB.
 
 To check it keeps doing what it should as you change it, give it tests of its own in `test.luau` (see `@potluck/test`) and run them with the dev bridge's `test` tool or `potluck-server --test=<its folder>`.
+
+### The type checker
+
+Each time you save one of your own creations, the game runs Luau's type checker over its files with the API's types (`types/potluck.d.luau`), and Look inside lists what it found under **The type checker spotted**, with the file and line. It speaks up only when it's sure something is wrong:
+
+- a name a module doesn't have (`world.spwan`, with the name it probably should be);
+- a global that isn't one (`pritn`);
+- a call given too many or too few values;
+- a plain value of the wrong kind: text where a number goes, or a word an option doesn't take (`at = "middle"`).
+
+Everything it can only guess at stays quiet, so no hints doesn't mean the code is right; tests do that. `--!strict` at the top changes nothing: it checks every file as strictly and still says only what it's sure of. `--!nocheck` on a file's first line leaves that file out, if it's ever wrong. The dev bridge's `check` tool and `potluck-server --typecheck=<its folder>` (or an id, or `all`; it ends with 1 if it found anything, for scripts) run the same checks.
 
 ### With a coding helper: the dev bridge
 
@@ -484,6 +541,7 @@ A coding helper on the same computer can work with the game while you play: turn
 - `log`: what it printed, its last error, and its client half's lines.
 - `run`: a few lines of Luau inside a running creation, as if they were part of its code (`return #require("@potluck/world").creatures()`), with what they printed and returned. Its files' locals aren't reachable, and it has one tick's time.
 - `test`: runs its own tests (`test.luau`, as saved in its folder) in a copy of the world, and says which cases passed and why the others failed, with the line and what it printed. Nothing it does reaches the world.
+- `check`: runs the type checker over its files as saved, and lists what it's sure is wrong, with the file and line (see The type checker above).
 - `tweak`: turns one of its knobs, as Tweak does.
 - `look_around`: where you are and what's near you: the block you look at, creatures with their creation, kind, rider and the fields their code keeps, other players, the blocks about and the time of day.
 - `screenshot`: the screen as it is, as a picture.

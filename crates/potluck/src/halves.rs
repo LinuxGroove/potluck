@@ -1,21 +1,23 @@
 //! Client halves: a second Luau file a creation names as `client` in its
 //! potluck.toml, run on each player's own game for what only that player
 //! sees: lines on their screen, sounds for them, clocks and countdowns that
-//! need no messages while they run. A half gets only what its creation
-//! sends it with `@potluck/net`, and answers the same way; it never sees
-//! or changes the world, which stays the host's.
+//! need no messages while they run. A half gets what its creation sends it
+//! with `@potluck/net`, and answers the same way. It can read this game's
+//! copy of the world (blocks and players, from net 0.2) but never changes
+//! it: the world stays the host's.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy::prelude::*;
 use mlua::{Function, Lua, Table, Value, VmState};
 
 use crate::creations::{Creation, Library};
 use crate::noise::Rng;
-use crate::script::{self, bad, Note, Piece, PlayerInfo, Waiting, MAX_HANDLERS, MAX_PIECES, NOTES_UP_A_SECOND, SOUNDS_A_SECOND};
+use crate::script::{self, bad, Note, Piece, PlayerInfo, Slice, Waiting, MAX_HANDLERS, MAX_PIECES, NOTES_UP_A_SECOND, SOUNDS_A_SECOND};
 use crate::sound::Play;
+use crate::world::Voxels;
 
 /// A half's memory: less than a creation gets on the host.
 pub const MEMORY_LIMIT: usize = 16 << 20;
@@ -25,9 +27,22 @@ const LOAD_BUDGET: Duration = Duration::from_millis(300);
 
 /// What `@potluck/world` does only on the host, where the world is.
 const HOST_ONLY: &[&str] = &[
-    "creature", "block", "set_block", "top", "find_block", "find_light", "players", "nearest_player", "spawn", "creatures", "say", "on", "pockets", "has", "take",
-    "give", "hurt", "heal", "healing", "held", "digging", "kind",
+    "creature", "set_block", "find_light", "spawn", "creatures", "say", "on", "pockets", "has", "take", "give", "hurt", "heal", "healing", "held", "digging",
 ];
+
+/// What a half reads from this game's copy of the world, bound afresh for
+/// each frame (net 0.2).
+const READS: &[&str] = &["block", "top", "find_block", "players", "nearest_player"];
+
+/// This game's copy of the world, as a half sees it for one frame: the
+/// blocks, the players it knows of (this one first), and where this player
+/// looks and aims.
+pub struct Seen<'a> {
+    pub voxels: &'a Voxels,
+    pub players: Vec<PlayerInfo>,
+    pub look: Vec3,
+    pub aim: Option<IVec3>,
+}
 
 /// What a half asked for since it was last looked at.
 #[derive(Default)]
@@ -56,6 +71,11 @@ pub struct Half {
 
 struct Running {
     lua: Lua,
+    /// Its `@potluck/world`, and what its reads say outside a frame.
+    world: Table,
+    unbound: Vec<(&'static str, Function)>,
+    /// Where this player looks and the block they aim at, for `net.me()`.
+    eyes: Arc<Mutex<(Vec3, Option<IVec3>)>>,
     waiting: Arc<Mutex<Waiting>>,
     on: Arc<Mutex<Vec<(String, Function)>>>,
     out: Arc<Mutex<Out>>,
@@ -63,7 +83,7 @@ struct Running {
     clock: Arc<Mutex<f64>>,
     /// The time of day on this game (`render::Clock::time`).
     day: Arc<Mutex<f32>>,
-    deadline: Arc<Mutex<Instant>>,
+    deadline: Arc<Mutex<Slice>>,
 }
 
 /// What every half did since it was last asked, for the game to show,
@@ -92,14 +112,14 @@ fn host_only(what: &str) -> mlua::Error {
 }
 
 impl Running {
-    fn load(creation: &Creation, file: &str, me: PlayerInfo) -> Result<Running, String> {
+    fn load(creation: &Creation, file: &str, me: PlayerInfo, seen: Option<&Seen>) -> Result<Running, String> {
         let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT).map_err(|e| e.to_string())?;
-        let deadline = Arc::new(Mutex::new(Instant::now() + LOAD_BUDGET));
+        let deadline = Arc::new(Mutex::new(Slice::new(LOAD_BUDGET)));
         let d = deadline.clone();
         lua.set_interrupt(move |_| {
-            if Instant::now() > *d.lock().unwrap() {
+            if d.lock().unwrap().over() {
                 return Err(bad("this client half took too long (is there a loop that never ends?)"));
             }
             Ok(VmState::Continue)
@@ -111,9 +131,13 @@ impl Running {
         let me = Arc::new(Mutex::new(me));
         let clock = Arc::new(Mutex::new(0.0f64));
         let day = Arc::new(Mutex::new(crate::render::Clock::default().time));
-        let setup = || -> mlua::Result<()> {
-            // world: its timers, its own clock and dice, and named spots
-            let world = lua.create_table()?;
+        let eyes: Arc<Mutex<(Vec3, Option<IVec3>)>> = Arc::new(Mutex::new((seen.map_or(Vec3::NEG_Z, |s| s.look), seen.and_then(|s| s.aim))));
+        let world = lua.create_table().map_err(|e| e.to_string())?;
+        let mut unbound = vec![];
+        let setup = |unbound: &mut Vec<(&'static str, Function)>| -> mlua::Result<()> {
+            // world: its timers, its own clock and dice, named spots, and
+            // reads of this game's copy of the world
+            let world = world.clone();
             let w = waiting.clone();
             world.set("after", lua.create_function(move |_, (seconds, f): (f64, Function)| script::add_timer(&w, seconds, false, f))?)?;
             let w = waiting.clone();
@@ -142,6 +166,13 @@ impl Running {
                 })?,
             )?;
             world.set("spot", lua.create_function(|_, name: String| Ok(script::spot(&name).map(script::vector)))?)?;
+            world.set("kind", lua.create_function(|_, name: String| script::kind_of(&name))?)?;
+            for name in READS {
+                let what = format!("world.{name}");
+                let f = lua.create_function(move |_, _: mlua::Variadic<Value>| -> mlua::Result<()> { Err(bad(format!("{what} reads this game's copy of the world, which isn't here yet"))) })?;
+                world.set(*name, f.clone())?;
+                unbound.push((*name, f));
+            }
             for name in HOST_ONLY {
                 let what = format!("world.{name}");
                 world.set(*name, lua.create_function(move |_, _: mlua::Variadic<Value>| -> mlua::Result<()> { Err(host_only(&what)) })?)?;
@@ -175,8 +206,17 @@ impl Running {
                     Ok(())
                 })?,
             )?;
-            let m = me.clone();
-            net.set("me", lua.create_function(move |lua, ()| script::player_table(lua, &m.lock().unwrap()))?)?;
+            let (m, e) = (me.clone(), eyes.clone());
+            net.set(
+                "me",
+                lua.create_function(move |lua, ()| {
+                    let t = script::player_table(lua, &m.lock().unwrap())?;
+                    let (look, aim) = *e.lock().unwrap();
+                    t.set("look", script::vector(look))?;
+                    t.set("aim", aim.map(|a| script::vector(a.as_vec3() + Vec3::splat(0.5))))?;
+                    Ok(t)
+                })?,
+            )?;
             // ui: lines on this player's screen
             let ui = lua.create_table()?;
             let mine = |m: &Mutex<PlayerInfo>, v: &Value| -> mlua::Result<()> {
@@ -290,14 +330,52 @@ impl Running {
             })?;
             script::lock_down(&lua)
         };
-        setup().map_err(|e| e.to_string())?;
+        setup(&mut unbound).map_err(|e| e.to_string())?;
         let src = creation.files.get(file).ok_or_else(|| format!("{} has no {file} for its client half", creation.manifest.name))?;
-        lua.load(src.as_str()).set_name(format!("@{file}")).exec().map_err(|e| tidy(&e))?;
-        Ok(Running { lua, waiting, on, out, me, clock, day, deadline })
+        let r = Running { lua, world, unbound, eyes, waiting, on, out, me, clock, day, deadline };
+        r.seeing(seen, || r.lua.load(src.as_str()).set_name(format!("@{file}")).exec()).map_err(|e| tidy(&e))?;
+        Ok(r)
+    }
+
+    /// Runs `f` with the world's reads bound to this frame's copy of the
+    /// world, and unbound again after.
+    fn seeing<R>(&self, seen: Option<&Seen>, f: impl FnOnce() -> mlua::Result<R>) -> mlua::Result<R> {
+        let Some(seen) = seen else { return f() };
+        *self.eyes.lock().unwrap() = (seen.look, seen.aim);
+        let r = self.lua.scope(|s| {
+            let world = &self.world;
+            world.set("block", s.create_function(move |_, p: Value| {
+                let p = script::vec_of(&p).ok_or_else(|| bad("world.block needs a position"))?;
+                Ok(crate::blocks::block(seen.voxels.at(p.floor().as_ivec3())).name)
+            })?)?;
+            world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(seen.voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
+            world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| script::find_block(seen.voxels, &p, radius, &name))?)?;
+            world.set("players", s.create_function(move |lua, ()| {
+                let t = lua.create_table()?;
+                for (i, p) in seen.players.iter().enumerate() {
+                    t.raw_set(i + 1, script::player_table(lua, p)?)?;
+                }
+                Ok(t)
+            })?)?;
+            world.set("nearest_player", s.create_function(move |lua, (p, radius): (Value, Option<f32>)| {
+                let p = script::vec_of(&p).ok_or_else(|| bad("world.nearest_player needs a position"))?;
+                let r = radius.unwrap_or(1e9);
+                let best = seen.players.iter().map(|q| (q.pos.distance(p), q)).filter(|(d, _)| *d <= r).min_by(|a, b| a.0.total_cmp(&b.0));
+                match best {
+                    Some((_, q)) => Ok(Value::Table(script::player_table(lua, q)?)),
+                    None => Ok(Value::Nil),
+                }
+            })?)?;
+            f()
+        });
+        for (name, stub) in &self.unbound {
+            self.world.set(*name, stub.clone())?;
+        }
+        r
     }
 
     /// One frame: what its creation sent, then its timers.
-    fn frame(&self, dt: f32, me: &PlayerInfo, notes: Vec<Note>) -> Result<(), String> {
+    fn frame(&self, dt: f32, me: &PlayerInfo, notes: Vec<Note>, seen: Option<&Seen>) -> Result<(), String> {
         *self.me.lock().unwrap() = me.clone();
         *self.clock.lock().unwrap() += dt as f64;
         {
@@ -305,8 +383,8 @@ impl Running {
             o.sound_budget = (o.sound_budget + dt * SOUNDS_A_SECOND).min(SOUNDS_A_SECOND);
             o.note_budget = (o.note_budget + dt * NOTES_UP_A_SECOND).min(NOTES_UP_A_SECOND);
         }
-        *self.deadline.lock().unwrap() = Instant::now() + FRAME_BUDGET;
-        let r = (|| -> mlua::Result<()> {
+        *self.deadline.lock().unwrap() = Slice::new(FRAME_BUDGET);
+        let r = self.seeing(seen, || -> mlua::Result<()> {
             if !notes.is_empty() {
                 let on = self.on.lock().unwrap().clone();
                 for n in notes {
@@ -316,7 +394,7 @@ impl Running {
                 }
             }
             script::run_timers(&self.waiting, dt as f64)
-        })();
+        });
         r.map_err(|e| tidy(&e))
     }
 }
@@ -330,7 +408,7 @@ impl Halves {
     /// Starts, starts again and stops halves to match what runs in this
     /// world: a half starts afresh when its creation's files change or a
     /// new world begins. `None` is no world at all.
-    pub fn sync(&mut self, lib: Option<&Library>, me: &PlayerInfo) {
+    pub fn sync(&mut self, lib: Option<&Library>, me: &PlayerInfo, seen: Option<&Seen>) {
         let want: BTreeMap<&str, (&Creation, &str)> = match lib {
             Some(lib) => lib.running.iter().filter_map(|id| lib.list.get(id)).filter_map(|c| Some((c.id.as_str(), (c, c.manifest.client.as_deref()?)))).collect(),
             None => BTreeMap::new(),
@@ -344,7 +422,7 @@ impl Halves {
             if self.list.contains_key(id) {
                 continue;
             }
-            let (run, error) = match Running::load(c, file, me.clone()) {
+            let (run, error) = match Running::load(c, file, me.clone(), seen) {
                 Ok(r) => (Some(r), None),
                 Err(e) => (None, Some(e)),
             };
@@ -366,7 +444,7 @@ impl Halves {
 
     /// Gives each half what its creation sent this frame, and runs its
     /// timers. A half that fails stops, and says why in Look inside.
-    pub fn frame(&mut self, dt: f32, me: &PlayerInfo, notes: Vec<Note>) {
+    pub fn frame(&mut self, dt: f32, me: &PlayerInfo, notes: Vec<Note>, seen: Option<&Seen>) {
         let mut by: BTreeMap<String, Vec<Note>> = BTreeMap::new();
         for n in notes {
             by.entry(n.creation.clone()).or_default().push(n);
@@ -376,7 +454,7 @@ impl Halves {
             if let Some(d) = self.day {
                 *r.day.lock().unwrap() = d;
             }
-            if let Err(e) = r.frame(dt, me, by.remove(id).unwrap_or_default()) {
+            if let Err(e) = r.frame(dt, me, by.remove(id).unwrap_or_default(), seen) {
                 warn!("{id}'s client half stopped: {e}");
                 h.error = Some(e);
                 let r = h.run.take().unwrap();
@@ -420,13 +498,17 @@ pub fn run(
     mut actions: ResMut<crate::game::Actions>,
     mut heard: ResMut<crate::sound::Heard>,
     clock: Res<crate::render::Clock>,
+    voxels: Res<Voxels>,
 ) {
     let Some(mut me) = me else { return };
     halves.day = Some(clock.time);
     let mine = PlayerInfo { id: net.my_id, name: settings.map(|s| s.name.clone()).unwrap_or_default(), pos: me.pos };
-    halves.sync(info.in_world.then_some(&*lib), &mine);
+    let mut players = vec![mine.clone()];
+    players.extend(net.remote_players().iter().map(|p| PlayerInfo { id: p.id, name: p.name.clone(), pos: p.pos }));
+    let seen = Seen { voxels: &voxels, players, look: me.forward(), aim: me.target.map(|h| h.block) };
+    halves.sync(info.in_world.then_some(&*lib), &mine, Some(&seen));
     let notes = std::mem::take(&mut me.notes);
-    halves.frame(time.delta_secs().min(0.25), &mine, notes);
+    halves.frame(time.delta_secs().min(0.25), &mine, notes, Some(&seen));
     let out = halves.take();
     for (creation, id, piece) in out.pieces {
         me.show(script::UiChange::Piece { creation, id, piece });

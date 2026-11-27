@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.12, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.1, @potluck/test 0.2
+-- @potluck/world 0.12, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.3
 
 export type Position = vector | { number }
 
@@ -105,7 +105,8 @@ export type World = {
 	-- 0.8
 	held: (player: Player | number) -> string?,
 	kind: (block: string) -> "soft" | "hard" | "wood" | "plant" | "glass" | "water" | "air",
-	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number? }?) -> (),
+	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number?, level: number? }?) -> (),
+	drops: (block: string, rule: { gives: (string | false)?, count: (number | { number })?, level: number? }?) -> (),
 }
 
 export type Score = { name: string, value: number }
@@ -171,10 +172,13 @@ export type Net = {
 }
 
 -- In a client half (`client` in potluck.toml), on each player's own game.
+-- 0.2: `look` is which way they look, `aim` the middle of the block they aim at.
+export type Me = Player & { look: vector, aim: vector? }
+
 export type ClientNet = {
 	send: (topic: string, value: Stored?) -> boolean,
 	on: (topic: string, fn: (value: Stored) -> ()) -> (),
-	me: () -> Player,
+	me: () -> Me,
 }
 
 -- In test.luau, while the creation's tests run (the dev bridge's test, potluck-server --test).
@@ -193,7 +197,7 @@ export type Test = {
 	player: (name: string?, opts: TestPlayerOptions?) -> Player,
 	move: (player: Player, at: Position) -> Player,
 	place: (player: Player, at: Position, block: string) -> (),
-	dig: (player: Player, at: Position) -> (),
+	dig: (player: Player, at: Position) -> boolean,
 	use_block: (player: Player, at: Position) -> (),
 	use: (player: Player, creature: Creature | number) -> (),
 	hit: (player: Player, creature: Creature | number) -> (),
@@ -203,6 +207,7 @@ export type Test = {
 	release: (player: Player, action: string) -> (),
 	answer: (player: Player, choice: number) -> (),
 	hold: (player: Player, block: string?) -> (),
+	from_half: (player: Player, topic: string, value: Stored?) -> (), -- 0.3
 	-- these only look
 	kind: (name: string) -> any,
 	creature: (id: number | Creature) -> Creature?,
@@ -211,9 +216,11 @@ export type Test = {
 	asked: (player: Player | number) -> { title: string, text: string, choices: { string } }?,
 	-- 0.2
 	heard: (name: string) -> number,
+	-- 0.3: the last value sent to that player's client half on a topic, and how many times
+	sent: (player: Player | number, topic: string) -> (Stored?, number),
 }
 
-export type Knob = { any, min: number?, max: number?, label: string?, order: number? }
+export type Knob = { [number]: any, min: number?, max: number?, label: string?, order: number? }
 export type Tweak = (spec: { [string]: Knob }) -> { [string]: any }
 
 return {}

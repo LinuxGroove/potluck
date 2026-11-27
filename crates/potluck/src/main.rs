@@ -131,7 +131,16 @@ fn main() {
     let mode = if play && settings.fullscreen && !windowed { WindowMode::BorderlessFullscreen(MonitorSelection::Primary) } else { WindowMode::Windowed };
     let present_asked = opt("present").is_some() || args.iter().any(|a| a == "--no-vsync");
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+    // wgpu cuts graphics memory from blocks of 128 to 256 MB by default, and
+    // half-used ones are memory the card gives the game that nothing uses
+    // (`memory`), so ask for blocks of 8 to 64 MB; POTLUCK_GPU_BLOCKS=big
+    // goes back to the big ones for measuring
+    let big_blocks = std::env::var("POTLUCK_GPU_BLOCKS").is_ok_and(|v| v == "big");
+    let wgpu = bevy::render::settings::WgpuSettings {
+        memory_hints: if big_blocks { bevy::render::settings::MemoryHints::Performance } else { bevy::render::settings::MemoryHints::MemoryUsage },
+        ..default()
+    };
+    app.add_plugins(DefaultPlugins.set(bevy::render::RenderPlugin { render_creation: wgpu.into(), ..default() }).set(WindowPlugin {
         primary_window: Some(Window {
             title: "Potluck".into(),
             resolution,
@@ -178,6 +187,7 @@ fn main() {
         .init_resource::<mesh::ChunkEntities>()
         .init_resource::<mesh::MeshFocus>()
         .init_resource::<mesh::Cover>()
+        .init_resource::<mesh::View>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<ui::Labels>()
         .insert_resource(waypoints::Waypoints::load())
@@ -214,13 +224,16 @@ fn main() {
             Update,
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
-                (focus_mesh, mesh::remesh, mesh::wind).chain(),
+                (focus_mesh, view_distance, mesh::show, mesh::remesh, render::follow_sea, mesh::wind).chain(),
                 (render::sky, render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
                 (map::refresh, map::draw_hud, map::make_room, map::draw_map, chat::draw_feed, keyboard::draw),
             )
                 .chain()
                 .after(Sim),
         );
+    // what it holds in memory, logged on quitting (and every so often with
+    // --memory[=seconds] or POTLUCK_MEMORY=seconds)
+    memory::add(&mut app, &args);
     // where a frame's time goes, logged with a shot: --timings
     if args.iter().any(|a| a == "--timings") {
         app.add_plugins((bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(), bevy::render::diagnostic::RenderDiagnosticsPlugin));
@@ -370,15 +383,38 @@ fn shot(
                 "chat" | "keyboard" => ui::Screen::Chat,
                 "settings" => ui::Screen::Settings,
                 "creations" => ui::Screen::Library,
+                "blocks" => ui::Screen::Blocks,
                 "market" => ui::Screen::Link,
                 "question" => ui::Screen::Panel,
+                "worlds" => ui::Screen::Worlds(false),
+                "backpack" => ui::Screen::Backpack,
                 _ => ui::Screen::Playing,
             });
             focus.settings_page = page;
             focus.shelf = page;
+            focus.blocks_page = page;
             if sc == "market" {
                 // what the market would send: a sign-in link for the phone
                 focus.link = Some(("https://potluck.linuxgroove.com/in/7QK2-M9XD-PL4F-W2HZ".into(), "The market".into()));
+            }
+            if sc == "backpack" {
+                // a survival player's pockets, partly full, the second slot in hand
+                use potluck::items::{self, Slots};
+                let mut p = Slots::default();
+                for (name, n) in [("Planks", 64), ("Stone pickaxe", 1), ("Cobblestone", 99), ("Oak log", 23), ("Lantern", 4), ("Wooden axe", 1), ("Coal", 17), ("Raw iron", 6), ("Raw copper", 11), ("Wheat", 12), ("Carrots", 7), ("Crystal", 3), ("Raw gold", 2), ("Raw moonsilver", 1), ("Dirt", 40), ("Stone sword", 1), ("Iron ore", 4), ("Glowcap", 5), ("Old chest", 1), ("Candle", 6), ("Glass", 16)] {
+                    if let Some(t) = items::by_name(name) {
+                        p.give(t, n);
+                    }
+                }
+                me.pockets = p;
+                me.slot = 1;
+                focus.pockets = p;
+                // on the slot in hand: the backpack's 27 come first
+                focus.sel = items::POCKETS - items::HOTBAR + 1;
+            }
+            if sc == "worlds" {
+                // the worlds kept in POTLUCK_HOME
+                focus.worlds = potluck::worlds::list();
             }
             if sc == "question" {
                 // as a creation asks: through Me, which keeps it open
@@ -473,4 +509,17 @@ fn setup(
 
 fn focus_mesh(me: Res<player::Me>, mut focus: ResMut<mesh::MeshFocus>) {
     focus.0 = me.eye();
+}
+
+/// How far the world is drawn, and made round the player (a column more,
+/// so the edges of what's drawn have their neighbours), from the lighting
+/// tier.
+fn view_distance(settings: Res<settings::Settings>, mut view: ResMut<mesh::View>, mut stream: ResMut<world::stream::Stream>) {
+    if settings.is_changed() {
+        let v = mesh::View::of(render::Tier::of(&settings.lighting));
+        if *view != v {
+            *view = v;
+        }
+        stream.around_me = v.0 + 1;
+    }
 }

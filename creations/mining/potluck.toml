@@ -1,0 +1,13 @@
+name = "Mining"
+by = "Potluck"
+kind = "mod"
+about = "Ores for survival: coal, copper, iron, gold, crystal and moonsilver. Each breaks into what it holds once you have a good enough pickaxe, old chests left underground hold prizes, better the deeper they are, and gravel turns up flint now and then."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.14"
+tweak = "0.1"
+ui = "0.2"
+sound = "0.1"

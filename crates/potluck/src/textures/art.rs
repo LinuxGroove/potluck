@@ -13,9 +13,12 @@ use bevy::math::Vec2;
 
 use super::{hex, Tex, ART};
 
+mod ores;
 mod props;
+mod smelting;
 mod tools;
 mod travel;
+mod wilds;
 use crate::noise::{seed_of, Rng};
 
 const N: i32 = ART as i32;
@@ -728,5 +731,8 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     .chain(props::tiles())
     .chain(tools::tiles())
     .chain(travel::tiles())
+    .chain(wilds::tiles())
+    .chain(ores::tiles())
+    .chain(smelting::tiles())
     .collect()
 }

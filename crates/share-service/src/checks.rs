@@ -199,6 +199,8 @@ pub fn sound_problems(sounds: &BTreeMap<String, toml::Value>) -> Vec<String> {
 /// game's `made`).
 pub const MAX_BLOCKS: usize = 16;
 const MAX_BLOCK_BOXES: usize = 16;
+/// A moving block's pictures, its own included (the game's `made::MOST_FRAMES`).
+const MAX_BLOCK_FRAMES: usize = 8;
 
 /// A block's picture: rows of letters, as one string of lines or a list.
 fn picture_rows(v: &toml::Value) -> Option<Vec<String>> {
@@ -257,16 +259,43 @@ pub fn block_problems(blocks: &BTreeMap<String, toml::Value>) -> Vec<String> {
         if !faces.contains(&"picture") && faces.len() < 3 {
             out.push(format!("{what} needs a picture (or a top, a side and a bottom)"));
         }
-        for face in faces {
-            let Some(rows) = picture_rows(&t[face]) else {
+        let check_face = |out: &mut Vec<String>, face: &str, v: &toml::Value| {
+            let Some(rows) = picture_rows(v) else {
                 out.push(format!("{what}'s {face} is rows of letters"));
-                continue;
+                return;
             };
             let n = rows.len();
             if ![8, 16, 32, 64].contains(&n) || rows.iter().any(|r| r.chars().count() != n) {
                 out.push(format!("{what}'s {face} isn't square, 8, 16, 32 or 64 pixels across"));
             } else if let Some(c) = rows.iter().flat_map(|r| r.chars()).find(|c| *c != '.' && !colors.contains(c)) {
                 out.push(format!("{what}'s {face} uses \"{c}\", which colors doesn't give a colour"));
+            }
+        };
+        for face in faces {
+            check_face(&mut out, face, &t[face]);
+        }
+        // a moving block's other pictures (world 0.14)
+        if let Some(f) = t.get("frames") {
+            match f.as_array() {
+                Some(a) if !a.is_empty() && a.len() < MAX_BLOCK_FRAMES => {
+                    for (i, frame) in a.iter().enumerate() {
+                        let given: Vec<_> = ["picture", "top", "side", "bottom"].into_iter().filter_map(|k| frame.get(k).map(|v| (k, v))).collect();
+                        if given.is_empty() {
+                            out.push(format!("{what}'s frame {} needs a picture (or a top, a side or a bottom)", i + 1));
+                        }
+                        for (face, v) in given {
+                            check_face(&mut out, &format!("frame {} {face}", i + 1), v);
+                        }
+                    }
+                }
+                _ => out.push(format!("{what}'s frames are 1 to {} more pictures to show in turn", MAX_BLOCK_FRAMES - 1)),
+            }
+        }
+        if let Some(speed) = t.get("speed") {
+            if !t.contains_key("frames") {
+                out.push(format!("{what} has a speed but no frames to show"));
+            } else if !speed.as_float().or(speed.as_integer().map(|i| i as f64)).is_some_and(|s| (0.5..=8.0).contains(&s)) {
+                out.push(format!("{what}'s speed is how many pictures a second it shows, 0.5 to 8"));
             }
         }
         if let Some(b) = t.get("boxes") {
@@ -285,7 +314,7 @@ pub fn block_problems(blocks: &BTreeMap<String, toml::Value>) -> Vec<String> {
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.12"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.1"), ("test", "0.2")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.14"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.4")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -758,9 +787,18 @@ mod tests {
             "[blocks.marble]\ncolors = { a = \"#fff\" }\npicture = [\"aaa\"]".to_string(),
             format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\ntop = [\"aaaaaaaa\"]"),
             format!("[blocks.marble]\nboxes = [[0, 0, 0, 16, 8]]\ncolors = {{ a = \"#fff\" }}\n{eight}"),
+            // moving pictures (world 0.14)
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nspeed = 2\n{eight}"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\n{eight}\nframes = []"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\n{eight}\n[[blocks.marble.frames]]\npicture = [\"bbbbbbbb\"]"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\n{eight}\n[[blocks.marble.frames]]\nshade = 1"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nspeed = 20\n{eight}\n[[blocks.marble.frames]]\n{eight}"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\n{eight}\n{}", (0..8).map(|_| format!("[[blocks.marble.frames]]\n{eight}\n")).collect::<String>()),
         ] {
             assert_eq!(find(&with(&bad), "Blocks").result, "fail", "{bad}");
         }
+        let moving = with(&format!("[blocks.marble]\ncolors = {{ a = \"#fff\", b = \"#f80\" }}\nspeed = 2\n{eight}\n[[blocks.marble.frames]]\nside = [{}]\n", vec!["\"bbbbbbbb\""; 8].join(", ")));
+        assert_eq!(find(&moving, "Blocks").result, "pass", "{:?}", find(&moving, "Blocks"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.12")
+local world = require("@potluck/world@0.14")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,23 +17,23 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.12"
+world = "0.14"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.12 | Blocks (the game's and the creation's own, drawn in `potluck.toml`) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.14 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.2 | The game's sounds and the creation's own (made from numbers in `potluck.toml`), somewhere in the world or for one player, with subtitles |
-| `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
-| `@potluck/test` | 0.2 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
+| `@potluck/net` | 0.2 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see, reading that game's copy of the world |
+| `@potluck/test` | 0.4 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
-Every module planned for the API is here. Still to come in later minor versions: more of the API in client halves (`net`).
+Every module planned for the API is here, and client halves read the world as well as hear their creation.
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -83,7 +83,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Sounds | 10 a second; heard within 40 blocks |
 | Blocks of its own (`[blocks]`) | 16, each with up to 24 colours, pictures 8 to 64 pixels square and up to 16 boxes; 128 from every creation in a world together, and as many pictures as the block atlas holds |
 | Sounds of its own (`[sounds]`) | 16, each up to 3 seconds, with up to 3 layers besides the first and 32 notes a layer |
-| Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
+| Things given or taken (`world.give`, `world.take`) | 64 at a time; a player's pockets hold 36 slots, of up to 99 of a block or one tool each |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
 | Flying (`flies`, `creature:climb`) | -4 to 4 blocks a second, eased into; no higher than 24 blocks over the world's highest blocks |
 | Digging speeds (`world.digging`) | 0 to 10 times as fast for each kind of block, every creation's multiplied and kept to that |
@@ -103,6 +103,9 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **Every version**, from 27 November 2026: the world goes on past the island in every direction (to 30,000 blocks out) and down to bedrock at y = -128, where it stopped at the island's edge and y = 0. Land is made as players come near it, so far from everyone `world.block` says `"Air"` and `world.top` says where the ground will be; `world.set_block` there makes the land first. The island, 0 to 384 each way, is always there.
+- **0.14**: moving blocks: a block of a creation's own can give `frames`, more pictures it shows in turn (up to 8 in all), and `speed`, how many a second (0.5 to 8). Players with the new Reduce flashing setting on see only the first. The game's items gain charcoal, flint, copper, iron, gold and moonsilver ingots, a flint and steel, bread and roasted carrots.
+- **0.13**: `world.drops`, what breaking a block gives in survival (another thing, a number of them or a range, or nothing) and the level of tool it needs before it breaks; and `level` for `world.digging`, how hard a block a thing in hand reaches among the kinds it digs faster (0 to 9; creations' levels take the highest). A block that needs a better tool doesn't break, and the player is told what would.
 - **0.12**: blocks of a creation's own, `[blocks.name]` in `potluck.toml`: pictures drawn in letters with a colour for each, a shape (solid, see-through, a plant, or boxes in sixteenths), how hard it is to break, its kind, and light and glow. Every block function takes their names; a world keeps their ids for as long as it lasts, and sends them to everyone who joins.
 - **0.11**: `world.model`, a Blockbench model (a `.bbmodel` in the creation's folder) as the list of boxes a body is, 16 pixels to a block, drawn with the model's texture (a part's `texture`; its `color` tints it), with `head`, `leg` and `glow` from its cubes' and groups' names; and `body = "file.bbmodel"` for `world.creature` as short for it. Creations may carry `.bbmodel` files.
 - **0.10**: `behaviours` for `world.creature`, what a creature does with no code: `wander`, `follow_food`, `follow_when_used`, `flee_when_hit`, `hop_when_hit`, `chatter` and `sound`. They act before its own handlers, which have the last word.
@@ -112,7 +115,7 @@ What a creation can never do, at any version: read or write files, reach the net
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
 - **0.5**: `world.on` for `"block_placed"`, `"block_broken"` and `"block_used"`: a player put down, broke or used (Interact on) a block, with the player, the middle of the block and its name.
 - **0.4**: `world.daytime` and `world.daylight` (the time of day), `world.find_light` (the nearest lantern, brazier, candle or other block that gives light), and `world.hurt` and `world.heal` for survival players' health. A client half has `daytime` and `daylight` too.
-- **0.3**: `world.pockets`, `world.has`, `world.take` and `world.give`, for the blocks players carry in survival.
+- **0.3**: `world.pockets`, `world.has`, `world.take` and `world.give`, for the blocks players carry in survival. Since the backpack came, players carry 36 slots rather than nine kinds, and `world.give` can give fewer than asked when they're nearly full. Its answer was always how many it gave.
 - **0.2**: `world.after`, `world.every` and `world.cancel` (timers), and `world.on` for `"player_joined"` and `"player_left"`. A creation with no creatures can now run code every tick.
 - **0.1**: the first version.
 
@@ -123,6 +126,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/net`
 
 - **0.1**: the first version: `client` in `potluck.toml` for a client half, and `net.send` and `net.on` in both halves, with `net.me` in the client half. A client half has `ui.show` and `ui.hide`, `sound.play` and `play_for`, and `world`'s timers, `time`, `random` and `spot` (and from world 0.4, `daytime` and `daylight`).
+- **0.2**: a client half reads its player's game's copy of the world: `world.block`, `top`, `find_block` and `kind`, and `players` and `nearest_player` for the players that game knows of. `net.me()` adds `look` and `aim`.
 
 ### `@potluck/sound`
 
@@ -150,3 +154,5 @@ What a creation can never do, at any version: read or write files, reach the net
 
 - **0.1**: the first version: `test.case`, `check` and `same`; `wait`; `player` and `move`; what players do (`place`, `dig`, `use_block`, `use`, `hit`, `ride`, `get_off`, `press`, `release`, `answer`, `hold`); and looking (`kind`, `creature`, `health`, `shown`, `asked`).
 - **0.2**: `test.heard(name)`, how many times the creation played a sound since the case began.
+- **0.3**: `test.sent(player, topic)`, what the creation last sent that player's client half on a topic and how many times, and `test.from_half(player, topic, value?)`, a message to the creation as that half would send it.
+- **0.4**: `test.dig` breaks with what the player holds, as the game does: a survival player gets what `world.drops` says, and it returns false (breaking nothing) when the block needs a better tool.

@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 20;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -120,7 +120,7 @@ pub enum Msg {
     Net(crate::script::Note),
     /// Blocks creations gave you or took (`world.give`, `world.take`): the
     /// host's count of these so far, and (block, more or fewer).
-    Pockets { seq: u32, changes: Vec<(crate::blocks::BlockId, i32)> },
+    Pockets { seq: u32, changes: Vec<(crate::items::Thing, i32)> },
     /// A creation hurt (less than 0) or healed (more) you.
     Health(f32),
     /// How fast you heal by yourself now (1 as usual, 0 not at all).
@@ -128,9 +128,11 @@ pub enum Msg {
     /// A creation hurt you, but only down to some health: (how much, the
     /// least it leaves).
     HurtTo(f32, f32),
-    /// How much faster each thing held digs each kind of block now
-    /// (`world.digging`): all of it, in the order of `sound::DIG_KINDS`.
-    Digging(Vec<(crate::blocks::BlockId, [f32; 5])>),
+    /// What each thing held does to blocks now (`world.digging`): how much
+    /// faster it digs each kind and its level, all of it.
+    Digging(Vec<(crate::items::Thing, crate::items::Digging)>),
+    /// What breaking each block gives now (`world.drops`), all of it.
+    Drops(Vec<(crate::blocks::BlockId, crate::items::Drop)>),
     /// What a player asks to say in chat (to the host).
     Say(crate::chat::Say),
     /// Lines of chat, as the host keeps them (from the host).
@@ -419,8 +421,11 @@ impl Net {
     pub fn broadcast_toast(&mut self, t: &str) {
         self.pending.push(Msg::Toast(t.to_string()));
     }
-    pub fn broadcast_digging(&mut self, digging: Vec<(crate::blocks::BlockId, [f32; 5])>) {
+    pub fn broadcast_digging(&mut self, digging: Vec<(crate::items::Thing, crate::items::Digging)>) {
         self.pending.push(Msg::Digging(digging));
+    }
+    pub fn broadcast_drops(&mut self, drops: Vec<(crate::blocks::BlockId, crate::items::Drop)>) {
+        self.pending.push(Msg::Drops(drops));
     }
     pub fn send_creation(&self, c: &Creation) {
         self.send_host(&Msg::Creation(c.payload()));
@@ -574,10 +579,14 @@ pub fn host_net(
                             let _ = out.send(f);
                         }
                     }
-                    // what tools dig faster here
+                    // what tools dig faster here, and what blocks give
                     let digging = scripts.digging();
                     if !digging.is_empty() {
                         let _ = out.send(frame_msg(&Msg::Digging(digging)));
+                    }
+                    let drops = scripts.drops();
+                    if !drops.is_empty() {
+                        let _ = out.send(frame_msg(&Msg::Drops(drops)));
                     }
                     p.welcomed = true;
                     h.welcomed.push(id);
@@ -740,7 +749,7 @@ impl Net {
     }
 
     /// A sound for one player to hear.
-    pub fn send_pockets(&self, pid: u32, seq: u32, changes: Vec<(crate::blocks::BlockId, i32)>) {
+    pub fn send_pockets(&self, pid: u32, seq: u32, changes: Vec<(crate::items::Thing, i32)>) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
                 let _ = o.send(frame_msg(&Msg::Pockets { seq, changes }));
@@ -1051,6 +1060,7 @@ pub fn client_net(
                         }
                     }
                     chunks.meshed = 0;
+                    chunks.sizes.clear();
                     me.respawn(&voxels, None);
                     info.in_world = true;
                     focus.go(Screen::Playing);
@@ -1067,7 +1077,7 @@ pub fn client_net(
                     lib.running.clear();
                     lib.world += 1;
                     scripts.vms.clear();
-                    me.digging.clear();
+                    me.rules = Default::default();
                     if let Role::Client(c) = &mut net.role {
                         c.welcomed = true;
                         c.host_name = host.clone();
@@ -1195,8 +1205,25 @@ pub fn client_net(
                 Msg::Health(change) if change.is_finite() => me.health_due += change.clamp(-MAX_HEALTH, MAX_HEALTH),
                 Msg::Healing(rate) if rate.is_finite() => me.healing = rate.clamp(0.0, crate::script::MAX_HEALING as f32),
                 Msg::Digging(list) => {
-                    let ok = |s: &[f32; 5]| s.iter().all(|v| v.is_finite());
-                    me.digging = list.into_iter().filter(|(_, s)| ok(s)).map(|(b, s)| (b, s.map(|v| v.clamp(0.0, crate::script::MAX_DIGGING as f32)))).collect();
+                    let ok = |d: &crate::items::Digging| d.speeds.iter().all(|v| v.is_finite());
+                    me.rules.digging = list
+                        .into_iter()
+                        .filter(|(_, d)| ok(d))
+                        .map(|(t, d)| {
+                            let speeds = d.speeds.map(|v| v.clamp(0.0, crate::script::MAX_DIGGING as f32));
+                            (t, crate::items::Digging { speeds, level: d.level.min(crate::items::MAX_LEVEL) })
+                        })
+                        .collect();
+                }
+                Msg::Drops(list) => {
+                    let most = crate::script::MAX_GIVE;
+                    me.rules.drops = list
+                        .into_iter()
+                        .map(|(b, d)| {
+                            let (least, most) = (d.least.min(most), d.most.min(most));
+                            (b, crate::items::Drop { gives: d.gives, least: least.min(most), most, level: d.level.min(crate::items::MAX_LEVEL) })
+                        })
+                        .collect();
                 }
                 Msg::HurtTo(n, down_to) if n.is_finite() && down_to.is_finite() && me.hurts.len() < 64 => {
                     me.hurts.push((n.clamp(0.0, MAX_HEALTH), down_to.clamp(0.0, MAX_HEALTH)))

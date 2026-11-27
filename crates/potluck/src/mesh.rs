@@ -48,13 +48,15 @@ pub struct Off {
     /// Leaves in the ray traced scene as the solid blocks they're drawn
     /// with, in place of the porous stand-in (`porous_leaves`)
     pub rtsolid: bool,
+    /// Chunk meshes at full size on the graphics card (`pack`)
+    pub pack: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid"), pack: has("pack") }
     }
 }
 
@@ -283,6 +285,24 @@ impl MeshData {
             m.set_morph_targets(t);
         }
         m.with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tan).with_inserted_indices(Indices::U32(self.idx))
+    }
+}
+
+/// Packs a chunk mesh smaller for the graphics card, half the bytes a
+/// vertex: normals and tangents as two 16-bit numbers each, UVs as 16-bit
+/// fractions, colours as half floats (grass tints go past 1), and 16-bit
+/// indices where they fit. Bevy's shaders unpack them. Positions stay full
+/// floats, so the edges of neighbouring chunks meet exactly. The ray tracer
+/// reads meshes itself, so the ones it sees stay as they are.
+pub fn pack(mesh: &mut Mesh) {
+    use bevy::mesh::{AttributeQuantization, MeshAttributeCompressionFlags as F, MeshCompressionArgs};
+    let args = MeshCompressionArgs {
+        compress_indices: true,
+        quantize_attributes: (&[(Mesh::ATTRIBUTE_COLOR.id, AttributeQuantization::Float16)]).into(),
+        compress_attributes: F::COMPRESS_NORMAL | F::COMPRESS_TANGENT | F::COMPRESS_UV0 | F::COMPRESS_UV1,
+    };
+    if let Err(e) = mesh.compress_mesh(&args) {
+        warn!("Couldn't pack a chunk mesh: {e:?}");
     }
 }
 
@@ -947,13 +967,81 @@ pub struct BlockMaterials {
     pub water: Handle<crate::render::WaterMaterial>,
 }
 
+/// How far chunks are drawn round the player: a square this many columns
+/// each way, from the lighting tier. The island is drawn whole whenever
+/// the player is on it or can see it, as it always was.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct View(pub i32);
+
+impl Default for View {
+    fn default() -> Self {
+        View(7)
+    }
+}
+
+impl View {
+    pub fn of(tier: crate::render::Tier) -> Self {
+        use crate::render::Tier;
+        View(match tier {
+            Tier::Low => 5,
+            Tier::Medium => 7,
+            Tier::High => 8,
+            Tier::Ultra => 9,
+        })
+    }
+
+    /// How far it reaches, in blocks.
+    pub fn blocks(self) -> f32 {
+        (self.0 * CHUNK) as f32
+    }
+
+    /// Whether a column should be drawn with the player's eye at `focus`.
+    pub fn wants(self, k: IVec2, focus: Vec3, slack: i32) -> bool {
+        let f = crate::world::stream::column_of(focus);
+        if (k - f).abs().max_element() <= self.0 + slack {
+            return true;
+        }
+        // the island whole, from anywhere it can be seen
+        let out = IVec2::new((-f.x).max(f.x - (crate::world::CX - 1)).max(0), (-f.y).max(f.y - (crate::world::CZ - 1)).max(0));
+        crate::world::is_island(k) && out.max_element() <= self.0 + 1 + slack
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct ChunkEntities {
     pub map: HashMap<IVec3, [Option<Entity>; LAYERS]>,
+    /// The columns whose chunks are drawn (or waiting to be).
+    pub shown: std::collections::HashSet<IVec2>,
+    /// Counts changes to `shown`, for the sea past it (`render::follow_sea`).
+    pub shown_rev: u64,
+    /// What `show` last looked at: the world, how many columns had come
+    /// in, and the column the player was in.
+    looked: (u64, u64, IVec2),
     /// How many chunks have been meshed since the world loaded.
     pub meshed: usize,
     /// The detail each chunk with grass, leaves or plants was meshed with.
     pub detail: HashMap<IVec3, Detail>,
+    /// Each chunk's layers' sizes on the graphics card, for the memory
+    /// report: vertices, and bytes of vertices, indices and wind targets.
+    pub sizes: HashMap<IVec3, [[u64; 4]; LAYERS]>,
+}
+
+/// What each layer of a chunk holds, for the memory report.
+pub const LAYER_NAMES: [&str; LAYERS] = ["solid blocks", "leaves and glass", "water", "plants", "glowing blocks", "ground cover", "under water"];
+
+impl ChunkEntities {
+    /// Every chunk's sizes added up, by layer (see `sizes`).
+    pub fn totals(&self) -> [[u64; 4]; LAYERS] {
+        let mut out = [[0; 4]; LAYERS];
+        for layers in self.sizes.values() {
+            for (o, l) in out.iter_mut().zip(layers) {
+                for k in 0..4 {
+                    o[k] += l[k];
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Component)]
@@ -962,6 +1050,68 @@ pub struct ChunkPart;
 /// The point chunks are meshed outward from (the player's eye).
 #[derive(Resource, Default)]
 pub struct MeshFocus(pub Vec3);
+
+/// Chooses which columns are drawn: those within the view of the player
+/// whose neighbours are all here (so their edges and sky come out right),
+/// and drops the meshes of those left behind.
+pub fn show(mut commands: Commands, mut voxels: ResMut<Voxels>, focus: Res<MeshFocus>, view: Res<View>, mut chunks: ResMut<ChunkEntities>) {
+    let at = crate::world::stream::column_of(focus.0);
+    let now = (voxels.id, voxels.serial, at);
+    if chunks.looked == now {
+        return;
+    }
+    if chunks.looked.0 != voxels.id {
+        // a new world: what was drawn was the old one's
+        for (_, slots) in chunks.map.drain() {
+            for e in slots.into_iter().flatten() {
+                commands.entity(e).despawn();
+            }
+        }
+        chunks.shown.clear();
+        chunks.shown_rev += 1;
+        chunks.detail.clear();
+        chunks.sizes.clear();
+        chunks.meshed = 0;
+    }
+    chunks.looked = now;
+    let v = *view;
+    // left behind, or let go
+    let gone: Vec<IVec2> = chunks.shown.iter().copied().filter(|k| !voxels.has(*k) || !v.wants(*k, focus.0, 1)).collect();
+    for k in &gone {
+        chunks.shown.remove(k);
+    }
+    if !gone.is_empty() {
+        chunks.shown_rev += 1;
+        let drop: Vec<IVec3> = chunks.map.keys().copied().filter(|c| gone.contains(&IVec2::new(c.x, c.z))).collect();
+        for c in drop {
+            if let Some(slots) = chunks.map.remove(&c) {
+                for e in slots.into_iter().flatten() {
+                    commands.entity(e).despawn();
+                }
+            }
+            chunks.detail.remove(&c);
+            chunks.sizes.remove(&c);
+        }
+    }
+    // newly in view, with everything round them here
+    let r = v.0;
+    let mut add: Vec<IVec2> = (-r..=r).flat_map(|dz| (-r..=r).map(move |dx| at + IVec2::new(dx, dz))).collect();
+    if v.wants(IVec2::ZERO, focus.0, 0) {
+        add.extend((0..crate::world::CZ).flat_map(|z| (0..crate::world::CX).map(move |x| IVec2::new(x, z))));
+    }
+    for k in add {
+        if chunks.shown.contains(&k) || !voxels.has(k) {
+            continue;
+        }
+        if (-1..=1).all(|dz| (-1..=1).all(|dx| voxels.has(k + IVec2::new(dx, dz)))) {
+            chunks.shown.insert(k);
+            chunks.shown_rev += 1;
+            for y in crate::world::CY0..crate::world::CY1 {
+                voxels.dirty.insert(IVec3::new(k.x, y, k.y));
+            }
+        }
+    }
+}
 
 /// Meshes the dirty chunks nearest the player, several at once on the
 /// task pool, a few per frame so the game never stalls.
@@ -995,6 +1145,23 @@ pub fn remesh(
             voxels.dirty.insert(c);
         }
     }
+    // only what's drawn; chunks with nothing in them to draw need no job
+    let shown = &chunks.shown;
+    let empty: Vec<IVec3> = voxels.dirty.iter().copied().filter(|c| !shown.contains(&IVec2::new(c.x, c.z)) || voxels.nothing_to_draw(*c)).collect();
+    for c in empty {
+        voxels.dirty.remove(&c);
+        voxels.shade.remove(&c);
+        if !chunks.shown.contains(&IVec2::new(c.x, c.z)) {
+            continue;
+        }
+        if let Some(slots) = chunks.map.insert(c, [None; LAYERS]) {
+            for e in slots.into_iter().flatten() {
+                commands.entity(e).despawn();
+            }
+        }
+        chunks.sizes.remove(&c);
+        chunks.detail.remove(&c);
+    }
     if voxels.dirty.is_empty() {
         return;
     }
@@ -1026,6 +1193,7 @@ pub fn remesh(
         } else {
             chunks.detail.remove(&c);
         }
+        let mut sizes = [[0u64; 4]; LAYERS];
         let slot = chunks.map.entry(c).or_insert([None; LAYERS]);
         for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
@@ -1038,8 +1206,19 @@ pub fn remesh(
             if rt.0 && apart && i != 2 {
                 data.face_normals();
             }
-            let mesh = data.into_mesh(rt.0 && !apart);
+            let traced = rt.0 && !apart;
+            let mut mesh = data.into_mesh(traced);
+            if !traced && !cover.off.pack {
+                pack(&mut mesh);
+            }
             let sways = mesh.has_morph_targets();
+            let verts = mesh.count_vertices() as u64;
+            sizes[i] = [
+                verts,
+                verts * mesh.get_vertex_size(),
+                mesh.indices().map_or(0, |x| x.len() as u64 * 4),
+                mesh.morph_targets().map_or(0, |t| (t.len() * std::mem::size_of::<MorphAttributes>()) as u64),
+            ];
             let mut e = commands.spawn((
                 // water and plants stay out of the ray traced scene, so they keep their colours
                 Mesh3d(meshes.add(mesh)),
@@ -1083,5 +1262,6 @@ pub fn remesh(
             }
             slot[i] = Some(e.id());
         }
+        chunks.sizes.insert(c, sizes);
     }
 }

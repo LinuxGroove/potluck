@@ -13,17 +13,68 @@ use bevy::prelude::*;
 use mlua::{Function, Lua, Table, Value, Vector, VmState};
 
 use crate::blocks;
+use crate::items::{self, Slots, Thing};
 use crate::creations::{ActionDef, Creation};
 use crate::creatures::{Body, Herd, Part};
 use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 14), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 4)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
 const LOAD_BUDGET: Duration = Duration::from_millis(300);
+/// How many slices of wall time a slice may stretch to while the machine is
+/// busy elsewhere, if the code itself ran for less than its slice.
+const BUSY_STRETCH: u32 = 8;
+
+/// A slice of time for a creation's code to run in. The clock on the wall
+/// says when it's up; past that, a slice that ran over only because the
+/// machine gave the core to something else (other threads, other programs,
+/// a busy server) isn't held against the creation, so long as the code itself
+/// ran for less than its slice and the wall says less than `BUSY_STRETCH`
+/// slices. Where a thread's own time can't be read, the wall alone decides.
+#[derive(Clone, Copy)]
+pub(crate) struct Slice {
+    start: Instant,
+    ran: Option<Duration>,
+    length: Duration,
+}
+
+impl Slice {
+    pub(crate) fn new(length: Duration) -> Slice {
+        Slice { start: Instant::now(), ran: thread_time(), length }
+    }
+
+    /// Whether the slice is used up. Cheap until the wall says it's up.
+    pub(crate) fn over(&self) -> bool {
+        let wall = self.start.elapsed();
+        if wall <= self.length {
+            return false;
+        }
+        if wall > self.length * BUSY_STRETCH {
+            return true;
+        }
+        match (self.ran, thread_time()) {
+            (Some(a), Some(b)) => b.saturating_sub(a) > self.length,
+            _ => true,
+        }
+    }
+}
+
+/// The time this thread has run on a core.
+fn thread_time() -> Option<Duration> {
+    #[cfg(unix)]
+    {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime only writes the timespec it's given
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } == 0 {
+            return Some(Duration::new(t.tv_sec as u64, t.tv_nsec as u32));
+        }
+    }
+    None
+}
 /// Timers one creation may have waiting at once.
 pub const MAX_TIMERS: usize = 64;
 /// Handlers one creation may give `world.on`.
@@ -134,7 +185,7 @@ pub struct GameShared {
     /// Messages creations sent their client halves since the host last
     /// looked: (one player, or everyone here; the message).
     pub notes: Vec<(Option<u32>, Note)>,
-    /// The blocks each player carries, as their game last said.
+    /// What each player carries, as their game last said.
     pub pockets: HashMap<u32, Pockets>,
     /// The time of day (`render::Clock::time`), set by the host each frame;
     /// none yet is the clock's own start.
@@ -148,13 +199,20 @@ pub struct GameShared {
     /// Players whose healing changed since the host last looked.
     pub healing_changed: BTreeSet<u32>,
     /// What each player has in hand, as their game last said (`world.held`).
-    pub held: HashMap<u32, blocks::BlockId>,
-    /// How much faster holding something digs each kind of block
-    /// (`world.digging`): (what's held, creation) to speeds in the order of
-    /// `sound::DIG_KINDS`.
-    pub digging: BTreeMap<(blocks::BlockId, String), [f32; 5]>,
+    pub held: HashMap<u32, Thing>,
+    /// How much faster holding something digs each kind of block, and how
+    /// hard a block it reaches (`world.digging`): (what's held, creation)
+    /// to what it does.
+    pub digging: BTreeMap<(Thing, String), items::Digging>,
     /// Whether `digging` changed since the host last sent it.
     pub digging_changed: bool,
+    /// What breaking a block gives (`world.drops`): (block, creation) to
+    /// when it was said, so the last one said counts, and the rule.
+    pub drops: BTreeMap<(blocks::BlockId, String), (u64, items::Drop)>,
+    /// Counts `world.drops` calls, for `drops`'s order.
+    pub drops_said: u64,
+    /// Whether `drops` changed since the host last sent it.
+    pub drops_changed: bool,
 }
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
@@ -178,54 +236,55 @@ fn down_to(n: Option<f64>) -> mlua::Result<f32> {
     }
 }
 
-/// The most blocks `world.give` or `world.take` moves at once.
+/// The most `world.give` or `world.take` moves at once.
 pub const MAX_GIVE: u32 = 64;
 
-/// What a player carries (`world.pockets`). Their blocks live on their own
-/// game: the host goes by what it last heard, and sends changes back.
+/// What a player carries (`world.pockets`). Their pockets live on their own
+/// game: the host keeps a copy of their slots as it last heard, gives and
+/// takes on it as their game will, and sends the changes back.
 #[derive(Default, Clone, Debug)]
 pub struct Pockets {
-    /// In creative a player has every block, and nothing is counted.
+    /// In creative a player has everything, and nothing is counted.
     pub survival: bool,
-    pub items: BTreeMap<blocks::BlockId, u32>,
+    pub slots: Slots,
     /// How many lots of changes the host has sent them, so a report from
     /// before the last one arrived is ignored.
     pub sent: u32,
-    /// Changes not sent yet: (block, more or fewer).
-    pub changes: Vec<(blocks::BlockId, i32)>,
+    /// Changes not sent yet: (thing, more or fewer).
+    pub changes: Vec<(Thing, i32)>,
 }
 
 impl Pockets {
-    /// What `world.give` puts in a survival player's hotbar: all of it, if
-    /// they carry that block already or have a slot free.
-    fn give(&mut self, b: blocks::BlockId, n: u32) -> u32 {
-        let carried = self.items.get(&b).is_some_and(|c| *c > 0);
-        if !carried && self.items.values().filter(|c| **c > 0).count() >= 9 {
-            return 0;
+    /// What `world.give` puts in a survival player's pockets: as many as
+    /// there's room for, the hotbar first.
+    pub fn give(&mut self, t: Thing, n: u32) -> u32 {
+        let k = self.slots.give(t, n);
+        if k > 0 {
+            self.changes.push((t, k as i32));
         }
-        *self.items.entry(b).or_default() += n;
-        self.changes.push((b, n as i32));
-        n
+        k
     }
 
-    fn take(&mut self, b: blocks::BlockId, n: u32) -> bool {
-        let have = self.items.entry(b).or_default();
-        if *have < n {
+    pub fn take(&mut self, t: Thing, n: u32) -> bool {
+        if !self.slots.take(t, n) {
             return false;
         }
-        *have -= n;
-        self.changes.push((b, -(n as i32)));
+        self.changes.push((t, -(n as i32)));
         true
+    }
+
+    pub fn count(&self, t: Thing) -> u32 {
+        self.slots.count(t)
     }
 }
 
-/// A block a player can carry, by name, for give and take.
-fn carried_block(name: &str) -> mlua::Result<blocks::BlockId> {
-    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-    if id == blocks::AIR || id == blocks::WATER || blocks::block(id).hardness < 0.0 {
+/// Something a player can carry, by name, for give, take and holding.
+pub(crate) fn carried_thing(name: &str) -> mlua::Result<Thing> {
+    let t = items::by_name(name).ok_or_else(|| bad(format!("there's nothing called \"{name}\" to carry")))?;
+    if !items::carriable(t) {
         return Err(bad(format!("players can't carry {name}")));
     }
-    Ok(id)
+    Ok(t)
 }
 
 /// How many for give and take: a whole number from 1 to `MAX_GIVE`, 1 if left out.
@@ -638,7 +697,7 @@ pub struct Vm {
     pub error: Option<String>,
     errors: u32,
     pub paused: bool,
-    deadline: Arc<Mutex<Instant>>,
+    deadline: Arc<Mutex<Slice>>,
     rng: Rng,
     pub load_ms: f32,
     /// How long its ticks take, on average and at most lately, in ms: its
@@ -813,6 +872,95 @@ pub(crate) fn spot(name: &str) -> Option<Vec3> {
         "start" | "hill" => Some(Vec3::new(world::START.x + 0.5, 0.0, world::START.z + 0.5)),
         _ => None,
     }
+}
+
+/// `world.kind`: what a block is made of. Client halves share it.
+pub(crate) fn kind_of(name: &str) -> mlua::Result<&'static str> {
+    if let Some(id) = blocks::by_name(name) {
+        return Ok(crate::sound::material(id).name());
+    }
+    // things to hold go by their names, as the game's blocks do
+    let t = items::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+    Ok(crate::sound::named(items::name(t)).name())
+}
+
+/// `world.drops`'s rule for `block`: `{ gives, count, level }`.
+fn drop_rule(t: &Table, block: &str) -> mlua::Result<items::Drop> {
+    for pair in t.pairs::<Value, Value>() {
+        let (k, _) = pair?;
+        let k = k.as_string().map(|s| s.to_string_lossy()).unwrap_or_default();
+        if !["gives", "count", "level"].contains(&k.as_str()) {
+            return Err(bad(format!("a drop has gives, count and level, not \"{k}\"")));
+        }
+    }
+    let gives = match t.get::<Value>("gives")? {
+        Value::Nil => blocks::by_name(block).map(items::of_block).unwrap_or(0),
+        Value::Boolean(false) => 0,
+        Value::String(s) => {
+            let name = s.to_string_lossy();
+            let t = carried_thing(&name)?;
+            if !items::carriable(t) {
+                return Err(bad(format!("players can't carry {name}")));
+            }
+            t
+        }
+        _ => return Err(bad("a drop's gives is the name of what breaking it gives, or false for nothing")),
+    };
+    let count = |v: Value| -> mlua::Result<u32> {
+        let n = match v {
+            Value::Integer(n) => n as f64,
+            Value::Number(n) => n,
+            _ => f64::NAN,
+        };
+        if n.fract() != 0.0 || !(0.0..=MAX_GIVE as f64).contains(&n) {
+            return Err(bad(format!("a drop's count is a whole number from 0 to {MAX_GIVE}, or {{ least, most }}")));
+        }
+        Ok(n as u32)
+    };
+    let (least, most) = match t.get::<Value>("count")? {
+        Value::Nil => (1, 1),
+        Value::Table(r) => {
+            let (a, b) = (count(r.get(1)?)?, count(r.get(2)?)?);
+            if a > b {
+                return Err(bad("a drop's count { least, most } needs least no more than most"));
+            }
+            (a, b)
+        }
+        v => {
+            let n = count(v)?;
+            (n, n)
+        }
+    };
+    let level = match t.get::<Value>("level")? {
+        Value::Nil => 0,
+        Value::Integer(n) if (0..=items::MAX_LEVEL as i64).contains(&n) => n as u8,
+        Value::Number(n) if n.fract() == 0.0 && (0.0..=items::MAX_LEVEL as f64).contains(&n) => n as u8,
+        _ => return Err(bad(format!("a drop's level is a whole number from 0 to {}", items::MAX_LEVEL))),
+    };
+    Ok(items::Drop { gives: if most == 0 { 0 } else { gives }, least, most, level })
+}
+
+/// `world.find_block`: the middle of the nearest block of that name within
+/// `radius` (up to 16) of `p`, or nil. Client halves share it.
+pub(crate) fn find_block(voxels: &Voxels, p: &Value, radius: f32, name: &str) -> mlua::Result<Option<Value>> {
+    let p = vec_of(p).ok_or_else(|| bad("world.find_block needs a position"))?.floor().as_ivec3();
+    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+    let r = radius.clamp(0.0, 16.0) as i32;
+    let mut best: Option<(i32, IVec3)> = None;
+    for y in -r..=r {
+        for z in -r..=r {
+            for x in -r..=r {
+                let q = p + IVec3::new(x, y, z);
+                if voxels.at(q) == id {
+                    let d = x * x + y * y + z * z;
+                    if best.is_none_or(|(b, _)| d < b) {
+                        best = Some((d, q));
+                    }
+                }
+            }
+        }
+    }
+    Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
 }
 
 pub(crate) fn player_table(lua: &Lua, p: &PlayerInfo) -> mlua::Result<Table> {
@@ -1130,10 +1278,10 @@ impl Vm {
         let started = Instant::now();
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT).map_err(|e| e.to_string())?;
-        let deadline = Arc::new(Mutex::new(Instant::now() + LOAD_BUDGET));
+        let deadline = Arc::new(Mutex::new(Slice::new(LOAD_BUDGET)));
         let d = deadline.clone();
         lua.set_interrupt(move |_| {
-            if Instant::now() > *d.lock().unwrap() {
+            if d.lock().unwrap().over() {
                 return Err(bad("this creation took too long (is there a loop that never ends?)"));
             }
             Ok(VmState::Continue)
@@ -1195,8 +1343,8 @@ impl Vm {
                             return Ok(Value::Nil);
                         }
                         let t = lua.create_table()?;
-                        for (b, n) in p.iter().flat_map(|p| p.items.iter()).filter(|(_, n)| **n > 0) {
-                            t.set(blocks::block(*b).name, *n)?;
+                        for (thing, n) in p.map(|p| p.slots.carried()).unwrap_or_default() {
+                            t.set(items::name(thing), n)?;
                         }
                         Ok(Value::Table(t))
                     })?,
@@ -1206,10 +1354,10 @@ impl Vm {
                     "has",
                     lua.create_function(move |_, (player, name): (Value, String)| {
                         let pid = pid_of(&player)?;
-                        let b = carried_block(&name)?;
+                        let t = carried_thing(&name)?;
                         Ok(match sh.lock().unwrap().pockets.get(&pid) {
                             Some(p) if !p.survival => f64::INFINITY,
-                            Some(p) => p.items.get(&b).copied().unwrap_or(0) as f64,
+                            Some(p) => p.count(t) as f64,
                             None => 0.0,
                         })
                     })?,
@@ -1219,10 +1367,10 @@ impl Vm {
                     "take",
                     lua.create_function(move |_, (player, name, n): (Value, String, Option<f64>)| {
                         let pid = pid_of(&player)?;
-                        let (b, n) = (carried_block(&name)?, how_many(n)?);
+                        let (t, n) = (carried_thing(&name)?, how_many(n)?);
                         Ok(match sh.lock().unwrap().pockets.get_mut(&pid) {
                             Some(p) if !p.survival => true,
-                            Some(p) => p.take(b, n),
+                            Some(p) => p.take(t, n),
                             None => false,
                         })
                     })?,
@@ -1232,10 +1380,10 @@ impl Vm {
                     "give",
                     lua.create_function(move |_, (player, name, n): (Value, String, Option<f64>)| {
                         let pid = pid_of(&player)?;
-                        let (b, n) = (carried_block(&name)?, how_many(n)?);
+                        let (t, n) = (carried_thing(&name)?, how_many(n)?);
                         Ok(match sh.lock().unwrap().pockets.get_mut(&pid) {
                             Some(p) if !p.survival => n,
-                            Some(p) => p.give(b, n),
+                            Some(p) => p.give(t, n),
                             None => 0,
                         })
                     })?,
@@ -1317,44 +1465,76 @@ impl Vm {
                     "held",
                     lua.create_function(move |_, player: Value| {
                         let pid = pid_of(&player)?;
-                        let b = sh.lock().unwrap().held.get(&pid).copied().unwrap_or(blocks::AIR);
-                        Ok((b != blocks::AIR).then(|| blocks::block(b).name))
+                        let t = sh.lock().unwrap().held.get(&pid).copied().unwrap_or(0);
+                        Ok((t != 0).then(|| items::name(t)))
                     })?,
                 )?;
-                world.set(
-                    "kind",
-                    lua.create_function(move |_, name: String| {
-                        let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                        Ok(crate::sound::material(id).name())
-                    })?,
-                )?;
+                world.set("kind", lua.create_function(move |_, name: String| kind_of(&name))?)?;
                 let (sh, me) = (shared.clone(), creation.id.clone());
                 world.set(
                     "digging",
                     lua.create_function(move |_, (name, speeds): (String, Option<Table>)| {
-                        let id = carried_block(&name)?;
-                        let mut by_kind = [1.0f32; 5];
+                        let id = carried_thing(&name)?;
+                        let mut d = items::Digging::default();
                         if let Some(t) = &speeds {
                             for pair in t.pairs::<String, f64>() {
-                                let (kind, n) = pair.map_err(|_| bad("digging takes speeds by kind, like { hard = 4 }"))?;
+                                let (kind, n) = pair.map_err(|_| bad("digging takes speeds by kind, like { hard = 4 }, and a level"))?;
+                                if kind == "level" {
+                                    if n.fract() != 0.0 || !(0.0..=items::MAX_LEVEL as f64).contains(&n) {
+                                        return Err(bad(format!("a digging level is a whole number from 0 to {}", items::MAX_LEVEL)));
+                                    }
+                                    d.level = n as u8;
+                                    continue;
+                                }
                                 let Some(k) = crate::sound::DIG_KINDS.iter().position(|d| *d == kind) else {
-                                    return Err(bad(format!("digging knows {}, not \"{kind}\"", crate::sound::DIG_KINDS.join(", "))));
+                                    return Err(bad(format!("digging knows {} and level, not \"{kind}\"", crate::sound::DIG_KINDS.join(", "))));
                                 };
                                 if !n.is_finite() || !(0.0..=MAX_DIGGING).contains(&n) {
                                     return Err(bad(format!("a digging speed is a number from 0 to {MAX_DIGGING} (1 is as usual)")));
                                 }
-                                by_kind[k] = n as f32;
+                                d.speeds[k] = n as f32;
                             }
                         }
                         let mut sh = sh.lock().unwrap();
                         let key = (id, me.clone());
-                        let now = speeds.is_some().then_some(by_kind).filter(|s| *s != [1.0; 5]);
+                        let now = speeds.is_some().then_some(d).filter(|d| *d != items::Digging::default());
                         if sh.digging.get(&key).copied() != now {
                             match now {
-                                Some(s) => sh.digging.insert(key, s),
+                                Some(d) => sh.digging.insert(key, d),
                                 None => sh.digging.remove(&key),
                             };
                             sh.digging_changed = true;
+                        }
+                        Ok(())
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "drops",
+                    lua.create_function(move |_, (name, rule): (String, Option<Table>)| {
+                        let b = blocks::by_name(&name).filter(|&b| b != blocks::AIR).ok_or_else(|| {
+                            if items::by_name(&name).is_some() {
+                                bad(format!("{name} is something to hold, not a block to break"))
+                            } else {
+                                bad(format!("there's no block called \"{name}\""))
+                            }
+                        })?;
+                        let now = match &rule {
+                            None => None,
+                            Some(t) => Some(drop_rule(t, &name)?),
+                        };
+                        let mut sh = sh.lock().unwrap();
+                        let key = (b, me.clone());
+                        if sh.drops.get(&key).map(|e| e.1) != now || now.is_some() {
+                            match now {
+                                Some(d) => {
+                                    sh.drops_said += 1;
+                                    let n = sh.drops_said;
+                                    sh.drops.insert(key, (n, d))
+                                }
+                                None => sh.drops.remove(&key),
+                            };
+                            sh.drops_changed = true;
                         }
                         Ok(())
                     })?,
@@ -1759,7 +1939,7 @@ impl Vm {
     ) -> Result<R, String> {
         let budget = if time == 0.0 { LOAD_BUDGET } else { TICK_BUDGET };
         // generous while the API is set up; the creation's own time starts below
-        *self.deadline.lock().unwrap() = Instant::now() + LOAD_BUDGET;
+        *self.deadline.lock().unwrap() = Slice::new(LOAD_BUDGET);
         let kinds = self.kinds.clone();
         let mut rng = self.rng.clone();
         let ctx = RefCell::new(Ctx { voxels, herd, players, out, creation, kinds: &kinds, time, rng: &mut rng, log });
@@ -1778,34 +1958,14 @@ impl Vm {
             })?)?;
             world.set("set_block", s.create_function(move |_, (p, name): (Value, String)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?;
-                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                if blocks::is_item(id) {
+                if items::by_name(&name).is_some_and(items::is_item) {
                     return Err(bad(format!("{name} is something to hold, not a block to put down")));
                 }
+                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
                 Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
-            world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| {
-                let p = vec_of(&p).ok_or_else(|| bad("world.find_block needs a position"))?.floor().as_ivec3();
-                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                let r = radius.clamp(0.0, 16.0) as i32;
-                let ctx = c.borrow();
-                let mut best: Option<(i32, IVec3)> = None;
-                for y in -r..=r {
-                    for z in -r..=r {
-                        for x in -r..=r {
-                            let q = p + IVec3::new(x, y, z);
-                            if ctx.voxels.at(q) == id {
-                                let d = x * x + y * y + z * z;
-                                if best.is_none_or(|(b, _)| d < b) {
-                                    best = Some((d, q));
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
-            })?)?;
+            world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| find_block(&*c.borrow().voxels, &p, radius, &name))?)?;
             world.set("find_light", s.create_function(move |_, (p, radius): (Value, f32)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.find_light needs a position"))?.floor().as_ivec3();
                 let r = radius.clamp(0.0, 16.0) as i32;
@@ -2067,7 +2227,7 @@ impl Vm {
                 Ok(())
             })?)?;
             let _ = &kind_tables;
-            *self.deadline.lock().unwrap() = Instant::now() + budget;
+            *self.deadline.lock().unwrap() = Slice::new(budget);
             f(&self.lua, self)
         });
         self.rng = rng;
@@ -2188,6 +2348,11 @@ fn tidy_error(e: &mlua::Error) -> String {
 }
 
 impl Scripts {
+    /// Bytes every running creation's Luau holds, for the memory report.
+    pub fn memory(&self) -> usize {
+        self.vms.values().map(|vm| vm.lua.used_memory()).sum()
+    }
+
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
         // its own blocks first, so its code can use them by name
         crate::made::register(&creation.id, &creation.manifest.blocks)?;
@@ -2220,11 +2385,16 @@ impl Scripts {
         let slowed: Vec<u32> = sh.healing.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
         sh.healing.retain(|k, _| k.1 != id);
         sh.healing_changed.extend(slowed);
-        // and its tools dig as usual
+        // and its tools dig as usual, and its blocks give themselves
         let before = sh.digging.len();
         sh.digging.retain(|k, _| k.1 != id);
         if sh.digging.len() != before {
             sh.digging_changed = true;
+        }
+        let before = sh.drops.len();
+        sh.drops.retain(|k, _| k.1 != id);
+        if sh.drops.len() != before {
+            sh.drops_changed = true;
         }
         drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
@@ -2362,19 +2532,19 @@ impl Scripts {
 
     /// What a player's game says they carry. A report from before the
     /// host's last changes reached them is ignored.
-    pub fn set_pockets(&mut self, player: u32, survival: bool, items: &[(blocks::BlockId, u32)], seen: u32) {
+    pub fn set_pockets(&mut self, player: u32, survival: bool, slots: &[(u8, Thing, u32)], seen: u32) {
         let mut sh = self.shared.lock().unwrap();
         let p = sh.pockets.entry(player).or_default();
         if seen < p.sent || !p.changes.is_empty() {
             return;
         }
         p.survival = survival;
-        p.items = items.iter().filter(|(_, n)| *n > 0).map(|(b, n)| (*b, (*n).min(1 << 20))).collect();
+        p.slots = Slots::from_filled(slots);
     }
 
     /// Changes creations made to what players carry: (player, how many
     /// lots they've been sent now, the changes).
-    pub fn pocket_changes(&mut self) -> Vec<(u32, u32, Vec<(blocks::BlockId, i32)>)> {
+    pub fn pocket_changes(&mut self) -> Vec<(u32, u32, Vec<(Thing, i32)>)> {
         let mut sh = self.shared.lock().unwrap();
         let mut out = vec![];
         for (pid, p) in sh.pockets.iter_mut().filter(|(_, p)| !p.changes.is_empty()) {
@@ -2416,29 +2586,55 @@ impl Scripts {
     }
 
     /// What a player has in hand now, as their game says (`world.held`).
-    pub fn set_held(&mut self, player: u32, b: blocks::BlockId) {
+    pub fn set_held(&mut self, player: u32, b: Thing) {
         self.shared.lock().unwrap().held.insert(player, b);
     }
 
-    /// How much faster each thing held digs each kind of block, every
-    /// creation's `world.digging` multiplied together: what every game is
-    /// told, in order of what's held.
-    pub fn digging(&self) -> Vec<(blocks::BlockId, [f32; 5])> {
+    /// What each thing held does to blocks, from every creation's
+    /// `world.digging`: their speeds multiplied together and the highest
+    /// level. It's what every game is told, in order of what's held.
+    pub fn digging(&self) -> Vec<(Thing, items::Digging)> {
         let sh = self.shared.lock().unwrap();
-        let mut out: BTreeMap<blocks::BlockId, [f32; 5]> = BTreeMap::new();
-        for ((b, _), s) in &sh.digging {
-            let e = out.entry(*b).or_insert([1.0; 5]);
+        let mut out: BTreeMap<Thing, items::Digging> = BTreeMap::new();
+        for ((t, _), d) in &sh.digging {
+            let e = out.entry(*t).or_default();
             for k in 0..5 {
-                e[k] = (e[k] * s[k]).clamp(0.0, MAX_DIGGING as f32);
+                e.speeds[k] = (e.speeds[k] * d.speeds[k]).clamp(0.0, MAX_DIGGING as f32);
             }
+            e.level = e.level.max(d.level);
         }
         out.into_iter().collect()
     }
 
     /// `digging()`, when it changed since the last time this was asked.
-    pub fn digging_changes(&mut self) -> Option<Vec<(blocks::BlockId, [f32; 5])>> {
+    pub fn digging_changes(&mut self) -> Option<Vec<(Thing, items::Digging)>> {
         let changed = std::mem::take(&mut self.shared.lock().unwrap().digging_changed);
         changed.then(|| self.digging())
+    }
+
+    /// What breaking each block gives, by block: for each, the rule a
+    /// creation said last (`world.drops`).
+    pub fn drops(&self) -> Vec<(blocks::BlockId, items::Drop)> {
+        let sh = self.shared.lock().unwrap();
+        let mut out: BTreeMap<blocks::BlockId, (u64, items::Drop)> = BTreeMap::new();
+        for ((b, _), &(n, d)) in &sh.drops {
+            if out.get(b).is_none_or(|e| e.0 < n) {
+                out.insert(*b, (n, d));
+            }
+        }
+        out.into_iter().map(|(b, (_, d))| (b, d)).collect()
+    }
+
+    /// `drops()`, when it changed since the last time this was asked.
+    pub fn drops_changes(&mut self) -> Option<Vec<(blocks::BlockId, items::Drop)>> {
+        let changed = std::mem::take(&mut self.shared.lock().unwrap().drops_changed);
+        changed.then(|| self.drops())
+    }
+
+    /// Everything every game knows about breaking blocks, as `digging()`
+    /// and `drops()` say it.
+    pub fn rules(&self) -> items::Rules {
+        items::Rules { digging: self.digging().into_iter().collect(), drops: self.drops().into_iter().collect() }
     }
 
     /// The time of day creations see (`world.daytime`).

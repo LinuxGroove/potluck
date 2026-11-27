@@ -30,13 +30,14 @@ pub enum Action {
     Answer { ask: u32, choice: Option<u32> },
     /// A message from this player's client half to its creation (`@potluck/net`).
     Net(crate::script::Note),
-    /// What this player carries now (survival), and how many lots of the
-    /// host's changes they've had (`world.pockets`).
-    Pockets { survival: bool, items: Vec<(crate::blocks::BlockId, u32)>, seen: u32 },
+    /// What this player carries now (survival): the slots with something
+    /// in, as (slot, thing, how many); and how many lots of the host's
+    /// changes they've had (`world.pockets`).
+    Pockets { survival: bool, slots: Vec<(u8, crate::items::Thing, u32)>, seen: u32 },
     /// Interact on a block, for creations' `block_used`.
     UseBlock([i32; 3]),
-    /// What this player has in hand now (`world.held`); air for nothing.
-    Held(crate::blocks::BlockId),
+    /// What this player has in hand now (`world.held`); 0 for nothing.
+    Held(crate::items::Thing),
 }
 
 /// How far from a player a block they use can be.
@@ -121,6 +122,10 @@ pub fn interact(
         focus.go(Screen::Pause);
         return;
     }
+    if c.blocks {
+        acts.0.push(Act::OpenBlocks);
+        return;
+    }
     let eye = me.eye();
     let dir = me.forward();
     let block_t = me.target.map(|h| (h.block.as_vec3() + Vec3::splat(0.5) - eye).length() - 0.5).unwrap_or(f32::MAX);
@@ -138,6 +143,10 @@ pub fn interact(
             };
             me.aim_arch = Some((i, text));
         }
+    }
+    // the middle button: the block you aim at, into your hand
+    if let Some(hit) = me.target.filter(|_| c.pick && !settings.survival && me.aim_body.is_none()) {
+        acts.0.push(Act::Hold(hit.id));
     }
     let pid = net.my_id;
     // Share: what you ride or aim at, straight to a code
@@ -257,7 +266,7 @@ pub fn host_step(
             }
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
             Action::Net(note) => scripts.hear(pid, note),
-            Action::Pockets { survival, items, seen } => scripts.set_pockets(pid, survival, &items, seen),
+            Action::Pockets { survival, slots, seen } => scripts.set_pockets(pid, survival, &slots[..slots.len().min(crate::items::POCKETS)], seen),
             Action::Held(b) => scripts.set_held(pid, b),
             Action::UseBlock(at) => {
                 let at = IVec3::from_array(at);
@@ -323,12 +332,18 @@ pub fn host_step(
             net.send_healing(pid, rate);
         }
     }
-    // what tools dig faster, for every game here
+    // what tools dig faster and what blocks give, for every game here
     if let Some(digging) = scripts.digging_changes() {
         if let Some(me) = me.as_mut() {
-            me.digging = digging.iter().copied().collect();
+            me.rules.digging = digging.iter().copied().collect();
         }
         net.broadcast_digging(digging);
+    }
+    if let Some(drops) = scripts.drops_changes() {
+        if let Some(me) = me.as_mut() {
+            me.rules.drops = drops.iter().copied().collect();
+        }
+        net.broadcast_drops(drops);
     }
     // messages creations sent their client halves
     for (pid, note) in scripts.net_changes(&here) {
@@ -524,6 +539,10 @@ pub fn do_acts(
         // until a player says how old they are, only what's for all ages
         shares.green(&Who { young: settings.young || !settings.age_asked, ..Who::of(&settings) });
     }
+    // the backpack shows what's carried now (a creation may give or take while it's open)
+    if focus.screen == Screen::Backpack && focus.pockets != me.pockets {
+        focus.pockets = me.pockets;
+    }
     let mut later = vec![];
     for act in std::mem::take(&mut acts.0) {
         // the first time anything goes online, ask who's playing
@@ -629,6 +648,62 @@ pub fn do_acts(
                 shares.load(&Who::of(&settings), &code, None);
             }
             Act::OpenLibrary => focus.go(Screen::Library),
+            Act::OpenBlocks if settings.survival => {
+                // in survival, the backpack: on the slot in hand
+                focus.pockets = me.pockets;
+                focus.moving = None;
+                focus.go(Screen::Backpack);
+                let (_, items) = crate::ui::menu_items(&focus, &lib, &scripts, &settings, &info);
+                focus.sel = items.iter().position(|i| i.kind == crate::ui::Kind::Slot(me.slot)).unwrap_or(0);
+            }
+            Act::Slot(i, half) => match focus.moving {
+                // what to move, or half of it
+                None => {
+                    if !me.pockets.0.get(i).is_none_or(|s| s.empty()) {
+                        focus.moving = Some((i, half));
+                    }
+                }
+                // where it goes
+                Some((from, half)) => {
+                    me.pockets.shift(from, i, half);
+                    focus.moving = None;
+                    focus.pockets = me.pockets;
+                }
+            },
+            Act::Tidy => {
+                me.pockets.tidy();
+                focus.moving = None;
+                focus.pockets = me.pockets;
+            }
+            Act::OpenBlocks => {
+                focus.go(Screen::Blocks);
+                // on the block in your hand, when it's on the page open
+                let page = crate::ui::pages(&focus, &info).map(|(list, n)| list[n]).unwrap_or("");
+                let held = crate::items::block(me.pockets.0[me.slot].thing).unwrap_or(crate::blocks::AIR);
+                if !crate::ui::block_shelf(page).contains(&held) {
+                    if let Some(n) = crate::ui::BLOCK_PAGES.iter().position(|p| crate::ui::block_shelf(p).contains(&held)) {
+                        focus.blocks_page = n;
+                    }
+                }
+                let (_, items) = crate::ui::menu_items(&focus, &lib, &scripts, &settings, &info);
+                focus.sel = items.iter().position(|i| i.kind == crate::ui::Kind::Tile(held)).or_else(|| items.iter().position(|i| matches!(i.kind, crate::ui::Kind::Tile(_)))).unwrap_or(0);
+            }
+            Act::Hold(id) => {
+                // already in the hotbar: that slot; or in the one chosen
+                if !settings.survival && crate::blocks::block(id).shape != crate::blocks::Shape::Air {
+                    let t = crate::items::of_block(id);
+                    match me.pockets.0[..crate::items::HOTBAR].iter().position(|s| s.thing == t) {
+                        Some(i) => me.slot = i,
+                        None => {
+                            let s = me.slot;
+                            me.pockets.0[s].thing = t;
+                        }
+                    }
+                }
+                if focus.screen == Screen::Blocks {
+                    focus.go(Screen::Playing);
+                }
+            }
             Act::OpenSettings => {
                 focus.parents_open = false;
                 focus.fields.insert("name".into(), settings.name.clone());
@@ -839,7 +914,8 @@ pub fn do_acts(
                 me.pieces.clear();
                 me.panel = None;
                 net.leave();
-                *voxels = crate::world::generate(voxels.seed);
+                // the title's own island again (a kept world saved first, `worlds::acts`)
+                *voxels = crate::world::generate(crate::SEED);
                 herd.bodies.clear();
                 // what creations kept was the old world's, which is gone
                 scripts.shared.lock().unwrap().store = Default::default();

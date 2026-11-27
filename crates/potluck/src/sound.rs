@@ -125,15 +125,20 @@ pub fn material(id: BlockId) -> Material {
             _ => Material::Soft,
         };
     }
-    let n = blocks::block(id).name.to_lowercase();
+    named(blocks::block(id).name)
+}
+
+/// What something is made of, going by its name.
+pub fn named(name: &str) -> Material {
+    let n = name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
     if has(&["water"]) {
         Material::Water
     } else if has(&["glass"]) {
         Material::Glass
-    } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet"]) {
+    } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet", "glowcap", "mushroom"]) {
         Material::Plant
-    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
+    } else if has(&["log", "plank", "barrel", "crate", "chest", "torch", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
         Material::Wood
     } else if has(&["stone", "brick", "cobble", "bedrock", "column", "brazier", "pot", "lantern", "slate", "tile", "ore", "iron"]) {
         Material::Hard

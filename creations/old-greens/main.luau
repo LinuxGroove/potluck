@@ -273,7 +273,6 @@ end
 
 local function build(s: Site)
 	local g = BY_ID[s.id]
-	clearing(s)
 	for v = -4, 4 do
 		for u = -4, 4 do
 			local p = spot(s, u, 0, v)
@@ -342,15 +341,22 @@ local function light(s: Site)
 	end
 end
 
--- Looks for places a couple of hundred at a tick, so the world doesn't
--- stutter, then builds one a tick. Found places are kept straight away and
--- each is marked built once it is, so a reload carries on where it was.
+-- Looks for places a hundred at a tick, so the world doesn't stutter, then
+-- clears round one on a tick and builds it on the next. Found places are kept
+-- straight away and each is marked built once it is, so a reload carries on
+-- where it was.
 local next_point = 1
 local searched = #sites > 0
+local cleared: { [Site]: boolean } = {}
 local work: number? = nil
 work = world.every(0.1, function()
 	for _, s in sites do
 		if not s.built then
+			if not cleared[s] then
+				clearing(s)
+				cleared[s] = true
+				return
+			end
 			build(s)
 			s.built = true
 			save()
@@ -361,7 +367,7 @@ work = world.every(0.1, function()
 		world.cancel(work)
 		return
 	end
-	local stop = math.min(next_point + 200, #points)
+	local stop = math.min(next_point + 100, #points)
 	for i = next_point, stop do
 		consider(points[i][1], points[i][2])
 	end

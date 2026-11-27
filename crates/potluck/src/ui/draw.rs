@@ -1,6 +1,6 @@
 //! How the menus look. Short menus are words on a shade over the world
 //! ("open air": no box, the chosen line marked in mint); screens you browse
-//! or read (Creations, the market, Look inside, servers, suggestions) get a
+//! or read (Creations, Blocks, the backpack, the market, Look inside, servers, suggestions) get a
 //! near-solid sheet so pictures and code stay readable. Sizes are for a
 //! 720-line window and scale with the window's height.
 
@@ -23,6 +23,9 @@ fn mint(a: f32) -> Color {
 fn white(a: f32) -> Color {
     Color::srgba(1.0, 1.0, 1.0, a)
 }
+fn amber(a: f32) -> Color {
+    Color::srgba(1.0, 0.77, 0.36, a)
+}
 
 /// How a screen is laid out.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -41,7 +44,7 @@ pub fn look(s: &Screen) -> Look {
     match s {
         Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) => Look::Map,
         Screen::Chat => Look::Chat,
-        Screen::Library | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
+        Screen::Library | Screen::Blocks | Screen::Backpack | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
         _ => Look::Air,
     }
 }
@@ -62,19 +65,34 @@ enum Rows {
     Small,
 }
 
+/// Sizes here are for the menus' first fonts; Bungee draws wider and Barlow a little smaller.
+const HEADING_SCALE: f32 = 0.9;
+const LINE_SCALE: f32 = 1.04;
+
 struct Ctx {
     s: f32,
     fonts: Fonts,
     qr: Option<Handle<Image>>,
     pad: bool,
+    /// The title picture's width over its height.
+    logo_aspect: f32,
 }
 
 impl Ctx {
     fn u(&self, v: f32) -> Val {
         px(v * self.s)
     }
+    /// Menu lines, tabs and names.
     fn round(&self, size: f32, weight: u16) -> TextFont {
-        TextFont { font: self.fonts.title.clone().into(), font_size: FontSize::Px(size * self.s), weight: FontWeight(weight), ..default() }
+        TextFont { font: self.fonts.lines.clone().into(), font_size: FontSize::Px(size * LINE_SCALE * self.s), weight: FontWeight(weight), ..default() }
+    }
+    /// Screen titles, names in big and the letters on cards, in Bungee's capitals.
+    fn heading(&self, size: f32) -> TextFont {
+        TextFont { font: self.fonts.heading.clone().into(), font_size: FontSize::Px(size * HEADING_SCALE * self.s), ..default() }
+    }
+    /// The little capitals over a title or on a badge.
+    fn kicker(&self, size: f32, spacing: f32) -> (TextFont, LetterSpacing) {
+        (TextFont { font: self.fonts.heading.clone().into(), font_size: FontSize::Px(size * self.s), ..default() }, LetterSpacing::Px(spacing * self.s))
     }
     fn plain(&self, size: f32) -> TextFont {
         TextFont { font: self.fonts.ui.clone().into(), font_size: FontSize::Px(size * self.s), ..default() }
@@ -152,7 +170,7 @@ fn head_notes(screen: &Screen, items: &[Item]) -> (Option<String>, Option<String
             Some(k) => (Some(k), None, 1),
             None => (None, None, 0),
         },
-        Screen::Settings | Screen::Library | Screen::Controls | Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => (None, None, 0),
+        Screen::Settings | Screen::Library | Screen::Blocks | Screen::Backpack | Screen::Controls | Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => (None, None, 0),
         _ => match note_at(0) {
             Some(sub) => (None, Some(sub), 1),
             None => (None, None, 0),
@@ -160,18 +178,29 @@ fn head_notes(screen: &Screen, items: &[Item]) -> (Option<String>, Option<String
     }
 }
 
-/// The prompts along the bottom: what each button does here.
-fn prompts(screen: &Screen, item: Option<&Item>, info: &WorldInfo) -> Vec<(MenuPrompt, &'static str, &'static str, &'static str)> {
+/// The prompts along the bottom: what each button does here. `moving` is
+/// whether something on the backpack is on its way to another slot.
+fn prompts(screen: &Screen, item: Option<&Item>, info: &WorldInfo, moving: bool) -> Vec<(MenuPrompt, &'static str, &'static str, &'static str)> {
     let choose = match item.map(|i| &i.kind) {
         Some(Kind::Slider { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Swatch { .. }) => "Change",
         Some(Kind::Field { .. }) => "Type",
         Some(Kind::Card(_)) => "Look inside",
+        Some(Kind::Tile(_)) => "Hold it",
+        Some(Kind::Slot(_)) if moving => "Put it here",
+        Some(Kind::Slot(_)) => "Move",
         _ => "Choose",
     };
     let mut v = vec![(MenuPrompt::Accept, "A", "Enter", choose)];
+    if *screen == Screen::Backpack {
+        if !moving && matches!(item.map(|i| &i.kind), Some(Kind::Slot(_))) {
+            v.push((MenuPrompt::Interact, "X", "F", "Move half"));
+        }
+        v.push((MenuPrompt::Back, "B", "Esc", if moving { "Put it back" } else { "Back" }));
+        return v;
+    }
     match screen {
         Screen::Title => return v,
-        Screen::Settings | Screen::Library => v.push((MenuPrompt::Page, "LB RB", "Tab", "Pages")),
+        Screen::Settings | Screen::Library | Screen::Blocks => v.push((MenuPrompt::Page, "LB RB", "Tab", "Pages")),
         Screen::Tweak(_) => v.push((MenuPrompt::Accept, "\u{2039} \u{203a}", "\u{2039} \u{203a}", "Turn")),
         _ => {}
     }
@@ -202,6 +231,8 @@ pub fn draw_menu(
     windows: Query<&Window, With<PrimaryWindow>>,
     controls: Res<Controls>,
     photos: Res<crate::photos::Photos>,
+    atlas: Option<Res<BlockAtlas>>,
+    hints: Res<crate::check::Hints>,
 ) {
     let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
     if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
@@ -221,7 +252,9 @@ pub fn draw_menu(
             let err = vm.and_then(|v| v.error.clone()).or_else(|| half.and_then(|h| h.error.as_ref()).map(|e| format!("Its client half stopped: {e}")));
             let ms = vm.map(|v| v.load_ms).unwrap_or(0.0);
             let budget = vm.map(|v| v.budget());
-            Side { file: c.manifest.main.clone(), src, log, err, ms, budget }
+            // what the type checker is sure of, in the player's own creations
+            let hints = hints.of(c).map(|h| h.iter().map(|h| h.to_string()).collect()).unwrap_or_default();
+            Side { file: c.manifest.main.clone(), src, log, err, ms, budget, hints }
         }),
         _ => None,
     };
@@ -231,7 +264,8 @@ pub fn draw_menu(
         Look::Map | Look::Chat => 1.0,
         _ => (win.y / 720.0).clamp(0.75, 2.5),
     };
-    let ctx = Ctx { s, fonts: fonts.clone(), qr: focus.qr.as_ref().map(|q| q.1.clone()), pad: controls.pad };
+    let logo_aspect = images.get(&fonts.logo).map(|i| i.width() as f32 / i.height().max(1) as f32).unwrap_or(4.0);
+    let ctx = Ctx { s, fonts: fonts.clone(), qr: focus.qr.as_ref().map(|q| q.1.clone()), pad: controls.pad, logo_aspect };
     let pages = pages(&focus, &info);
     let (kicker, sub, skip) = head_notes(&focus.screen, &items);
     let rows = if look == Look::Map || look == Look::Chat {
@@ -255,9 +289,14 @@ pub fn draw_menu(
         Screen::Settings => width - 340.0 * s,
         _ => width,
     } / s;
-    // what fits: cards by rows, anything else by height
-    let cards: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i.kind, Kind::Card(_))).map(|(n, _)| n).collect();
-    let grid = Grid::new(win, s, !cards.is_empty() && look == Look::Sheet);
+    // what fits: cards (or blocks) by rows, anything else by height
+    let cards: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i.kind, Kind::Card(_) | Kind::Tile(_) | Kind::Slot(_))).map(|(n, _)| n).collect();
+    let grid = match focus.screen {
+        Screen::Blocks => Grid::tiles(win, s),
+        // the backpack's three rows and the hotbar, all at once
+        Screen::Backpack => Grid { on: true, cols: crate::items::HOTBAR, rows: crate::items::POCKETS / crate::items::HOTBAR },
+        _ => Grid::new(win, s, !cards.is_empty() && look == Look::Sheet),
+    };
     let (first, end) = if grid.on {
         let k = cards.iter().position(|&i| i == focus.sel).unwrap_or(0);
         let row = k / grid.cols;
@@ -281,8 +320,9 @@ pub fn draw_menu(
         (a + skip, b + skip)
     };
     let running: Vec<&String> = if focus.screen == Screen::Library { lib.running.iter().collect() } else { vec![] };
-    let pictures = photos.version;
-    let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}|{first}|{end}|{s}|{}|{}|{pages:?}|{running:?}|{pictures}|{}", focus.screen, focus.sel, focus.scroll, side, ctx.pad, info.in_world, grid.cols);
+    // made blocks' pictures arrive after their tiles
+    let pictures = photos.version + atlas.as_ref().map_or(0, |a| a.icons.len() as u64);
+    let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}|{first}|{end}|{s}|{}|{}|{pages:?}|{running:?}|{pictures}|{}|{:?}", focus.screen, focus.sel, focus.scroll, side, ctx.pad, info.in_world, grid.cols, focus.moving);
     if sig == focus.sig {
         return;
     }
@@ -300,11 +340,11 @@ pub fn draw_menu(
     }
     let sel = focus.sel;
     let item_sel = items.get(sel);
-    let bottom = prompts(&focus.screen, item_sel, &info);
+    let bottom = prompts(&focus.screen, item_sel, &info, focus.moving.is_some());
     let m = Menu { title, items: &items, skip, first, end, sel, kicker, sub, rows, width, pages, prompts: bottom };
     match look {
         Look::Air => air(&mut commands, &ctx, &m, &focus, &info),
-        Look::Sheet => sheet(&mut commands, &ctx, &m, &focus, &lib, &photos, side, &grid, &cards),
+        Look::Sheet => sheet(&mut commands, &ctx, &m, &focus, &lib, &photos, side, &grid, &cards, atlas.as_deref()),
         Look::Map | Look::Chat => panel(&mut commands, &ctx, &m, look),
     }
 }
@@ -316,11 +356,12 @@ struct Side {
     err: Option<String>,
     ms: f32,
     budget: Option<String>,
+    hints: Vec<String>,
 }
 
 impl std::fmt::Debug for Side {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}|{}|{:?}|{:?}|{:.0}|{:?}", self.file, self.src.len(), self.log, self.err, self.ms, self.budget)
+        write!(f, "{}|{}|{:?}|{:?}|{:.0}|{:?}|{:?}", self.file, self.src.len(), self.log, self.err, self.ms, self.budget, self.hints)
     }
 }
 
@@ -351,6 +392,17 @@ struct Grid {
 impl Grid {
     /// The detail beside the cards is this wide, before scaling.
     const DETAIL: f32 = 330.0;
+    /// A block on the Blocks sheet is this wide (and tall), before scaling.
+    const TILE: f32 = 84.0;
+    /// The Blocks sheet's squares: as many across as fit beside the detail.
+    fn tiles(win: Vec2, s: f32) -> Grid {
+        let inner = win.x - (2.0 * 40.0 + 2.0 * 30.0 + Self::DETAIL + 24.0) * s;
+        let cols = ((inner + 10.0 * s) / ((Self::TILE + 10.0) * s)).floor().clamp(3.0, 14.0) as usize;
+        let tile = (inner - 10.0 * s * (cols as f32 - 1.0)) / cols as f32;
+        let room = win.y - (2.0 * 24.0 + 22.0 + 18.0 + 48.0 + 16.0 + 52.0 + 10.0) * s;
+        let rows = ((room + 10.0 * s) / (tile + 10.0 * s)).floor().max(1.0) as usize;
+        Grid { on: true, cols, rows }
+    }
     fn new(win: Vec2, s: f32, on: bool) -> Grid {
         let inner = win.x - (2.0 * 40.0 + 2.0 * 30.0 + Self::DETAIL + 24.0) * s;
         let cols = ((inner + 14.0 * s) / (194.0 * s)).floor().clamp(2.0, 6.0) as usize;
@@ -392,13 +444,14 @@ fn shade(wide: bool) -> BackgroundGradient {
 /// The head: a kicker, the title and a line under it.
 fn head(p: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, big: bool, size: f32) {
     if let Some(k) = &m.kicker {
-        p.spawn((Text::new(k.to_uppercase()), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s), Node { margin: UiRect::bottom(ctx.u(6.0)), ..default() }));
+        p.spawn((Text::new(k.to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT), Node { margin: UiRect::bottom(ctx.u(6.0)), ..default() }));
     }
     if !m.title.is_empty() {
         if big {
-            p.spawn((Text::new(m.title.clone()), ctx.round(96.0, 700), TextColor(GOLD), TextShadow { offset: Vec2::splat(5.0 * ctx.s), color: Color::srgba(0.24, 0.12, 0.0, 0.35) }));
+            // the game's name in dirt with grass on top (tools/title.py)
+            p.spawn((ImageNode::new(ctx.fonts.logo.clone()), Node { width: ctx.u(560.0), aspect_ratio: Some(ctx.logo_aspect), ..default() }));
         } else {
-            p.spawn((Text::new(m.title.clone()), ctx.round(size, 700), TextColor(INK), ctx.shadow(3.0, 0.28)));
+            p.spawn((Text::new(m.title.clone()), ctx.heading(size), TextColor(INK), ctx.shadow(3.0, 0.28)));
         }
     }
     if let Some(sub) = &m.sub {
@@ -487,11 +540,22 @@ fn tabs_across(p: &mut ChildSpawnerCommands, ctx: &Ctx, pages: &[&str], on: usiz
     });
 }
 
+/// "More above" or "More below" with a small chevron, drawn since the fonts have no arrows.
+fn more(p: &mut ChildSpawnerCommands, ctx: &Ctx, up: bool) {
+    p.spawn(Node { align_items: AlignItems::Center, column_gap: ctx.u(8.0), ..default() }).with_children(|r| {
+        let (b, z) = (ctx.u(1.5), Val::ZERO);
+        let border = if up { UiRect::new(b, z, b, z) } else { UiRect::new(z, b, z, b) };
+        let nudge = ctx.u(if up { 2.0 } else { -2.0 });
+        r.spawn((Node { width: ctx.u(6.0), height: ctx.u(6.0), border, margin: UiRect::new(ctx.u(2.0), z, nudge, z), ..default() }, UiTransform::from_rotation(Rot2::degrees(45.0)), BorderColor::all(FAINT)));
+        r.spawn((Text::new(if up { "More above" } else { "More below" }), ctx.plain(12.0), TextColor(FAINT)));
+    });
+}
+
 /// The list's rows, from the first that fits to the last, with "more" marks.
 fn list(p: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu) {
     let from = m.first.max(m.skip);
     if from > m.skip {
-        p.spawn((Text::new("\u{25b2} More above"), ctx.plain(12.0), TextColor(FAINT)));
+        more(p, ctx, true);
     }
     let mut i = from;
     while i < m.end {
@@ -512,7 +576,7 @@ fn list(p: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu) {
         i += 1;
     }
     if m.end < m.items.len() {
-        p.spawn((Text::new("\u{25bc} More below"), ctx.plain(12.0), TextColor(FAINT)));
+        more(p, ctx, false);
     }
 }
 
@@ -543,7 +607,7 @@ fn item(p: &mut ChildSpawnerCommands, ctx: &Ctx, i: usize, item: &Item, picked: 
             }
         }
         Kind::Big => {
-            p.spawn((Text::new(item.label.clone()), ctx.round(60.0, 700), TextColor(MINT), ctx.shadow(3.0, 0.3), Node { margin: UiRect::vertical(ctx.u(4.0)), ..default() }));
+            p.spawn((Text::new(item.label.clone()), ctx.heading(60.0), TextColor(MINT), ctx.shadow(3.0, 0.3), Node { margin: UiRect::vertical(ctx.u(4.0)), ..default() }));
         }
         Kind::Chip(_) => {
             p.spawn((
@@ -714,7 +778,8 @@ fn prompt_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, prompts: &[(MenuPrompt, &
 
 /// The sheet: a near-solid card over the softened world.
 #[allow(clippy::too_many_arguments)]
-fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Library, photos: &crate::photos::Photos, side: Option<Side>, grid: &Grid, cards: &[usize]) {
+#[allow(clippy::too_many_arguments)]
+fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Library, photos: &crate::photos::Photos, side: Option<Side>, grid: &Grid, cards: &[usize], atlas: Option<&BlockAtlas>) {
     let full = grid.on || side.is_some() || focus.screen == Screen::Library;
     let mut r = root(commands);
     r.insert((BackgroundColor(slate(0.32)), Node { width: percent(100), height: percent(100), position_type: PositionType::Absolute, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }));
@@ -740,6 +805,10 @@ fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Libr
         root.spawn((node, BackgroundColor(slate(0.965)), BoxShadow(vec![ShadowStyle { color: Color::srgba(0.0, 0.0, 0.0, 0.45), x_offset: px(0), y_offset: ctx.u(20.0), spread_radius: px(0), blur_radius: ctx.u(60.0) }]))).with_children(|sh| {
             if focus.screen == Screen::Library {
                 creations(sh, ctx, m, focus, lib, photos, grid, cards);
+            } else if focus.screen == Screen::Blocks {
+                block_sheet(sh, ctx, m, lib, grid, cards, atlas);
+            } else if focus.screen == Screen::Backpack {
+                backpack(sh, ctx, m, focus, atlas);
             } else if let Some(side) = side {
                 inside(sh, ctx, m, side, focus.scroll);
             } else {
@@ -750,7 +819,7 @@ fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Libr
                         l.spawn(Node { column_gap: ctx.u(26.0), align_items: AlignItems::Center, margin: UiRect::bottom(ctx.u(14.0)), ..default() }).with_children(|w| {
                             item(w, ctx, q, &m.items[q], false, m.rows, false);
                             w.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_shrink: 1.0, row_gap: ctx.u(8.0), ..default() }).with_children(|t| {
-                                t.spawn((Text::new("ON A PHONE"), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s)));
+                                t.spawn((Text::new("ON A PHONE"), ctx.kicker(12.5, 1.4), TextColor(MINT)));
                                 if let Some(n) = m.items.get(q + 1).filter(|i| i.kind == Kind::Note) {
                                     t.spawn((Text::new(n.label.clone()), ctx.plain(16.0), TextColor(SOFT)));
                                 }
@@ -771,6 +840,9 @@ fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Libr
 fn clone_menu<'a>(m: &Menu<'a>) -> Menu<'a> {
     Menu { title: m.title.clone(), items: m.items, skip: m.skip, first: m.first, end: m.end, sel: m.sel, kicker: m.kicker.clone(), sub: m.sub.clone(), rows: m.rows, width: m.width, pages: m.pages, prompts: m.prompts.clone() }
 }
+
+/// How many of the type checker's hints Look inside shows.
+const HINTS_SHOWN: usize = 5;
 
 /// Look inside: what it is and what you can do on the left, its code on the right.
 fn inside(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, side: Side, scroll: i32) {
@@ -795,6 +867,14 @@ fn inside(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, side: Side, scroll
             if let Some(e) = side.err {
                 p.spawn((Text::new(format!("Problem: {e}")), ctx.plain(15.0), TextColor(RED)));
             }
+            if !side.hints.is_empty() {
+                let more = side.hints.len().saturating_sub(HINTS_SHOWN);
+                let mut text = format!("The type checker spotted\n{}", side.hints.iter().take(HINTS_SHOWN).cloned().collect::<Vec<_>>().join("\n"));
+                if more > 0 {
+                    text += &format!("\nand {more} more");
+                }
+                p.spawn((Text::new(text), ctx.plain(14.0), TextColor(GOLD)));
+            }
             if !side.log.is_empty() {
                 p.spawn((Text::new(format!("Log\n{}", side.log.join("\n"))), ctx.mono(13.0), TextColor(SOFT)));
             }
@@ -807,7 +887,7 @@ fn inside(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, side: Side, scroll
 #[allow(clippy::too_many_arguments)]
 fn creations(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Library, photos: &crate::photos::Photos, grid: &Grid, cards: &[usize]) {
     sh.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, column_gap: ctx.u(20.0), flex_shrink: 0.0, ..default() }).with_children(|top| {
-        top.spawn((Text::new(m.title.clone()), ctx.round(36.0, 700), TextColor(INK), ctx.shadow(3.0, 0.28)));
+        top.spawn((Text::new(m.title.clone()), ctx.heading(36.0), TextColor(INK), ctx.shadow(3.0, 0.28)));
         if let Some((pages, on)) = m.pages {
             tabs_across(top, ctx, pages, on);
         }
@@ -844,6 +924,220 @@ fn creations(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, 
     let _ = focus;
 }
 
+/// The Blocks sheet: pages across the top, every block as its picture, and
+/// the chosen one's name and what it is beside them.
+fn block_sheet(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, lib: &Library, grid: &Grid, tiles: &[usize], atlas: Option<&BlockAtlas>) {
+    let icon = |id: blocks::BlockId| atlas.and_then(|a| a.icons.get(blocks::block(id).faces[1]).cloned());
+    sh.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, column_gap: ctx.u(20.0), flex_shrink: 0.0, ..default() }).with_children(|top| {
+        top.spawn((Text::new(m.title.clone()), ctx.heading(36.0), TextColor(INK), ctx.shadow(3.0, 0.28)));
+        if let Some((pages, on)) = m.pages {
+            tabs_across(top, ctx, pages, on);
+        }
+    });
+    sh.spawn(Node { column_gap: ctx.u(24.0), flex_grow: 1.0, min_height: px(0), margin: UiRect::top(ctx.u(16.0)), ..default() }).with_children(|body| {
+        body.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, min_width: px(0), row_gap: ctx.u(10.0), ..default() }).with_children(|left| {
+            for it in m.items.iter().filter(|i| i.kind == Kind::Note) {
+                left.spawn((Node { padding: UiRect::axes(ctx.u(14.0), ctx.u(10.0)), border_radius: BorderRadius::all(ctx.u(10.0)), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(1.0, 0.77, 0.36, 0.12))))
+                    .with_child((Text::new(it.label.clone()), ctx.plain(14.5), TextColor(SOFT)));
+            }
+            left.spawn(Node { display: Display::Grid, grid_template_columns: RepeatedGridTrack::flex(grid.cols as u16, 1.0), column_gap: ctx.u(10.0), row_gap: ctx.u(10.0), padding: UiRect::all(ctx.u(4.0)), margin: UiRect::all(ctx.u(-4.0)), ..default() }).with_children(|g| {
+                for k in m.first..m.end {
+                    let Some(&n) = tiles.get(k) else { continue };
+                    let Kind::Tile(id) = m.items[n].kind else { continue };
+                    let picked = n == m.sel;
+                    let mut e = g.spawn((
+                        Interaction::default(),
+                        MenuButton(n),
+                        Node { aspect_ratio: Some(1.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(12.0)), min_width: px(0), ..default() },
+                        BackgroundColor(white(if picked { 0.12 } else { 0.05 })),
+                    ));
+                    if picked {
+                        e.insert((Outline::new(ctx.u(3.0), px(0), MINT), BoxShadow(vec![ShadowStyle { color: mint(0.35), x_offset: px(0), y_offset: px(0), spread_radius: px(0), blur_radius: ctx.u(18.0) }])));
+                    }
+                    if let Some(h) = icon(id) {
+                        e.with_child((ImageNode::new(h), Node { width: percent(66), height: percent(66), ..default() }));
+                    }
+                }
+            });
+            let more = (m.first > 0, m.end < tiles.len());
+            if more.0 || more.1 {
+                let rows = tiles.len().div_ceil(grid.cols);
+                left.spawn((Text::new(format!("Row {} of {}", m.first / grid.cols + 1, rows.max(1))), ctx.plain(12.0), TextColor(FAINT)));
+            }
+        });
+        let Some(Kind::Tile(id)) = m.items.get(m.sel).map(|i| i.kind.clone()) else { return };
+        let b = blocks::block(id);
+        let from = crate::made::table().into_iter().find(|e| e.id == id).map(|e| lib.list.get(&e.creation).map(|c| c.manifest.name.clone()).unwrap_or(e.creation));
+        let mut facts = vec![];
+        if b.light {
+            facts.push("Gives light");
+        }
+        facts.push(match b.shape {
+            blocks::Shape::Cross => "A plant",
+            blocks::Shape::Water => "Flows",
+            blocks::Shape::Cutout => "See-through",
+            blocks::Shape::Model if !b.solid => "Walk through it",
+            blocks::Shape::Model => "Smaller than a block",
+            _ => "A full block",
+        });
+        if b.hardness == 0.0 {
+            facts.push("Breaks at once");
+        }
+        body.spawn((
+            Node { flex_direction: FlexDirection::Column, width: ctx.u(Grid::DETAIL), flex_shrink: 0.0, padding: UiRect::all(ctx.u(18.0)), row_gap: ctx.u(10.0), border_radius: BorderRadius::all(ctx.u(16.0)), overflow: Overflow::clip(), ..default() },
+            BackgroundColor(white(0.05)),
+        ))
+        .with_children(|d| {
+            d.spawn((Node { width: percent(100), aspect_ratio: Some(1.6), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(12.0)), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25))))
+                .with_children(|pic| {
+                    if let Some(h) = icon(id) {
+                        pic.spawn((ImageNode::new(h), Node { height: percent(70), aspect_ratio: Some(1.0), ..default() }));
+                    }
+                });
+            let whose = match &from {
+                Some(c) => format!("From {c}"),
+                None => "Potluck's own".into(),
+            };
+            d.spawn((Text::new(whose.to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT)));
+            d.spawn((Text::new(b.name), ctx.heading(30.0), TextColor(INK)));
+            d.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: ctx.u(6.0), row_gap: ctx.u(6.0), ..default() }).with_children(|f| {
+                for fact in facts {
+                    f.spawn((Node { padding: UiRect::axes(ctx.u(8.0), ctx.u(4.0)), border_radius: BorderRadius::all(ctx.u(6.0)), ..default() }, BackgroundColor(white(0.08)))).with_child((Text::new(fact), ctx.plain(12.0), TextColor(SOFT)));
+                }
+            });
+        });
+    });
+}
+
+/// The backpack: its 27 slots in three rows, then the hotbar's nine, and the
+/// chosen slot's thing beside them. A slot on its way somewhere else is
+/// marked in amber until it's put down.
+fn backpack(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, atlas: Option<&BlockAtlas>) {
+    use crate::items::{self, HOTBAR, POCKETS};
+    let icon = |t: items::Thing| atlas.and_then(|a| a.icons.get(items::icon(t)).cloned());
+    let moving = focus.moving.map(|m| m.0);
+    // a slot as a square: its thing's picture and how many
+    let square = |g: &mut ChildSpawnerCommands, n: usize, i: usize| {
+        let slot = focus.pockets.0[i];
+        let picked = n == m.sel;
+        let lifted = moving == Some(i);
+        let mut e = g.spawn((
+            Interaction::default(),
+            MenuButton(n),
+            Node { aspect_ratio: Some(1.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(10.0)), min_width: px(0), ..default() },
+            BackgroundColor(if lifted { amber(0.16) } else { white(if picked { 0.12 } else { 0.05 }) }),
+        ));
+        if picked {
+            e.insert((Outline::new(ctx.u(3.0), px(0), MINT), BoxShadow(vec![ShadowStyle { color: mint(0.35), x_offset: px(0), y_offset: px(0), spread_radius: px(0), blur_radius: ctx.u(16.0) }])));
+        } else if lifted {
+            e.insert(Outline::new(ctx.u(3.0), px(0), amber(0.9)));
+        }
+        if slot.empty() {
+            return;
+        }
+        e.with_children(|sq| {
+            if let Some(h) = icon(slot.thing) {
+                let mut img = ImageNode::new(h);
+                if lifted {
+                    img.color = Color::srgba(1.0, 1.0, 1.0, 0.45);
+                }
+                sq.spawn((img, Node { width: percent(64), height: percent(64), ..default() }));
+            }
+            if items::stack(slot.thing) > 1 {
+                sq.spawn((
+                    Text::new(slot.count.to_string()),
+                    ctx.round(15.0, 700),
+                    TextColor(INK),
+                    ctx.shadow(1.5, 0.8),
+                    Node { position_type: PositionType::Absolute, right: ctx.u(7.0), bottom: ctx.u(3.0), ..default() },
+                ));
+            }
+        });
+    };
+    sh.spawn(Node { align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }).with_children(|top| {
+        top.spawn((Text::new(m.title.clone()), ctx.heading(36.0), TextColor(INK), ctx.shadow(3.0, 0.28)));
+    });
+    sh.spawn(Node { column_gap: ctx.u(24.0), flex_grow: 1.0, min_height: px(0), margin: UiRect::top(ctx.u(16.0)), ..default() }).with_children(|body| {
+        // as wide as nine squares of about 76 each, at most
+        let wide = ctx.u(HOTBAR as f32 * 76.0 + (HOTBAR as f32 - 1.0) * 8.0);
+        body.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, min_width: px(0), max_width: wide, row_gap: ctx.u(8.0), ..default() }).with_children(|left| {
+            let grid = |left: &mut ChildSpawnerCommands, range: std::ops::Range<usize>| {
+                left.spawn(Node { display: Display::Grid, grid_template_columns: RepeatedGridTrack::flex(HOTBAR as u16, 1.0), column_gap: ctx.u(8.0), row_gap: ctx.u(8.0), padding: UiRect::all(ctx.u(4.0)), margin: UiRect::all(ctx.u(-4.0)), flex_shrink: 0.0, ..default() }).with_children(|g| {
+                    for n in range {
+                        if let Some(Kind::Slot(i)) = m.items.get(n).map(|it| &it.kind) {
+                            square(g, n, *i);
+                        }
+                    }
+                });
+            };
+            // the items are the backpack's 27 slots, then the hotbar's 9
+            let back = POCKETS - HOTBAR;
+            grid(left, 0..back);
+            left.spawn((Text::new("HOTBAR"), ctx.kicker(12.5, 1.4), TextColor(MINT), Node { margin: UiRect::top(ctx.u(10.0)), ..default() }));
+            grid(left, back..POCKETS);
+            if let Some(n) = m.items.iter().position(|it| matches!(it.kind, Kind::Button(_))) {
+                left.spawn(Node { margin: UiRect::top(ctx.u(14.0)), flex_shrink: 0.0, ..default() }).with_children(|b| item(b, ctx, n, &m.items[n], n == m.sel, m.rows, false));
+            }
+        });
+        // the chosen slot's thing
+        let chosen = match m.items.get(m.sel).map(|it| &it.kind) {
+            Some(Kind::Slot(i)) => Some(*i),
+            _ => None,
+        };
+        let slot = chosen.map(|i| focus.pockets.0[i]).filter(|s| !s.empty());
+        body.spawn((
+            Node { flex_direction: FlexDirection::Column, width: ctx.u(Grid::DETAIL), flex_shrink: 0.0, padding: UiRect::all(ctx.u(18.0)), row_gap: ctx.u(10.0), border_radius: BorderRadius::all(ctx.u(16.0)), overflow: Overflow::clip(), ..default() },
+            BackgroundColor(white(0.05)),
+        ))
+        .with_children(|d| {
+            d.spawn((Node { width: percent(100), aspect_ratio: Some(1.6), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(12.0)), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25))))
+                .with_children(|pic| {
+                    if let Some(h) = slot.and_then(|s| icon(s.thing)) {
+                        pic.spawn((ImageNode::new(h), Node { height: percent(70), aspect_ratio: Some(1.0), ..default() }));
+                    }
+                });
+            let place = match chosen {
+                Some(i) if i < HOTBAR => format!("Hotbar, slot {}", i + 1),
+                Some(_) => "Backpack".into(),
+                None => String::new(),
+            };
+            if !place.is_empty() {
+                d.spawn((Text::new(place.to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT)));
+            }
+            match slot {
+                Some(s) => {
+                    d.spawn((Text::new(items::name(s.thing)), ctx.heading(28.0), TextColor(INK)));
+                    let most = items::stack(s.thing);
+                    let mut facts = vec![];
+                    if most > 1 {
+                        facts.push(format!("{} of {most} in this slot", s.count));
+                    }
+                    let all = focus.pockets.count(s.thing);
+                    if all > s.count {
+                        facts.push(format!("{all} in all"));
+                    }
+                    facts.push(if items::is_item(s.thing) { "Something to hold".into() } else { "A block to put down".into() });
+                    d.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: ctx.u(6.0), row_gap: ctx.u(6.0), ..default() }).with_children(|f| {
+                        for fact in facts {
+                            f.spawn((Node { padding: UiRect::axes(ctx.u(8.0), ctx.u(4.0)), border_radius: BorderRadius::all(ctx.u(6.0)), ..default() }, BackgroundColor(white(0.08)))).with_child((Text::new(fact), ctx.plain(12.0), TextColor(SOFT)));
+                        }
+                    });
+                }
+                None if chosen.is_some() => {
+                    d.spawn((Text::new("An empty slot"), ctx.heading(24.0), TextColor(SOFT)));
+                }
+                None => {}
+            }
+            let says = if focus.moving.is_some() {
+                "Choose where it goes. Onto the same thing it stacks; onto something else, the two swap."
+            } else {
+                "Choose something to move it to another slot. What's in the hotbar is what you can hold."
+            };
+            d.spawn((Text::new(says), ctx.plain(13.0), TextColor(FAINT), Node { margin: UiRect::top(ctx.u(6.0)), ..default() }));
+        });
+    });
+}
+
 /// The colours behind a creation that has no picture yet, by kind.
 fn kind_colours(kind: &str) -> (Color, Color) {
     match kind {
@@ -868,7 +1162,7 @@ fn picture(p: &mut ChildSpawnerCommands, ctx: &Ctx, c: &crate::creations::Creati
             }
             None => {
                 let first: String = c.manifest.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
-                pic.spawn((Text::new(first), ctx.round(letter, 700), TextColor(Color::srgba(0.98, 0.96, 0.9, 0.85)), TextShadow { offset: Vec2::splat(4.0 * ctx.s), color: Color::srgba(0.0, 0.0, 0.0, 0.25) }));
+                pic.spawn((Text::new(first), ctx.heading(letter), TextColor(Color::srgba(0.98, 0.96, 0.9, 0.85)), TextShadow { offset: Vec2::splat(4.0 * ctx.s), color: Color::srgba(0.0, 0.0, 0.0, 0.25) }));
             }
         }
         if here {
@@ -876,7 +1170,7 @@ fn picture(p: &mut ChildSpawnerCommands, ctx: &Ctx, c: &crate::creations::Creati
                 Node { position_type: PositionType::Absolute, left: ctx.u(8.0), top: ctx.u(8.0), padding: UiRect::axes(ctx.u(7.0), ctx.u(3.0)), border_radius: BorderRadius::all(ctx.u(5.0)), ..default() },
                 BackgroundColor(MINT),
             ))
-            .with_child((Text::new("IN THIS WORLD"), ctx.plain(10.5), TextColor(Color::srgb(0.05, 0.16, 0.14)), LetterSpacing::Px(0.6 * ctx.s)));
+            .with_child((Text::new("IN THIS WORLD"), ctx.kicker(10.5, 0.6), TextColor(Color::srgb(0.05, 0.16, 0.14))));
         }
     });
 }
@@ -910,8 +1204,8 @@ fn detail(body: &mut ChildSpawnerCommands, ctx: &Ctx, c: &crate::creations::Crea
     .with_children(|d| {
         picture(d, ctx, c, photo, false, 96.0);
         d.spawn(Node { flex_direction: FlexDirection::Column, padding: UiRect::all(ctx.u(18.0)), row_gap: ctx.u(10.0), ..default() }).with_children(|t| {
-            t.spawn((Text::new(format!("{} by {}", kind_name(&m.kind), m.by).to_uppercase()), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s)));
-            t.spawn((Text::new(m.name.clone()), ctx.round(30.0, 700), TextColor(INK)));
+            t.spawn((Text::new(format!("{} by {}", kind_name(&m.kind), m.by).to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT)));
+            t.spawn((Text::new(m.name.clone()), ctx.heading(30.0), TextColor(INK)));
             if !m.about.is_empty() {
                 t.spawn((Text::new(m.about.clone()), ctx.plain(15.0), TextColor(SOFT)));
             }
@@ -950,7 +1244,7 @@ fn panel(commands: &mut Commands, ctx: &Ctx, m: &Menu, look: Look) {
         ))
         .with_children(|p| {
             if !m.title.is_empty() {
-                p.spawn((Text::new(m.title.clone()), ctx.round(34.0, 700), TextColor(INK), ctx.shadow(2.0, 0.28), Node { margin: UiRect::bottom(px(8)), ..default() }));
+                p.spawn((Text::new(m.title.clone()), ctx.heading(34.0), TextColor(INK), ctx.shadow(2.0, 0.28), Node { margin: UiRect::bottom(px(8)), ..default() }));
             }
             list(p, ctx, m);
             if !on_map {
