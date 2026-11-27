@@ -1069,10 +1069,25 @@ fn every_base_creation_runs_and_answers_players() {
     scripts.set_day(0.0);
     scripts.set_pockets(7, true, &[], 0);
     run(&mut scripts, &mut voxels, &mut herd, 2.0);
+    // the Old Greens build their three ruins once; what's counted below is what changes after
+    let built = |scripts: &Scripts| {
+        let shared = scripts.shared.lock().unwrap();
+        // the store keeps a Luau list as {"#1": .., "#2": ..}
+        let sites: Vec<serde_json::Value> = shared.store.get("old-greens", "sites").and_then(|s| s.as_object()).map(|o| o.values().cloned().collect()).unwrap_or_default();
+        sites.len() == 3 && sites.iter().all(|s| s["built"] == serde_json::Value::Bool(true))
+    };
+    for _ in 0..30 {
+        if built(&scripts) {
+            break;
+        }
+        run(&mut scripts, &mut voxels, &mut herd, 1.0);
+    }
+    assert!(built(&scripts), "the Old Greens build their ruins");
+    voxels.changes.clear();
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
     // everything but the Gloomlings (only near survival players at night) and mods with no bodies
-    // (and balloons, which only come from a basket put down)
-    for c in base.iter().filter(|c| c.id != "gloomlings" && c.id != "balloon" && c.manifest.kind != "mod") {
+    // (and balloons, which only come from a basket put down, and the Old Greens, which only build)
+    for c in base.iter().filter(|c| !["gloomlings", "balloon", "old-greens"].contains(&c.id.as_str()) && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -3434,7 +3449,7 @@ fn gnomes_tell_survival_players_how_to_get_by() {
     let (a, b) = (asked(&scripts, 7).unwrap(), asked(&scripts, 8).unwrap());
     assert_eq!(a.choices.last().map(String::as_str), Some("Getting by"), "{:?}", a.choices);
     assert_eq!(b.choices.last().map(String::as_str), Some("Playing together"), "{:?}", b.choices);
-    scripts.answer(7, a.ask, Some(3));
+    scripts.answer(7, a.ask, Some(a.choices.len() as u32 - 1));
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let topic = asked(&scripts, 7).unwrap();
     assert!(topic.text.contains("workbench") && topic.text.ends_with("can't bear light."), "{}", topic.text);
