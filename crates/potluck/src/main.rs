@@ -131,7 +131,16 @@ fn main() {
     let mode = if play && settings.fullscreen && !windowed { WindowMode::BorderlessFullscreen(MonitorSelection::Primary) } else { WindowMode::Windowed };
     let present_asked = opt("present").is_some() || args.iter().any(|a| a == "--no-vsync");
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+    // wgpu cuts graphics memory from blocks of 128 to 256 MB by default, and
+    // half-used ones are memory the card gives the game that nothing uses
+    // (`memory`), so ask for blocks of 8 to 64 MB; POTLUCK_GPU_BLOCKS=big
+    // goes back to the big ones for measuring
+    let big_blocks = std::env::var("POTLUCK_GPU_BLOCKS").is_ok_and(|v| v == "big");
+    let wgpu = bevy::render::settings::WgpuSettings {
+        memory_hints: if big_blocks { bevy::render::settings::MemoryHints::Performance } else { bevy::render::settings::MemoryHints::MemoryUsage },
+        ..default()
+    };
+    app.add_plugins(DefaultPlugins.set(bevy::render::RenderPlugin { render_creation: wgpu.into(), ..default() }).set(WindowPlugin {
         primary_window: Some(Window {
             title: "Potluck".into(),
             resolution,

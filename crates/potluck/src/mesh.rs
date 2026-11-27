@@ -48,13 +48,15 @@ pub struct Off {
     /// Leaves in the ray traced scene as the solid blocks they're drawn
     /// with, in place of the porous stand-in (`porous_leaves`)
     pub rtsolid: bool,
+    /// Chunk meshes at full size on the graphics card (`pack`)
+    pub pack: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid"), pack: has("pack") }
     }
 }
 
@@ -283,6 +285,24 @@ impl MeshData {
             m.set_morph_targets(t);
         }
         m.with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, self.tan).with_inserted_indices(Indices::U32(self.idx))
+    }
+}
+
+/// Packs a chunk mesh smaller for the graphics card, half the bytes a
+/// vertex: normals and tangents as two 16-bit numbers each, UVs as 16-bit
+/// fractions, colours as half floats (grass tints go past 1), and 16-bit
+/// indices where they fit. Bevy's shaders unpack them. Positions stay full
+/// floats, so the edges of neighbouring chunks meet exactly. The ray tracer
+/// reads meshes itself, so the ones it sees stay as they are.
+pub fn pack(mesh: &mut Mesh) {
+    use bevy::mesh::{AttributeQuantization, MeshAttributeCompressionFlags as F, MeshCompressionArgs};
+    let args = MeshCompressionArgs {
+        compress_indices: true,
+        quantize_attributes: (&[(Mesh::ATTRIBUTE_COLOR.id, AttributeQuantization::Float16)]).into(),
+        compress_attributes: F::COMPRESS_NORMAL | F::COMPRESS_TANGENT | F::COMPRESS_UV0 | F::COMPRESS_UV1,
+    };
+    if let Err(e) = mesh.compress_mesh(&args) {
+        warn!("Couldn't pack a chunk mesh: {e:?}");
     }
 }
 
@@ -1060,7 +1080,11 @@ pub fn remesh(
             if rt.0 && apart && i != 2 {
                 data.face_normals();
             }
-            let mesh = data.into_mesh(rt.0 && !apart);
+            let traced = rt.0 && !apart;
+            let mut mesh = data.into_mesh(traced);
+            if !traced && !cover.off.pack {
+                pack(&mut mesh);
+            }
             let sways = mesh.has_morph_targets();
             let verts = mesh.count_vertices() as u64;
             sizes[i] = [
