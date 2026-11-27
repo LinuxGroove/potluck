@@ -1728,3 +1728,12 @@ fn write_the_sounds() {
     }
     std::fs::write(dir.join("all.wav"), wav(&all)).unwrap();
 }
+
+#[test]
+fn clouds_keep_their_mesh_to_recolour() {
+    // `clouds::drift` recolours the disc as the sun moves, long after it has
+    // gone to the GPU, so its data has to stay in the main world too
+    let disc = crate::render::clouds::disc();
+    assert!(disc.asset_usage.contains(bevy::asset::RenderAssetUsages::MAIN_WORLD));
+    assert!(disc.attribute(Mesh::ATTRIBUTE_COLOR).is_some());
+}
