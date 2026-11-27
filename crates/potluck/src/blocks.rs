@@ -55,6 +55,7 @@ pub const FENCE: BlockId = 46;
 // 47 to 63 are kept for the looks; 64 and up are for the creations' work.
 pub const WOODEN_PICKAXE: BlockId = 64;
 pub const STONE_SWORD: BlockId = 71;
+pub const BALLOON_BASKET: BlockId = 72;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
@@ -219,6 +220,7 @@ const BRAZIER_BOXES: &[Cuboid] = &[
     bx([3, 0, 11], [5, 6, 13]),
     bx([11, 0, 11], [13, 6, 13]),
 ];
+const BASKET_BOXES: &[Cuboid] = &[bx([2, 0, 2], [14, 10, 14]), bx([1, 10, 1], [15, 12, 15])];
 const FENCE_BOXES: &[Cuboid] = &[
     bx([6, 0, 6], [10, 16, 10]).tex(["log_top", "", "log_top"]),
     bx([10, 6, 7], [16, 9, 9]).when(When::Joins(0)),
@@ -306,6 +308,8 @@ pub static BLOCKS: &[Block] = &[
     item("Stone shovel", "shovel_stone"),
     item("Wooden sword", "sword_wood"),
     item("Stone sword", "sword_stone"),
+    // 72: put down, it becomes a hot air balloon (the balloon creation)
+    m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
 ];
 
 pub fn block(id: BlockId) -> &'static Block {

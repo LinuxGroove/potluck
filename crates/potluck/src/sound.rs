@@ -122,7 +122,7 @@ pub fn material(id: BlockId) -> Material {
         Material::Glass
     } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet"]) {
         Material::Plant
-    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door"]) {
+    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
         Material::Wood
     } else if has(&["stone", "brick", "cobble", "bedrock", "column", "brazier", "pot", "lantern", "slate", "tile", "ore", "iron"]) {
         Material::Hard

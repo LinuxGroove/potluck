@@ -13,14 +13,14 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.8")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.8. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.9")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.9. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.8
+### `@potluck/world` 0.9
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
 - `world.creature(def)` defines a kind of creature and returns it, to add handlers to. `def` has:
-  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at)
+  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
   - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z.
   - `size = { w, h, d }`: the box it bumps into things with (worked out from the body if left out)
 - `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
@@ -144,6 +144,23 @@ Inside a handler, `self` is that creature. Fields you set on it (`self.mood = "h
 - `self.position`, `self.id`, `self.kind`, `self.rider` (the player riding it, or nil)
 - `self:walk_to(pos, speed?)`, `self:wander(speed?)`, `self:stop()`, `self:hop(power?)`, `self:face(pos)`
 - `self:say(text)` (a speech bubble), `self:distance_to(pos)`, `self:throw_rider(force?)`, `self:remove()`
+- `self:on_ground()`, and (new in 0.9) `self:climb(speed)` and `self:become(kind)`, below
+
+Fliers and changing kind (new in 0.9), for balloons, birds, hatching eggs and anything with more than one look:
+
+```luau
+local Balloon = world.creature { name = "Balloon", flies = true, rideable = true, body = { ... } }
+function Balloon:tick(dt)
+	if self.rider and input.held("burner", self.rider) then self:climb(1.5) else self:climb(-0.6) end
+end
+function Egg:hit(player) self:become(Chick) end   -- same creature, the Chick's body and handlers
+```
+
+- A creature with `flies = true` has no gravity. `self:climb(speed)` sets how fast it rises (or sinks, below 0), from -4 to 4 blocks a second, and it eases into that speed over a second or so, so whoever rides it is never jolted. It stays at what it was last told; 0 hovers. It returns false for a creature that doesn't fly. Fliers float on water, and slow to a stop 24 blocks above the world's highest blocks.
+- A rider steers a flier with their movement while it's in the air; it gathers and loses speed gently. On the ground it stays put.
+- `self:on_ground()` is whether it's standing on something.
+- `self:become(kind)` turns it into another kind of this creation's: the new kind's body, size, speed, `rideable`, `seat` and `flies`, and its handlers from then on. Its fields and its rider stay (unless the new kind isn't rideable). `spawned` isn't called again.
+- Creatures aren't kept when a server restarts (they come back by `count`); keep anything that matters, such as where a balloon is, in `@potluck/store`.
 
 ### `@potluck/tweak` 0.1
 

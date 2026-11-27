@@ -40,6 +40,10 @@ pub struct Body {
     pub rider: Option<u32>,
     pub rideable: bool,
     pub seat: f32,
+    /// Floats with no gravity, rising or sinking at `climb` (world 0.9).
+    pub flies: bool,
+    /// How fast a flier wants to rise (or sink, below 0), in blocks a second.
+    pub climb: f32,
     pub says: Option<(String, f32)>,
     pub on_ground: bool,
     pub face: Option<f32>,
@@ -59,6 +63,7 @@ impl Body {
         self.speed = k.speed;
         self.rideable = k.rideable;
         self.seat = k.seat;
+        self.flies = k.flies;
         self.home = k.home;
         if !k.rideable {
             self.rider = None;
@@ -115,6 +120,8 @@ impl Herd {
             rider: None,
             rideable: k.rideable,
             seat: k.seat,
+            flies: k.flies,
+            climb: 0.0,
             says: None,
             on_ground: false,
             face: None,
@@ -148,13 +155,23 @@ fn turn_toward(from: f32, to: f32, max: f32) -> f32 {
     from + d.clamp(-max, max)
 }
 
+/// How quickly a flier's speed through the air follows what it wants (per second).
+const FLIER_GRIP: f32 = 0.7;
+/// How quickly a flier's climb follows what it was told (per second).
+const FLIER_EASE: f32 = 0.8;
+/// How far above the world's top a flier may go.
+pub const FLY_ABOVE: f32 = 24.0;
+/// The fastest a flier climbs or sinks (`creature:climb`).
+pub const MAX_CLIMB: f32 = 4.0;
+
 /// Moves every creature one frame (on the host, or alone).
 pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
     let riders = herd.riders.clone();
     for b in herd.bodies.values_mut() {
         let mut want = Vec3::ZERO;
         if let Some(r) = b.rider {
-            if let Some((mv, yaw)) = riders.get(&r) {
+            // a flier is steered in the air; on the ground it stays put
+            if let Some((mv, yaw)) = riders.get(&r).filter(|_| !(b.flies && b.on_ground)) {
                 let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
                 let right = Vec3::new(-fwd.z, 0.0, fwd.x);
                 want = (fwd * mv.y + right * mv.x) * b.speed.max(1.0) * 1.6;
@@ -187,12 +204,22 @@ pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
                 }
             }
         }
-        let grip = if b.on_ground { 8.0 } else { 2.0 };
+        // a flier in the air drifts: it gathers speed and slows down gently
+        let grip = if b.on_ground { 8.0 } else if b.flies { FLIER_GRIP } else { 2.0 };
         b.vel.x += (want.x - b.vel.x) * (dt * grip).min(1.0);
         b.vel.z += (want.z - b.vel.z) * (dt * grip).min(1.0);
         let feet = b.pos.floor().as_ivec3();
         let wet = voxels.at(feet + IVec3::Y * (b.half.y * 0.5) as i32) == crate::blocks::WATER || voxels.at(feet) == crate::blocks::WATER;
-        if wet {
+        if b.flies {
+            // no gravity: it eases toward the climb it was told, so a rider's
+            // view rises and settles smoothly, never with a jolt
+            // and slows as it nears the top of the sky, so it stops there gently too
+            let to = b.climb.min((crate::world::WY as f32 + FLY_ABOVE - b.pos.y) * 0.5);
+            b.vel.y += (to - b.vel.y) * (dt * FLIER_EASE).min(1.0);
+            if wet {
+                b.vel.y = b.vel.y.max(0.0); // it floats
+            }
+        } else if wet {
             b.vel.y = (b.vel.y + 14.0 * dt).min(2.0);
         } else {
             b.vel.y = (b.vel.y - 30.0 * dt).max(-50.0);
@@ -203,7 +230,7 @@ pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
         if hit.y {
             b.vel.y = 0.0;
         }
-        if (hit.x || hit.z) && (landed || b.on_ground) && want.length() > 0.1 {
+        if (hit.x || hit.z) && (landed || b.on_ground) && want.length() > 0.1 && !b.flies {
             b.vel.y = 7.5; // hop up a step
         }
         if hit.x { b.vel.x = 0.0 }
@@ -579,11 +606,17 @@ pub fn people(
     }
 }
 
-/// Keeps the local player in the saddle.
-pub fn ride(herd: Res<Herd>, mut me: ResMut<Me>) {
+/// Keeps the local player in the saddle. A friend's game hears where its
+/// ride is twenty times a second, so there the view glides after it rather
+/// than stepping (a balloon's rider would feel every step).
+pub fn ride(herd: Res<Herd>, net: Option<Res<crate::net::Net>>, time: Res<Time>, mut me: ResMut<Me>) {
     if let Some(id) = me.riding {
         match herd.bodies.get(&id) {
-            Some(b) => me.pos = b.saddle(),
+            Some(b) => {
+                let to = b.saddle();
+                let mirrored = net.is_some_and(|n| matches!(n.role, crate::net::Role::Client(_)));
+                me.pos = if mirrored && me.pos.distance(to) < 3.0 { me.pos.lerp(to, (time.delta_secs() * 12.0).min(1.0)) } else { to };
+            }
             None => me.riding = None,
         }
     }

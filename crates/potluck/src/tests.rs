@@ -1071,7 +1071,8 @@ fn every_base_creation_runs_and_answers_players() {
     run(&mut scripts, &mut voxels, &mut herd, 2.0);
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
     // everything but the Gloomlings (only near survival players at night) and mods with no bodies
-    for c in base.iter().filter(|c| c.id != "gloomlings" && c.manifest.kind != "mod") {
+    // (and balloons, which only come from a basket put down)
+    for c in base.iter().filter(|c| c.id != "gloomlings" && c.id != "balloon" && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -1254,14 +1255,14 @@ fn the_greens_arches_and_this_weeks_jam() {
     let arches = green.arches(&lib);
     assert!(matches!(&arches[0], Some(Shows::Pick(p)) if p.name == "Raft") && arches[3].is_none(), "{arches:?}");
     let mut balloon = mossback();
-    balloon.id = "balloon".into();
+    balloon.id = "airship".into();
     balloon.manifest.name = "Balloon".into();
     balloon.origin = Origin::Code(codes[1].clone());
     balloon.code = Some(codes[1].clone());
-    lib.list.insert("balloon".into(), balloon);
-    lib.running.push("balloon".into());
+    lib.list.insert("airship".into(), balloon);
+    lib.running.push("airship".into());
     let arches = green.arches(&lib);
-    assert_eq!(arches[0], Some(Shows::Here("balloon".into())), "what players brought comes first");
+    assert_eq!(arches[0], Some(Shows::Here("airship".into())), "what players brought comes first");
     let names: Vec<String> = arches[1..].iter().flatten().map(|s| green::describe(s, &lib).0.lines().next().unwrap().to_string()).collect();
     assert_eq!(names, ["Raft", "Kite"], "and the balloon isn't shown twice");
 
@@ -1278,11 +1279,11 @@ fn the_greens_arches_and_this_weeks_jam() {
     app.add_plugins(MinimalPlugins);
     crate::sim(&mut app, crate::SEED);
     app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
-    app.world_mut().resource_mut::<Library>().list.insert("balloon".into(), lib.list["balloon"].clone());
-    app.world_mut().resource_mut::<Library>().running.push("balloon".into());
+    app.world_mut().resource_mut::<Library>().list.insert("airship".into(), lib.list["airship"].clone());
+    app.world_mut().resource_mut::<Library>().running.push("airship".into());
     app.world_mut().resource_mut::<Acts>().0.push(Act::Arch(0));
     app.world_mut().run_system_once(crate::game::do_acts).unwrap();
-    assert!(app.world().resource::<Focus>().screen == Screen::Inside("balloon".into()), "looks inside the balloon");
+    assert!(app.world().resource::<Focus>().screen == Screen::Inside("airship".into()), "looks inside the balloon");
 
     // Share offers the jam once it's on the market for Everyone
     let id = lib.remix("mossback", "Ada").unwrap();
@@ -2492,7 +2493,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     scripts.use_block(7, at, table);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let panel = asked(&scripts, 7).expect("the table asks what to make");
-    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons"]);
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel"]);
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
     assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
     // it asks again with how it went, so making several is quick
@@ -2532,6 +2533,7 @@ fn a_table_is_a_workbench_for_survival_players() {
         vec!["Planks", "Dirt", "Wheat"],
         vec!["Planks", "Cobblestone"],
         vec!["Planks", "Cobblestone"],
+        vec!["Cream wool", "Planks", "Lantern"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
@@ -2915,6 +2917,266 @@ end)
     let m = Msg::Digging(vec![(pick, [1.0, 2.5, 1.0, 1.0, 1.0])]);
     let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
     assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+}
+
+/// A flat stone pad with open sky over it, for fliers and balloons: its
+/// middle and the height of its top.
+fn pad(voxels: &mut Voxels) -> (IVec3, i32) {
+    let (cx, cz, ground) = (world::GREEN.x as i32 + 80, world::GREEN.z as i32 - 60, 40);
+    for x in cx - 14..=cx + 14 {
+        for z in cz - 14..=cz + 14 {
+            for y in 1..world::WY {
+                voxels.set(IVec3::new(x, y, z), if y <= ground { crate::blocks::STONE } else { crate::blocks::AIR });
+            }
+        }
+    }
+    (IVec3::new(cx, ground + 1, cz), ground)
+}
+
+/// world 0.9: fliers float with no gravity and ease into the climb they're
+/// told (a rider's view never jolts), riders steer them only in the air, and
+/// a creature can become another kind of the same creation.
+#[test]
+fn fliers_ease_into_their_climb_and_creatures_become_other_kinds() {
+    home();
+    let mut voxels = world();
+    let (mid, ground) = pad(&mut voxels);
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = format!(
+        r#"
+local world = require("@potluck/world@0.9")
+local Bird = world.creature {{ name = "Bird", count = 0, flies = true, rideable = true, speed = 2, body = {{ {{ "body", size = {{ 0.6, 0.4, 0.8 }} }} }} }}
+local Egg = world.creature {{ name = "Egg", count = 0, body = {{ {{ "shell", size = {{ 0.3, 0.4, 0.3 }} }} }} }}
+function Egg:used() print("an egg " .. tostring(self:climb(1)) .. " " .. tostring(self:on_ground())) end
+function Egg:hit()
+	self:become(Egg)
+	self:become(Bird)
+	print("hatched " .. self.kind .. " " .. tostring(self:climb(1)))
+	print(pcall(self.become, self, {{ name = "Nobody" }}) and "nobody ok" or "no nobody")
+	print(pcall(self.climb, self, 0/0) and "nan ok" or "no nan")
+end
+function Bird:used() print("a bird, climbing " .. tostring(self:climb(9))) end
+world.after(0.1, function() world.spawn(Egg, vector.create({x}, {y}, {z})) end)
+"#,
+        x = mid.x as f32 + 0.5,
+        y = mid.y as f32 + 2.0,
+        z = mid.z as f32 + 0.5
+    );
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: mid.as_vec3() };
+    scripts.players = vec![ada.clone()];
+    scripts.start(&creation(&code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    let id = *herd.bodies.keys().next().expect("an egg");
+    assert!(herd.bodies[&id].on_ground && !herd.bodies[&id].flies, "the egg fell and landed");
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    let rev = herd.bodies[&id].rev;
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    let log = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{log}");
+    for want in ["an egg false true", "hatched Bird true", "no nobody", "no nan", "a bird, climbing true"] {
+        assert!(log.contains(want), "{want}: {log}");
+    }
+    let b = &herd.bodies[&id];
+    assert!(b.kind == "Bird" && b.flies && b.rideable && b.rev > rev && b.parts[0].name == "body", "{} {}", b.kind, b.rev);
+    assert_eq!(b.climb, creatures::MAX_CLIMB, "climbs no faster than the most");
+
+    // rising: no gravity, and the climb eases in a little each step, never jumping
+    let mut rng = Rng::new(1);
+    herd.bodies.get_mut(&id).unwrap().climb = 1.5;
+    let (start, mut last) = (herd.bodies[&id].pos.y, herd.bodies[&id].vel.y);
+    for _ in 0..200 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+        let v = herd.bodies[&id].vel.y;
+        assert!(v >= last - 1e-4 && v - last <= 0.1 && v <= 1.5 + 1e-4, "{last} to {v}");
+        last = v;
+    }
+    let risen = herd.bodies[&id].pos.y - start;
+    assert!((9.0..15.0).contains(&risen) && last > 1.4, "rose {risen}, at {last}");
+    // told to hold, it stays where it is
+    herd.bodies.get_mut(&id).unwrap().climb = 0.0;
+    for _ in 0..200 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+    }
+    let held = herd.bodies[&id].pos.y;
+    for _ in 0..100 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+    }
+    assert!((herd.bodies[&id].pos.y - held).abs() < 0.05 && herd.bodies[&id].vel.y.abs() < 0.01, "hovers");
+
+    // a rider steers it in the air, gathering speed gently
+    herd.bodies.get_mut(&id).unwrap().rider = Some(7);
+    herd.riders.insert(7, (Vec2::new(0.0, 1.0), 0.0));
+    let from = herd.bodies[&id].pos;
+    let mut last = Vec2::new(herd.bodies[&id].vel.x, herd.bodies[&id].vel.z).length();
+    for _ in 0..60 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+        let v = Vec2::new(herd.bodies[&id].vel.x, herd.bodies[&id].vel.z).length();
+        assert!((v - last).abs() <= 0.25, "speed changes by {} in a step", v - last);
+        last = v;
+    }
+    assert!(herd.bodies[&id].pos.z < from.z - 2.0, "flew forward: {} to {}", from.z, herd.bodies[&id].pos.z);
+    // down again: landed, it stays put however its rider pushes
+    herd.bodies.get_mut(&id).unwrap().climb = -3.0;
+    herd.bodies.get_mut(&id).unwrap().pos = Vec3::new(mid.x as f32 + 0.5, herd.bodies[&id].pos.y, mid.z as f32 + 0.5);
+    herd.riders.insert(7, (Vec2::ZERO, 0.0));
+    for _ in 0..400 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+    }
+    let landed = herd.bodies[&id].pos;
+    herd.riders.insert(7, (Vec2::new(0.0, 1.0), 0.0));
+    assert!(herd.bodies[&id].on_ground && (landed.y - (ground + 1) as f32).abs() < 0.1, "landed at {landed}");
+    for _ in 0..40 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+    }
+    assert!(herd.bodies[&id].pos.distance(landed) < 0.05, "it doesn't drive about on the ground");
+    // and it can't climb out of the world
+    herd.bodies.get_mut(&id).unwrap().pos.y = world::WY as f32 + 20.0;
+    herd.bodies.get_mut(&id).unwrap().climb = 4.0;
+    for _ in 0..200 {
+        creatures::step(&mut herd, &voxels, 0.05, &mut rng);
+    }
+    assert!(herd.bodies[&id].pos.y < world::WY as f32 + creatures::FLY_ABOVE + 0.5, "{}", herd.bodies[&id].pos.y);
+}
+
+/// The Hot air balloon: a basket put down fills up into a balloon; its
+/// rider holds Burner to rise and lets go to sink, gently; it lands, packs
+/// back into a basket, and the world keeps where balloons are.
+#[test]
+fn a_basket_fills_into_a_balloon_that_rises_lands_and_packs_away() {
+    use crate::blocks::{by_name, AIR};
+    home();
+    let balloon = Library::load().list.remove("balloon").expect("the base game has the balloon");
+    let basket = by_name("Balloon basket").unwrap();
+    assert!(!crate::blocks::is_item(basket) && crate::blocks::is_solid(basket), "a basket is a block to put down");
+    let mut voxels = world();
+    let (mid, ground) = pad(&mut voxels);
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: mid.as_vec3() + Vec3::new(3.0, 0.0, 0.0) };
+    scripts.players = vec![ada.clone()];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.start(&balloon, &mut herd).unwrap();
+    assert!(herd.bodies.is_empty(), "no balloons until a basket is put down");
+    let piece = |scripts: &Scripts, id: &str| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(7), "balloon".into(), id.into())).map(|p| p.text.clone());
+    let log = |scripts: &Scripts| scripts.vms["balloon"].log.join("\n");
+    let kind = |herd: &Herd| herd.bodies.values().next().map(|b| b.kind.clone()).unwrap_or_default();
+
+    // put down, it becomes a balloon and fills up
+    voxels.set(mid, basket);
+    scripts.player_block(7, mid, AIR, basket);
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert_eq!(voxels.at(mid), AIR, "the basket turns into the balloon");
+    assert_eq!(kind(&herd), "Balloon (empty)", "{}", log(&scripts));
+    let id = *herd.bodies.keys().next().unwrap();
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    assert!(piece(&scripts, "wait").is_some(), "still filling");
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(kind(&herd), "Balloon (filling)");
+    run(&mut scripts, &mut voxels, &mut herd, 2.5);
+    assert_eq!(kind(&herd), "Hot air balloon");
+    let b = &herd.bodies[&id];
+    assert!(b.rideable && b.flies && b.parts.len() <= 64, "{}", b.parts.len());
+    assert!(b.parts.iter().map(|p| p.at.y + p.size.y / 2.0).fold(0.0, f32::max) > 7.5, "a tall envelope");
+
+    // climb in and hold Burner: it rises, easing into it
+    herd.bodies.get_mut(&id).unwrap().rider = Some(7);
+    scripts.event(&mut voxels, &mut herd, id, "ridden", &ada);
+    assert!(piece(&scripts, "aboard").is_some_and(|t| t.contains("Burner") && t.chars().count() <= 60));
+    scripts.press(7, "balloon", "burner", true);
+    let start = herd.bodies[&id].pos.y;
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert_eq!(kind(&herd), "Hot air balloon (burner on)", "the flame's lit");
+    assert_eq!(herd.bodies[&id].rider, Some(7), "still aboard when the flame lights");
+    run(&mut scripts, &mut voxels, &mut herd, 6.0);
+    let up = herd.bodies[&id].pos.y - start;
+    assert!(up > 4.0, "rose {up}");
+    assert!(herd.bodies[&id].vel.y <= 1.5 + 1e-4, "no faster than the burner lifts it");
+    // let go: the flame's out and it slows, then sinks gently
+    scripts.press(7, "balloon", "burner", false);
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert_eq!(kind(&herd), "Hot air balloon");
+    assert!(herd.bodies[&id].vel.y > 0.5, "it doesn't stop at once");
+    run(&mut scripts, &mut voxels, &mut herd, 6.0);
+    assert!((-0.65..0.0).contains(&herd.bodies[&id].vel.y), "sinking slowly: {}", herd.bodies[&id].vel.y);
+    // bopped in the air, it won't pack up
+    herd.bodies.get_mut(&id).unwrap().rider = None;
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
+    assert!(herd.bodies.contains_key(&id), "not in the air");
+    // where it is is kept with the world
+    let kept = |scripts: &Scripts| scripts.shared.lock().unwrap().store.get("balloon", "balloons").and_then(|v| v.as_object().map(|a| a.len())).unwrap_or(0);
+    assert_eq!(kept(&scripts), 1, "{:?} {}", scripts.shared.lock().unwrap().store.get("balloon", "balloons"), log(&scripts));
+    for _ in 0..60 {
+        run(&mut scripts, &mut voxels, &mut herd, 1.0);
+        if herd.bodies[&id].on_ground {
+            break;
+        }
+    }
+    let b = &herd.bodies[&id];
+    assert!(b.on_ground && (b.pos.y - (ground + 1) as f32).abs() < 0.1, "landed at {}", b.pos);
+
+    // a restart brings it back full
+    let file = std::env::temp_dir().join(format!("potluck-balloons-{}.json", std::process::id()));
+    run(&mut scripts, &mut voxels, &mut herd, 5.5);
+    scripts.shared.lock().unwrap().store.save(&file);
+    let mut again = Scripts::default();
+    again.shared.lock().unwrap().store = crate::script::Store::load(&file);
+    let _ = std::fs::remove_file(&file);
+    let mut fresh = Herd::default();
+    again.start(&balloon, &mut fresh).unwrap();
+    run(&mut again, &mut voxels, &mut fresh, 0.3);
+    assert_eq!(fresh.bodies.values().map(|b| b.kind.as_str()).collect::<Vec<_>>(), ["Hot air balloon"], "{:?}", again.vms["balloon"].log);
+    assert!(fresh.bodies.values().next().unwrap().pos.distance(herd.bodies[&id].pos) < 1.0);
+    // and a reload doesn't make two
+    scripts.start(&balloon, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert_eq!(herd.bodies.len(), 1);
+
+    // landed and empty, a bop packs it back into a basket
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
+    assert!(herd.bodies.is_empty(), "packed up");
+    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].items.get(&basket).copied(), Some(1));
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(kept(&scripts), 0, "and forgotten");
+    assert_eq!(scripts.vms["balloon"].error, None, "{}", log(&scripts));
+}
+
+/// Woollies in survival: patting one shears it for wool, and it grows back.
+#[test]
+fn survival_players_shear_woollies_for_wool() {
+    use crate::blocks::by_name;
+    home();
+    let mut woolly = Library::load().list.remove("woolly").expect("the base game has woollies");
+    woolly.knobs.insert("regrow".into(), KnobValue::Number(0.5));
+    let wool = by_name("Cream wool").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&woolly, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    let id = *herd.bodies.keys().next().expect("woollies");
+    let at = herd.bodies[&id].pos;
+    let (ada, bo) = (PlayerInfo { id: 7, name: "Ada".into(), pos: at }, PlayerInfo { id: 8, name: "Bo".into(), pos: at });
+    scripts.players = vec![ada.clone(), bo.clone()];
+    let wool_of = |scripts: &Scripts| scripts.shared.lock().unwrap().pockets[&7].items.get(&wool).copied().unwrap_or(0);
+    // creative: just a pat
+    scripts.event(&mut voxels, &mut herd, id, "used", &bo);
+    assert_eq!(herd.bodies[&id].kind, "Woolly");
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    assert_eq!((herd.bodies[&id].kind.as_str(), wool_of(&scripts)), ("Shorn woolly", 1));
+    let shorn = herd.bodies[&id].parts.len();
+    // nothing more till it grows back
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    assert_eq!(wool_of(&scripts), 1);
+    run(&mut scripts, &mut voxels, &mut herd, 31.0);
+    assert_eq!(herd.bodies[&id].kind, "Woolly", "grown back");
+    assert!(herd.bodies[&id].parts.len() > shorn);
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    assert_eq!(wool_of(&scripts), 2);
+    assert_eq!(scripts.vms["woolly"].error, None, "{:?}", scripts.vms["woolly"].log);
 }
 
 /// world 0.7: a creation can hurt a player only down to some health, which

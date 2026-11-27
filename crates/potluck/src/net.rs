@@ -1091,6 +1091,8 @@ fn blank_body(id: u64) -> Body {
         rider: None,
         rideable: false,
         seat: 1.0,
+        flies: false,
+        climb: 0.0,
         says: None,
         on_ground: true,
         face: None,
