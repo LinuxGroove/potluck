@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 6), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 7), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -134,8 +134,8 @@ pub struct GameShared {
     /// none yet is the clock's own start.
     pub day: Option<f32>,
     /// Hurts (less than 0) and heals creations gave players since the host
-    /// last looked.
-    pub health: Vec<(u32, f32)>,
+    /// last looked, and the least health each hurt leaves (0 for none).
+    pub health: Vec<(u32, f32, f32)>,
     /// How fast each creation lets each player heal by themselves
     /// (`world.healing`), where it isn't 1: (player, creation).
     pub healing: BTreeMap<(u32, String), f32>,
@@ -153,6 +153,15 @@ fn health_amount(n: f64) -> mlua::Result<f32> {
         return Err(bad("hurt and heal take a number from 0 to 20"));
     }
     Ok(n.min(MAX_HURT) as f32)
+}
+
+/// The least health a `world.hurt` leaves (`down_to`), 0 for none.
+fn down_to(n: Option<f64>) -> mlua::Result<f32> {
+    match n {
+        None => Ok(0.0),
+        Some(n) if n.is_finite() && (0.0..=MAX_HURT).contains(&n) => Ok(n as f32),
+        Some(_) => Err(bad("down_to takes a number from 0 to 20")),
+    }
 }
 
 /// The most blocks `world.give` or `world.take` moves at once.
@@ -1063,16 +1072,21 @@ impl Vm {
                     let sh = shared.clone();
                     world.set(
                         name,
-                        lua.create_function(move |_, (player, n): (Value, f64)| {
+                        lua.create_function(move |_, (player, n, opts): (Value, f64, Option<Table>)| {
                             let pid = pid_of(&player)?;
                             let n = health_amount(n)?;
+                            // world 0.7: a hurt that stops at some health
+                            let down_to = match opts {
+                                Some(o) if sign < 0.0 => down_to(o.get::<Option<f64>>("down_to")?)?,
+                                _ => 0.0,
+                            };
                             let mut sh = sh.lock().unwrap();
                             // only survival players have health to lose
                             if !sh.pockets.get(&pid).is_some_and(|p| p.survival) {
                                 return Ok(false);
                             }
                             if n > 0.0 && sh.health.len() < 1024 {
-                                sh.health.push((pid, sign * n));
+                                sh.health.push((pid, sign * n, down_to));
                             }
                             Ok(true)
                         })?,
@@ -2070,14 +2084,16 @@ impl Scripts {
     }
 
     /// How creations hurt or healed players: (player, the change to their
-    /// health), one each, in order of player.
-    pub fn health_changes(&mut self) -> Vec<(u32, f32)> {
+    /// health, the least health it leaves), one for each player and
+    /// `down_to`, in order of player and then `down_to` (0, none, first).
+    pub fn health_changes(&mut self) -> Vec<(u32, f32, f32)> {
         let list = std::mem::take(&mut self.shared.lock().unwrap().health);
-        let mut out: BTreeMap<u32, f32> = BTreeMap::new();
-        for (p, d) in list {
-            *out.entry(p).or_default() += d;
+        // down_to is never below 0, so its bits sort as the numbers do
+        let mut out: BTreeMap<(u32, u32), f32> = BTreeMap::new();
+        for (p, d, to) in list {
+            *out.entry((p, to.to_bits())).or_default() += d;
         }
-        out.into_iter().filter(|(_, d)| *d != 0.0).collect()
+        out.into_iter().filter(|(_, d)| *d != 0.0).map(|((p, to), d)| (p, d, f32::from_bits(to))).collect()
     }
 
     /// Messages creations sent their client halves, and who each is for:
