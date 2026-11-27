@@ -1,0 +1,11 @@
+name = "Mole"
+by = "Potluck"
+kind = "creature"
+about = "Moles that bumble about the meadow leaving little hills of dirt, and tidy the old ones away."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

@@ -167,6 +167,8 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)?;
+    conn.execute_batch(crate::servers::SCHEMA)?;
+    conn.execute_batch(crate::devices::SCHEMA)?;
     Ok(conn)
 }
 

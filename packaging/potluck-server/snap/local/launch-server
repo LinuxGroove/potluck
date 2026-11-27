@@ -5,7 +5,17 @@
 mkdir -p "$WORLD"
 chown -R "$DAEMON_UID:$DAEMON_UID" "$WORLD"
 
-args=(--name="$(cfg name "Potluck server")" --port="$(cfg port 47126)" --seed="$(cfg seed 26)" --data="$WORLD")
+# Everything else is in $WORLD/server.toml (written on the first start, every
+# setting explained); snap settings win over it, so only pass the ones set.
+args=(--port="$(cfg port 47126)" --data="$WORLD")
+name="$(cfg name)"
+if [ -n "$name" ]; then
+  args+=(--name="$name")
+fi
+seed="$(cfg seed)"
+if [ -n "$seed" ]; then
+  args+=(--seed="$seed")
+fi
 if [ "$(cfg beacon true)" = "false" ]; then
   args+=(--no-beacon)
 fi

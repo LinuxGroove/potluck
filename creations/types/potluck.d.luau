@@ -64,6 +64,15 @@ export type World = {
 	random: (a: number?, b: number?) -> number,
 }
 
+export type Score = { name: string, value: number }
+
+export type Game = {
+	score: (board: string, player: Player | number, value: number, opts: { lower: boolean? }?) -> (),
+	board: (board: string, n: number?) -> { Score },
+	links: () -> { string },
+	send: (player: Player | number, link: string, note: string?) -> (),
+}
+
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }
 export type Tweak = (spec: { [string]: Knob }) -> { [string]: any }
 

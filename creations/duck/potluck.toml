@@ -1,0 +1,11 @@
+name = "Duck"
+by = "Potluck"
+kind = "creature"
+about = "A mother duck and her ducklings, who follow her everywhere along the creek."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

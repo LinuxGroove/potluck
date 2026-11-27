@@ -7,10 +7,12 @@ pub mod checks;
 pub mod codes;
 pub mod config;
 pub mod db;
+pub mod devices;
 pub mod forgejo;
 pub mod highlight;
 pub mod identity;
 pub mod market;
+pub mod servers;
 pub mod store;
 pub mod web;
 

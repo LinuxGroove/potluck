@@ -45,6 +45,14 @@ pub fn routes() -> Router<Shared> {
         .route("/api/suggestions/{id}/close", post(close))
         .route("/api/signin", post(signin))
         .route("/api/invite", post(invite))
+        .route("/api/link", post(link))
+        .route("/api/link/code", post(link_code))
+        .route("/api/link/leave", post(leave))
+        .route("/api/pass", post(pass))
+        .route("/api/servers", get(servers))
+        .route("/api/servers/heartbeat", post(heartbeat))
+        .route("/api/servers/boards", post(boards_post))
+        .route("/api/c/{code}/boards", get(boards))
         .route("/f/{sha}", get(file))
 }
 
@@ -73,8 +81,10 @@ async fn key(State(app): State<Shared>) -> Json<Value> {
 
 async fn me(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
     let a = who(&app, &h).await?;
+    let (device, _) = app.game_device(&bearer(&h).unwrap_or_default()).await?;
     Ok(Json(json!({
         "handle": a.handle, "name": a.name, "beta": a.beta || !app.cfg.invite_only, "moderator": a.moderator, "trusted": a.trusted,
+        "linked": device != a.user_id,
         "url": format!("{}/@{}", app.cfg.public_url, a.handle),
         "about": a.about, "avatar": format!("{}/avatar/{}.svg", app.cfg.public_url, a.handle), "named_on_web": a.named_on_web,
     })))
@@ -221,6 +231,35 @@ async fn signin(State(app): State<Shared>, h: HeaderMap, body: axum::body::Bytes
     Ok(Json(json!({ "url": app.signin_link(&a, &next)?, "expires_in": 300 })))
 }
 
+/// A code for another device to type, so it plays as this account too.
+async fn link_code(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let code = app.link_code(&a)?;
+    Ok(Json(json!({ "code": codes::pretty(&code), "expires_in": crate::devices::LINK_SECONDS })))
+}
+
+#[derive(Deserialize)]
+struct LinkReq {
+    code: String,
+    /// What the device is, for the account's list: "Steam Deck", "Windows".
+    #[serde(default)]
+    device: String,
+}
+
+/// This device plays as the account a link or recovery code belongs to.
+async fn link(State(app): State<Shared>, h: HeaderMap, Json(r): Json<LinkReq>) -> R<Json<Value>> {
+    let Some(token) = bearer(&h) else { return Err(Fail { status: 401, message: "sign in to the game server first".into() }) };
+    let l = app.link(&token, &r.code, &r.device).await?;
+    Ok(Json(serde_json::to_value(l).unwrap_or_default()))
+}
+
+/// This device stops playing as the account it was linked to.
+async fn leave(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let Some(token) = bearer(&h) else { return Err(Fail { status: 401, message: "sign in to the game server first".into() }) };
+    app.leave(&token).await?;
+    Ok(Json(json!({ "left": true })))
+}
+
 #[derive(Deserialize)]
 struct InviteReq {
     code: String,
@@ -230,6 +269,62 @@ async fn invite(State(app): State<Shared>, h: HeaderMap, Json(r): Json<InviteReq
     let a = who(&app, &h).await?;
     app.redeem_invite(&a, &r.code)?;
     Ok(Json(json!({ "beta": true })))
+}
+
+#[derive(Deserialize, Default)]
+struct PassReq {
+    #[serde(default)]
+    server: String,
+}
+
+/// A pass for joining a server: who the market says this player is.
+async fn pass(State(app): State<Shared>, h: HeaderMap, body: axum::body::Bytes) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let server = serde_json::from_slice::<PassReq>(&body).unwrap_or_default().server;
+    Ok(Json(json!({ "pass": app.pass(&a, &server)?, "expires_in": crate::servers::PASS_SECONDS })))
+}
+
+async fn servers(State(app): State<Shared>) -> R<Json<Value>> {
+    let list: Vec<Value> = app
+        .listed_servers()?
+        .into_iter()
+        .map(|s| {
+            json!({
+                "name": s.name, "about": s.about, "address": s.address, "players": s.players, "max_players": s.max_players,
+                "join": s.join, "version": s.version,
+                "creations": s.creations.iter().filter_map(|c| c["name"].as_str()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "servers": list })))
+}
+
+fn server_token(h: &HeaderMap) -> R<String> {
+    h.get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Server "))
+        .map(|s| s.trim().to_string())
+        .ok_or(Fail { status: 401, message: "a server token goes in Authorization: Server <token>".into() })
+}
+
+async fn heartbeat(State(app): State<Shared>, h: HeaderMap, Json(hb): Json<crate::servers::Heartbeat>) -> R<Json<Value>> {
+    let t = server_token(&h)?;
+    Ok(Json(app.heartbeat(&t, hb).await?))
+}
+
+#[derive(Deserialize)]
+struct BoardsReq {
+    boards: Vec<crate::servers::BoardPost>,
+}
+
+async fn boards_post(State(app): State<Shared>, h: HeaderMap, Json(b): Json<BoardsReq>) -> R<Json<Value>> {
+    let t = server_token(&h)?;
+    let n = app.post_boards(&t, b.boards)?;
+    Ok(Json(json!({ "scores": n })))
+}
+
+async fn boards(State(app): State<Shared>, Path(code): Path<String>) -> R<Json<Value>> {
+    Ok(Json(json!({ "boards": app.boards_for(&codes::clean(&code))? })))
 }
 
 /// A file by its hash. It never changes, so anything may keep it forever.

@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 1), ("tweak", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 1), ("tweak", 0, 1), ("game", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -67,6 +67,18 @@ pub struct Outbox {
     pub toasts: Vec<String>,
     /// (player, velocity): riders thrown off.
     pub throws: Vec<(u32, Vec3)>,
+    /// (creation, board, lower is better, player, value).
+    pub scores: Vec<(String, String, bool, u32, f64)>,
+    /// (player, link, note): players off to another server.
+    pub sends: Vec<(u32, String, String)>,
+}
+
+/// What every creation in a world can see beyond the world itself: its
+/// boards, and the other servers it can send players to.
+#[derive(Default)]
+pub struct GameShared {
+    pub boards: crate::hosting::Boards,
+    pub links: Vec<String>,
 }
 
 /// Everything the API's functions can reach during one call into a creation.
@@ -94,6 +106,8 @@ pub struct Vm {
     lua: Lua,
     world: Table,
     base: Table,
+    game: Table,
+    shared: Arc<Mutex<GameShared>>,
     pub kinds: Vec<KindDef>,
     kind_tables: HashMap<String, Table>,
     instances: HashMap<u64, Table>,
@@ -110,6 +124,7 @@ pub struct Vm {
 #[derive(Resource, Default)]
 pub struct Scripts {
     pub vms: BTreeMap<String, Vm>,
+    pub shared: Arc<Mutex<GameShared>>,
     pub players: Vec<PlayerInfo>,
     pub out: Outbox,
     time: f64,
@@ -152,6 +167,7 @@ fn spot(name: &str) -> Option<Vec3> {
     match name {
         "green" => Some(Vec3::new(world::GREEN.x + 0.5, world::GREEN_Y as f32 + 1.0, world::GREEN.z + 7.5)),
         "paddock" => Some(world::paddock()),
+        "creek" => Some(world::creek()),
         "start" | "hill" => Some(Vec3::new(world::START.x + 0.5, 0.0, world::START.z + 0.5)),
         _ => None,
     }
@@ -269,7 +285,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
     };
     let half = half.clamp(Vec3::new(0.1, 0.2, 0.1), Vec3::new(1.5, 4.0, 1.5));
     let home = match def.get::<Value>("home")? {
-        Value::String(s) => spot(&s.to_str()?).ok_or_else(|| bad(format!("no spot called \"{}\" (try \"green\" or \"paddock\")", s.to_str().map(|s| s.to_string()).unwrap_or_default())))?,
+        Value::String(s) => spot(&s.to_str()?).ok_or_else(|| bad(format!("no spot called \"{}\" (try \"green\", \"paddock\", \"creek\" or \"start\")", s.to_str().map(|s| s.to_string()).unwrap_or_default())))?,
         v => vec_of(&v).unwrap_or_else(|| spot("green").unwrap()),
     };
     Ok(KindDef {
@@ -333,8 +349,9 @@ impl Vm {
             Ok(VmState::Continue)
         });
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
-        let setup = || -> mlua::Result<(Table, Table)> {
+        let setup = || -> mlua::Result<(Table, Table, Table)> {
             let world = lua.create_table()?;
+            let game = lua.create_table()?;
             let base = lua.create_table()?;
             let base_mt = lua.create_table()?;
             base_mt.set("__index", base.clone())?;
@@ -380,11 +397,12 @@ impl Vm {
             let files = creation.files.clone();
             let cache = lua.create_table()?;
             let w2 = world.clone();
+            let g2 = game.clone();
             let req = lua.create_function(move |lua, name: String| {
                 if let Some(m) = name.strip_prefix("@potluck/") {
                     let (module, version) = m.split_once('@').unwrap_or((m, ""));
                     let Some((_, major, minor)) = MODULES.iter().find(|(n, _, _)| *n == module) else {
-                        return Err(bad(format!("there's no module called @potluck/{module} (there are: world, tweak)")));
+                        return Err(bad(format!("there's no module called @potluck/{module} (there are: world, tweak, game)")));
                     };
                     if !version.is_empty() {
                         let mut it = version.split('.');
@@ -396,6 +414,7 @@ impl Vm {
                     }
                     return Ok(match module {
                         "world" => Value::Table(w2.clone()),
+                        "game" => Value::Table(g2.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -430,15 +449,17 @@ impl Vm {
                 lua.globals().set(name, Value::Nil)?;
             }
             lua.sandbox(true)?;
-            Ok((world, base))
+            Ok((world, base, game))
         };
-        let (world, base) = setup().map_err(|e| e.to_string())?;
+        let (world, base, game) = setup().map_err(|e| e.to_string())?;
         let main = creation.manifest.main.clone();
         let src = creation.files.get(&main).ok_or_else(|| format!("{} has no {main}", creation.manifest.name))?;
         let mut vm = Vm {
             lua,
             world,
             base,
+            game,
+            shared: Default::default(),
             kinds: vec![],
             kind_tables: HashMap::new(),
             instances: HashMap::new(),
@@ -487,12 +508,16 @@ impl Vm {
         log: &mut Vec<String>,
         f: impl FnOnce(&Lua, &Self) -> mlua::Result<R>,
     ) -> Result<R, String> {
-        *self.deadline.lock().unwrap() = Instant::now() + if time == 0.0 { LOAD_BUDGET } else { TICK_BUDGET };
+        let budget = if time == 0.0 { LOAD_BUDGET } else { TICK_BUDGET };
+        // generous while the API is set up; the creation's own time starts below
+        *self.deadline.lock().unwrap() = Instant::now() + LOAD_BUDGET;
         let kinds = self.kinds.clone();
         let mut rng = self.rng.clone();
         let ctx = RefCell::new(Ctx { voxels, herd, players, out, creation, kinds: &kinds, time, rng: &mut rng, log });
         let world = self.world.clone();
         let base = self.base.clone();
+        let game = self.game.clone();
+        let shared = self.shared.clone();
         let kind_tables = self.kind_tables.clone();
         let r = self.lua.scope(|s| {
             let c = &ctx;
@@ -570,6 +595,10 @@ impl Vm {
                     return Err(bad("a creation can have at most 64 creatures at once"));
                 }
                 let _ = &kt;
+                let mut p = p;
+                if ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::AIR && ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::WATER {
+                    p.y = ctx.voxels.top(p.x.floor() as i32, p.z.floor() as i32) as f32 + 1.2;
+                }
                 Ok(ctx.herd.spawn(&creation, &def, p))
             })?)?;
             world.set("creatures", s.create_function(move |_, kind: Option<Table>| {
@@ -657,7 +686,71 @@ impl Vm {
                 c.borrow_mut().herd.bodies.remove(&id);
                 Ok(())
             })?)?;
+            // ---- game ----
+            let player_id = |p: &Value| -> mlua::Result<u32> {
+                match p {
+                    Value::Table(t) => t.get::<Option<u32>>("id")?.ok_or_else(|| bad("that isn't a player")),
+                    Value::Integer(i) => Ok(*i as u32),
+                    Value::Number(n) => Ok(*n as u32),
+                    _ => Err(bad("that isn't a player")),
+                }
+            };
+            game.set("score", s.create_function(move |_, (board, player, value, opts): (String, Value, f64, Option<Table>)| {
+                let pid = player_id(&player)?;
+                if board.trim().is_empty() || board.len() > 40 {
+                    return Err(bad("a board's name is 1 to 40 letters"));
+                }
+                if !value.is_finite() {
+                    return Err(bad("a score is a number"));
+                }
+                let lower = match opts {
+                    Some(o) => o.get::<Option<bool>>("lower")?.unwrap_or(false),
+                    None => false,
+                };
+                let mut ctx = c.borrow_mut();
+                if ctx.out.scores.len() >= 256 {
+                    return Err(bad("too many scores at once"));
+                }
+                let creation = ctx.creation.to_string();
+                ctx.out.scores.push((creation, board, lower, pid, value));
+                Ok(())
+            })?)?;
+            let sh = shared.clone();
+            game.set("board", s.create_function(move |lua, (board, n): (String, Option<usize>)| {
+                let creation = c.borrow().creation.to_string();
+                let top = sh.lock().unwrap().boards.top(&creation, &board, n.unwrap_or(10).clamp(1, 100));
+                let t = lua.create_table()?;
+                for (i, sc) in top.iter().enumerate() {
+                    let row = lua.create_table()?;
+                    row.set("name", sc.name.clone())?;
+                    row.set("value", sc.value)?;
+                    t.raw_set(i + 1, row)?;
+                }
+                Ok(t)
+            })?)?;
+            let sh = shared.clone();
+            game.set("links", s.create_function(move |lua, ()| {
+                let t = lua.create_table()?;
+                for (i, l) in sh.lock().unwrap().links.iter().enumerate() {
+                    t.raw_set(i + 1, l.clone())?;
+                }
+                Ok(t)
+            })?)?;
+            let sh = shared.clone();
+            game.set("send", s.create_function(move |_, (player, link, note): (Value, String, Option<String>)| {
+                let pid = player_id(&player)?;
+                if !sh.lock().unwrap().links.contains(&link) {
+                    return Err(bad(format!("this world has no link called \"{link}\"")));
+                }
+                let mut ctx = c.borrow_mut();
+                if ctx.out.sends.len() >= 64 {
+                    return Err(bad("too many players sent at once"));
+                }
+                ctx.out.sends.push((pid, link, note.unwrap_or_default().chars().take(120).collect()));
+                Ok(())
+            })?)?;
             let _ = &kind_tables;
+            *self.deadline.lock().unwrap() = Instant::now() + budget;
             f(&self.lua, self)
         });
         self.rng = rng;
@@ -751,6 +844,7 @@ impl Scripts {
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
         let saved = creation.knobs.clone();
         let mut vm = Vm::load(creation, &saved)?;
+        vm.shared = self.shared.clone();
         // keep what the creatures were doing across a reload
         if let Some(old) = self.vms.remove(&creation.id) {
             let mem = old.memories();
@@ -819,7 +913,9 @@ impl Scripts {
                 let have = herd.bodies.values().filter(|b| b.creation == *id && b.kind == k.name).count() as u32;
                 for i in have..k.count {
                     let a = i as f32 * 2.4;
-                    let at = k.home + Vec3::new(a.cos() * 2.5, 2.0, a.sin() * 2.5);
+                    let mut at = k.home + Vec3::new(a.cos() * 2.5, 2.0, a.sin() * 2.5);
+                    // never inside the ground
+                    at.y = at.y.max(voxels.top(at.x.floor() as i32, at.z.floor() as i32) as f32 + 1.2);
                     herd.spawn(id, &k, at);
                 }
             }

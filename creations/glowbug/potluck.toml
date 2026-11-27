@@ -1,0 +1,11 @@
+name = "Glowbug"
+by = "Potluck"
+kind = "creature"
+about = "Soft little lights that bob about the Green and drift over to anyone standing still."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

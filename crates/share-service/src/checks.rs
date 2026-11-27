@@ -24,7 +24,7 @@ pub struct Toml {
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.1"), ("tweak", "0.1")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.1"), ("tweak", "0.1"), ("game", "0.1")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -336,6 +336,16 @@ mod tests {
         let (m, checks) = run(&creation("local world = require(\"@potluck/world\")\nprint(\"hi\")\n"), &words, &|_| false);
         assert_eq!(m.unwrap().name, "Hopper");
         assert!(checks.iter().all(|c| c.result == "pass"), "{checks:?}");
+    }
+
+    #[test]
+    fn every_base_creation_passes() {
+        let words = Words::parse("grumbleweed\nsnark*\n");
+        for (id, list) in crate::market::BASE {
+            let files: BTreeMap<String, String> = list.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let (_, checks) = run(&files, &words, &|_| false);
+            assert!(!failed(&checks) && !warned(&checks), "{id}: {checks:?}");
+        }
     }
 
     #[test]

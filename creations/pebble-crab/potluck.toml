@@ -1,0 +1,11 @@
+name = "Pebble Crab"
+by = "Potluck"
+kind = "creature"
+about = "Little crabs from the creek. They scuttle off sideways if you come too close, and dance if you're kind."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

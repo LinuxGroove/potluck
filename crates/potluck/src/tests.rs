@@ -289,15 +289,15 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
     app.insert_resource(crate::settings::Settings { name: "Ken's world".into(), ..Default::default() });
     app.update();
     let port = free_port();
-    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false }).unwrap();
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
 
     let (tx, rx) = channel();
     let to_host = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
-    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL })).unwrap();
+    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None })).unwrap();
 
-    let (mut welcome, mut world, mut mossback, mut herd) = (None, None, false, 0);
+    let (mut welcome, mut world, mut mossback, mut herd) = (None, None, false, std::collections::HashSet::new());
     let t = Instant::now();
-    while t.elapsed() < Duration::from_secs(20) && !(welcome.is_some() && world.is_some() && mossback && herd == 3) {
+    while t.elapsed() < Duration::from_secs(20) && !(welcome.is_some() && world.is_some() && mossback && herd.len() == 3) {
         app.update();
         std::thread::sleep(Duration::from_millis(10));
         for w in rx.try_iter() {
@@ -305,7 +305,7 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
                 Some(Event::Msg(_, Msg::Welcome { id, seed, host, .. })) => welcome = Some((id, seed, host)),
                 Some(Event::World(_, bytes)) => world = Voxels::decode(crate::SEED, &bytes),
                 Some(Event::Msg(_, Msg::Creation(p))) => mossback |= p.manifest.name == "Mossback",
-                Some(Event::Msg(_, Msg::Herd(list))) => herd = list.len(),
+                Some(Event::Msg(_, Msg::Bodies { list, .. })) => herd.extend(list.iter().filter(|b| b.creation == "mossback").map(|b| b.id)),
                 _ => {}
             }
         }
@@ -315,7 +315,7 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
     let world = world.expect("the whole world arrives");
     assert!(world.encode() == app.world().resource::<Voxels>().encode(), "block for block the host's world");
     assert!(mossback, "the creations running in the world come with it");
-    assert_eq!(herd, 3, "and so do its creatures");
+    assert_eq!(herd.len(), 3, "and so do its creatures: the three mossbacks");
 }
 
 /// With POTLUCK_DUMP_TEX=<dir>, writes every drawn texture there to look at.
@@ -488,10 +488,16 @@ fn fake_game_server() -> String {
     addr
 }
 
-/// The market, in this process, against the Forgejo the environment names.
-fn start_market(forgejo: &str, token: &str, run: &str) -> String {
+/// The market, in this process, against the Forgejo the environment names
+/// (or none, for what needs no git hosting: passes, the server list,
+/// boards). It looks at servers on this machine.
+fn start_market(forgejo: Option<(&str, &str)>, run: &str) -> (String, Arc<potluck_share::market::App>) {
     let (tx, rx) = channel();
-    let (forgejo, token, run) = (forgejo.to_string(), token.to_string(), run.to_string());
+    let (seed, forgejo, token) = match forgejo {
+        Some((f, t)) => (true, f.to_string(), t.to_string()),
+        None => (false, "http://127.0.0.1:9".to_string(), String::new()),
+    };
+    let run = run.to_string();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         rt.block_on(async move {
@@ -508,10 +514,13 @@ fn start_market(forgejo: &str, token: &str, run: &str) -> String {
             cfg.forgejo.url = forgejo.trim_end_matches('/').to_string();
             cfg.forgejo.token = token;
             cfg.forgejo.email_domain = "test.invalid".into();
+            cfg.private_servers = true;
             let app = Arc::new(market::App::open(cfg, checks::Words::parse("grumbleweed\n")).unwrap());
             app.db().execute("INSERT INTO accounts (user_id, handle, name, created, beta, trusted) VALUES ('potluck', ?1, 'Potluck', 0, 1, 1)", [format!("potluck-{run}")]).unwrap();
-            app.seed_base().await.unwrap();
-            tx.send(url).unwrap();
+            if seed {
+                app.seed_base().await.unwrap();
+            }
+            tx.send((url, app.clone())).unwrap();
             potluck_share::serve(listener, app).await.unwrap();
         });
     });
@@ -546,7 +555,7 @@ fn a_remix_of_a_remix_is_suggested_and_merged_from_the_game() {
     };
     home();
     let run = crate::settings::random_hex(5);
-    let market = start_market(&fj, &token, &run);
+    let (market, _) = start_market(Some((&fj, &token)), &run);
     let server = fake_game_server();
     let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
     let (ada, bo) = (who("Ada"), who("Bo"));
@@ -636,4 +645,278 @@ fn shores_get_foam() {
     let pos = plants.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
     let foam = pos.iter().filter(|p| (p[1] - (world::SEA as f32 + 0.9)).abs() < 1e-3 && p[0] == 35.0 && p[2] >= 207.0 && p[2] <= 208.0).count();
     assert!(foam >= 2, "a strip of foam on the water along the sand ({foam} corners)");
+}
+
+/// M3's server list from both ends: Ada lists her server, which lets in
+/// only players the market vouches for. Bo gets a pass for it and comes in
+/// under his market name; Cy, with no pass, is turned away. The market lists
+/// the server once it has reached its status page, the game finds it there,
+/// and a creation's board on the server reaches the creation's page.
+#[test]
+fn a_listed_server_lets_in_who_the_market_vouches_for() {
+    use crate::hosting::{Join, Rules};
+    use crate::net::{self, Event, Msg};
+    use crate::share::{Done, MarketLink, ShareJobs, Who};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let server = fake_game_server();
+    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
+
+    // Riverbend: signed-in players only, at an address the passes name
+    let port = free_port();
+    let address = format!("ws://127.0.0.1:{port}");
+    let key = MarketLink::new(&market, "").key().expect("the market's key");
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Riverbend".into(), ..Default::default() });
+    app.update();
+    let rules = Rules { max_players: 50, join: Join::SignedIn, address: address.clone(), market_key: Some(key), ..Default::default() };
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Riverbend".into(), port, tls: None, beacon: false, rules }).unwrap();
+
+    // a player knocks: Some(name in the world) when welcomed, or why not
+    let mut knock = |pass: Option<String>, name: &str| -> Result<String, String> {
+        let (tx, rx) = channel();
+        let to_host = transport::connect(&address, port, tx).unwrap();
+        to_host.send(net::frame_msg(&Msg::Hello { name: name.into(), protocol: net::PROTOCOL, pass })).unwrap();
+        let t = Instant::now();
+        let mut welcomed = false;
+        while t.elapsed() < Duration::from_secs(20) {
+            app.update();
+            std::thread::sleep(Duration::from_millis(10));
+            for w in rx.try_iter() {
+                match net::decode(w) {
+                    Some(Event::Msg(_, Msg::Welcome { .. })) => welcomed = true,
+                    Some(Event::Msg(_, Msg::Refused(why))) => return Err(why),
+                    Some(Event::Msg(_, Msg::Roster(all))) if welcomed => return Ok(all.last().cloned().unwrap_or_default()),
+                    _ => {}
+                }
+            }
+        }
+        panic!("{name} heard nothing back");
+    };
+
+    let bo = who("Bo");
+    let jobs = ShareJobs::default();
+    jobs.pass(&bo, &address);
+    let Done::Pass { pass, .. } = done(&jobs, "Bo's pass") else { panic!("not a pass") };
+    assert!(pass.is_some(), "the market gives signed-in players a pass");
+    assert_eq!(knock(pass.clone(), "bo the impostor").as_deref(), Ok(bo.name.as_str()), "Bo comes in under the name the market knows");
+    let why = knock(None, "Cy").expect_err("no pass, no entry");
+    assert!(why.contains("signed in"), "{why}");
+    jobs.pass(&bo, "ws://elsewhere.example.org");
+    let Done::Pass { pass: elsewhere, .. } = done(&jobs, "a pass for another server") else { panic!("not a pass") };
+    let why = knock(elsewhere, "Bo").expect_err("a pass for another server doesn't open this one");
+    assert!(why.contains(&address), "it says which address to use: {why}");
+
+    // Ada lists Riverbend: a token from Your servers, then a heartbeat
+    let ada = potluck_share::db::ensure_account(&mkt.db(), &format!("dev-ada-{run}"), &format!("Ada {run}")).unwrap();
+    let (_, token) = mkt.add_server(&ada, "Riverbend").unwrap();
+    let link = MarketLink::new(&market, &token);
+    let beat = serde_json::json!({ "name": "Riverbend", "about": "Rodeo nights", "address": address, "players": 1, "max_players": 50, "join": "signed-in", "creations": [{ "name": "Rodeo", "code": "ABCD2345" }], "version": "test" });
+    let said = link.heartbeat(&beat).expect("the heartbeat");
+    assert_eq!(said["listed"], true, "listed once the market reached its status page: {said}");
+    assert!(MarketLink::new(&market, "not-a-token").heartbeat(&beat).is_err(), "only tokens the market made");
+
+    jobs.servers(&who("Cy"));
+    let Done::Servers(list) = done(&jobs, "the server list") else { panic!("not a list") };
+    let listed = list.iter().find(|s| s.name == "Riverbend").expect("Riverbend is on the list");
+    assert_eq!((listed.address.as_str(), listed.join.as_str(), listed.creations.clone()), (address.as_str(), "signed-in", vec!["Rodeo".to_string()]));
+
+    // a board kept on Riverbend shows on the creation's page
+    let handle = bo.name.to_lowercase().replace(' ', "-");
+    link.boards(&serde_json::json!({ "boards": [{ "creation": "ABCD2345", "board": "longest ride", "scores": [{ "name": bo.name, "handle": handle, "value": 12.5 }, { "name": "Cy", "value": 30.0 }] }] })).expect("boards");
+    let mut r = ureq::get(format!("{market}/api/c/ABCD2345/boards")).call().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap();
+    let scores = &v["boards"][0]["scores"];
+    assert_eq!(v["boards"][0]["name"], "longest ride", "{v}");
+    assert_eq!((scores[0]["name"].as_str(), scores[0]["server"].as_str(), scores[1]["value"].as_f64()), (Some("Cy"), Some("Riverbend"), Some(12.5)), "best first, with the server it was on: {v}");
+}
+
+fn failed(jobs: &crate::share::ShareJobs, what: &str) -> String {
+    let start = Instant::now();
+    loop {
+        if let Some(d) = jobs.poll().into_iter().next() {
+            match d {
+                crate::share::Done::Failed(e) => return e,
+                _ => panic!("{what} should have failed"),
+            }
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "{what} took too long");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// One account on several devices, with no email or password: Ada makes a
+/// code on her first device and types it on her Steam Deck, which then
+/// plays as her, servers included. A code works once, a device with things
+/// of its own on the market can't be swallowed, a recovery code from the
+/// web brings her account to a new device once, and unlinking (from the
+/// device or the web) gives a device back its own account.
+#[test]
+fn another_device_plays_as_you_with_a_code() {
+    use crate::share::{Done, ShareJobs, Who};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let server = fake_game_server();
+    // each device signs in to the game server as itself, with jobs of its own
+    let device = |id: &str, name: &str| (Who { server: server.clone(), market: market.clone(), device: format!("{id}-{run}"), name: format!("{name} {run}") }, ShareJobs::default());
+    let (ada, deck, phone, bo, tablet) = (device("ada", "Ada"), device("adadeck", "Deck"), device("adaphone", "Phone"), device("bo", "Bo"), device("adatablet", "Tablet"));
+    let account = |(w, jobs): &(Who, ShareJobs)| {
+        jobs.account(w);
+        let Done::Account(a) = done(jobs, "who this device is") else { panic!("not an account") };
+        a
+    };
+    let first = account(&ada);
+    assert!(!first.linked);
+    let deck_own = account(&deck);
+    assert_ne!(deck_own.handle, first.handle, "the Deck starts out as itself");
+
+    ada.1.link_code(&ada.0);
+    let Done::LinkCode(code) = done(&ada.1, "a link code") else { panic!("not a code") };
+    assert_eq!(crate::share::clean_code(&code).len(), 8, "{code}");
+    deck.1.link_device(&deck.0, &code.to_lowercase());
+    let Done::Linked { name, handle, recovery } = done(&deck.1, "the Deck links") else { panic!("not linked") };
+    assert_eq!((name.as_str(), handle.as_str(), recovery), (ada.0.name.as_str(), first.handle.as_str(), false));
+    let on_deck = account(&deck);
+    assert!(on_deck.linked && on_deck.handle == first.handle, "the Deck plays as Ada: {on_deck:?}");
+    assert!(potluck_share::db::account_by_handle(&mkt.db(), &deck_own.handle).unwrap().is_none(), "and its empty account is gone");
+    phone.1.link_device(&phone.0, &code);
+    assert!(failed(&phone.1, "the same code again").contains("run out"), "a code works once");
+
+    // a server's pass from the Deck names Ada
+    deck.1.pass(&deck.0, "ws://riverbend.example.org");
+    let Done::Pass { pass: Some(pass), .. } = done(&deck.1, "the Deck's pass") else { panic!("no pass") };
+    use base64::Engine;
+    let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(pass.split('.').next().unwrap()).unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["handle"].as_str(), Some(first.handle.as_str()), "{body}");
+
+    // Bo's device has a server of its own on the market, so it can't join Ada
+    let bo_account = account(&bo);
+    let bo_row = potluck_share::db::account_by_handle(&mkt.db(), &bo_account.handle).unwrap().unwrap();
+    mkt.add_server(&bo_row, "Bo's").unwrap();
+    ada.1.link_code(&ada.0);
+    let Done::LinkCode(code) = done(&ada.1, "another link code") else { panic!("not a code") };
+    bo.1.link_device(&bo.0, &code);
+    assert!(failed(&bo.1, "Bo links").contains("left behind"));
+    assert_eq!(account(&bo).handle, bo_account.handle, "Bo is still Bo");
+
+    // a recovery code from the web, typed the way it was shown
+    let ada_row = potluck_share::db::account_by_handle(&mkt.db(), &first.handle).unwrap().unwrap();
+    let recovery_code = potluck_share::codes::pretty(&mkt.recovery_code(&ada_row).unwrap());
+    assert_eq!(recovery_code.len(), 23, "{recovery_code}");
+    phone.1.link_device(&phone.0, &recovery_code);
+    let Done::Linked { recovery, .. } = done(&phone.1, "the phone recovers") else { panic!("not linked") };
+    assert!(recovery);
+    assert!(account(&phone).linked);
+    tablet.1.link_device(&tablet.0, &recovery_code);
+    assert!(failed(&tablet.1, "the recovery code again").contains("run out"), "a recovery code works once");
+    assert_eq!(mkt.recovery_made(&ada_row).unwrap(), None, "and it's gone from her page");
+
+    // the Deck leaves; the web unlinks the phone
+    let listed = mkt.devices(&ada_row).unwrap();
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    assert!(listed.iter().all(|d| d.label == crate::share::device_label()));
+    deck.1.unlink(&deck.0);
+    let Done::Unlinked = done(&deck.1, "the Deck leaves") else { panic!("not unlinked") };
+    let after = account(&deck);
+    assert!(!after.linked && after.handle != first.handle, "the Deck has an account of its own again: {after:?}");
+    mkt.unlink(&ada_row, mkt.devices(&ada_row).unwrap()[0].id).unwrap();
+    assert!(!account(&phone).linked);
+    assert!(mkt.devices(&ada_row).unwrap().is_empty());
+    assert_eq!(account(&ada).handle, first.handle, "the first device is always hers");
+}
+
+/// `@potluck/game`: a creation keeps a board of each player's best and
+/// sends players on to servers this one links to, and nothing else.
+#[test]
+fn creations_keep_boards_and_send_players_on() {
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.shared.lock().unwrap().links = vec!["rodeo".into()];
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) }];
+    let code = format!(
+        "{BOX}\nlocal game = require(\"@potluck/game@0.1\")\nlocal sent = false\nfunction Thing:tick(dt)\n  if sent then return end\n  sent = true\n  local ada = world.players()[1]\n  game.score(\"longest ride\", ada, 12)\n  game.score(\"fastest lap\", ada, 31.5, {{ lower = true }})\n  local ok = pcall(game.send, ada, \"nowhere\")\n  self:say(ok and 'sent nowhere' or table.concat(game.links(), ','))\n  game.send(ada, \"rodeo\", \"Off to the rodeo!\")\nend"
+    );
+    scripts.start(&creation(&code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.vms["test"].error, None);
+    let said: Vec<String> = herd.bodies.values().filter_map(|b| b.says.as_ref().map(|s| s.0.clone())).collect();
+    assert_eq!(said, vec!["rodeo".to_string()], "only the links the server has");
+    let scores: Vec<_> = scripts.out.scores.iter().map(|(c, b, lower, p, v)| (c.as_str(), b.as_str(), *lower, *p, *v)).collect();
+    assert_eq!(scores, vec![("test", "longest ride", false, 7, 12.0), ("test", "fastest lap", true, 7, 31.5)]);
+    assert_eq!(scripts.out.sends, vec![(7, "rodeo".to_string(), "Off to the rodeo!".to_string())]);
+}
+
+/// The base game is creations: a dozen of them load, run a minute of the
+/// world while a player walks up to one creature after another, pats or
+/// bops it (and rides the rideable ones), and none of them errors.
+#[test]
+fn every_base_creation_runs_and_answers_players() {
+    home();
+    let lib = Library::load();
+    let base: Vec<&Creation> = lib.list.values().filter(|c| c.origin == Origin::Base).collect();
+    assert!(base.len() >= 12, "a dozen creations in the base game, not {}", base.len());
+    let mut voxels = world();
+    voxels.changes.clear();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    for c in &base {
+        scripts.start(c, &mut herd).unwrap_or_else(|e| panic!("{} doesn't start: {e}", c.manifest.name));
+        assert!(c.manifest.needs.contains_key("world"), "{} says which modules it needs", c.manifest.name);
+    }
+    run(&mut scripts, &mut voxels, &mut herd, 2.0);
+    let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
+    for c in &base {
+        assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
+    }
+    for second in 0..60usize {
+        let ids: Vec<u64> = herd.bodies.keys().copied().collect();
+        let id = ids[(second * 7) % ids.len()];
+        let b = herd.bodies[&id].clone();
+        let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: b.pos + Vec3::X * 1.5 };
+        scripts.players = vec![ada.clone()];
+        if b.rideable && second % 3 == 0 {
+            herd.bodies.get_mut(&id).unwrap().rider = Some(7);
+            scripts.event(&mut voxels, &mut herd, id, "ridden", &ada);
+        } else {
+            scripts.event(&mut voxels, &mut herd, id, if second % 2 == 0 { "used" } else { "hit" }, &ada);
+        }
+        run(&mut scripts, &mut voxels, &mut herd, 1.0);
+        for (id, vm) in &scripts.vms {
+            assert_eq!(vm.error.as_deref(), None, "{id} has an error");
+        }
+    }
+    assert!(kinds.len() >= 13, "every kind of creature shows up: {kinds:?}");
+    assert!(herd.bodies.len() < 64 * base.len(), "nothing multiplies without end");
+    // gardeners and moles change the world a little, never a lot
+    let changed = voxels.changes.len();
+    assert!(changed < 40, "{changed} blocks changed in a minute");
+
+    // the two mini games: a tag, and a ride on the Rodeo Ram that ends on the board
+    scripts.out.scores.clear();
+    let find = |herd: &Herd, kind: &str| herd.bodies.values().find(|b| b.kind == kind).map(|b| (b.id, b.pos)).unwrap();
+    let (bot, at) = find(&herd, "Tag Bot");
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: at + Vec3::X };
+    scripts.players = vec![ada.clone()];
+    scripts.event(&mut voxels, &mut herd, bot, "hit", &ada);
+    assert!(scripts.out.scores.iter().any(|s| s.1 == "tags" && s.3 == 7 && s.4 == 1.0), "a tag is scored: {:?}", scripts.out.scores);
+    let (ram, at) = find(&herd, "Rodeo Ram");
+    let ada = PlayerInfo { pos: at, ..ada };
+    scripts.players = vec![ada.clone()];
+    herd.bodies.get_mut(&ram).unwrap().rider = Some(7);
+    scripts.event(&mut voxels, &mut herd, ram, "ridden", &ada);
+    for _ in 0..60 {
+        run(&mut scripts, &mut voxels, &mut herd, 0.5);
+        if herd.bodies[&ram].rider.is_none() {
+            break;
+        }
+    }
+    assert!(herd.bodies[&ram].rider.is_none(), "nobody stays on the Rodeo Ram for half a minute");
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert!(scripts.out.scores.iter().any(|s| s.1 == "longest ride" && s.3 == 7 && s.4 > 0.0), "the ride is on the board: {:?}", scripts.out.scores);
 }

@@ -47,6 +47,14 @@ pub fn routes() -> Router<Shared> {
         .route("/me", get(me))
         .route("/me/invite", post(invite))
         .route("/me/profile", get(profile).post(save_profile))
+        .route("/me/servers", get(my_servers).post(add_server))
+        .route("/me/servers/{id}/remove", post(remove_server))
+        .route("/me/devices", get(my_devices))
+        .route("/me/devices/code", post(device_code))
+        .route("/me/devices/{id}/unlink", post(unlink_device))
+        .route("/me/recovery", post(make_recovery))
+        .route("/servers", get(servers_page))
+        .route("/servers/{id}/hide", post(hide_server))
         .route("/avatar/{file}", get(avatar))
         .route("/review", get(review))
         .route("/review/{id}", get(review_item).post(decide))
@@ -106,6 +114,7 @@ fn layout(app: &App, p: &Page, title: &str, q: &str, body: Markup) -> Html<Strin
                         nav.top {
                             a href="/?sort=new" { "New" }
                             a href="/?sort=remixed" { "Most remixed" }
+                            a href="/servers" { "Servers" }
                         }
                         div.who {
                             @match &p.me {
@@ -303,6 +312,7 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
         let starred = p.me.as_ref().is_some_and(|m| app.starred(m, &c));
         (versions, parent, open, starred)
     };
+    let boards = app.boards_for(&c.code).unwrap_or_default();
     let shown = q.v.and_then(|n| versions.iter().find(|v| v.n == n && (mine || v.state != "held"))).or_else(|| if mine { versions.first() } else { versions.iter().find(|v| v.state != "held") });
     let Some(shown) = shown.cloned() else { return error_page(&app, &p, 404, "This creation has no version you can see yet.") };
     let manifest: Option<Manifest> = serde_json::from_str(&shown.manifest).ok();
@@ -388,6 +398,16 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
                 div.box {
                     h4 { "Checks for version " (shown.n) }
                     (checks_list(&checks))
+                }
+                @for b in &boards {
+                    div.box {
+                        h4 { (b.name) }
+                        ol.board {
+                            @for s in &b.scores {
+                                li { b { (s.name) } " " span.score { (number(s.value)) } span.sub { " on " (s.server) } }
+                            }
+                        }
+                    }
                 }
                 @if c.visible_to_all() {
                     div.box {
@@ -800,6 +820,8 @@ async fn me(State(app): State<Shared>, h: HeaderMap, Query(q): Query<MeQ>) -> Re
             }
             div.acts {
                 a.btn.pri href="/me/profile" { "Edit your profile" }
+                a.btn href="/me/devices" { "Your devices" }
+                a.btn href="/me/servers" { "Your servers" }
                 form.inline method="post" action="/signout" { button.btn type="submit" { "Sign out" } }
             }
         }
@@ -1258,5 +1280,288 @@ async fn git(State(app): State<Shared>, method: Method, h: HeaderMap, Path((owne
             Response::builder().status(status).header(header::CONTENT_TYPE, ctype).header(header::CACHE_CONTROL, "no-cache").body(Body::from_stream(stream)).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
         }
         Err(e) => (StatusCode::NOT_FOUND, e.message).into_response(),
+    }
+}
+
+// ---------- servers ----------
+
+/// A score as people read it: whole numbers without the point.
+fn number(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v:.2}")
+    }
+}
+
+fn join_text(j: &str) -> &'static str {
+    match j {
+        "signed-in" => "signed-in players",
+        "list" => "invited players",
+        _ => "anyone",
+    }
+}
+
+async fn servers_page(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    let list = match app.listed_servers() {
+        Ok(l) => l,
+        Err(e) => return fail_page(&app, &p, e),
+    };
+    let moderator = p.me.as_ref().is_some_and(|m| m.moderator);
+    let body = html! {
+        h1 { "Servers" }
+        p.sub { "Worlds that are always on. In Potluck, open Join a friend's world, then Servers on the market, or type an address." }
+        @if list.is_empty() {
+            div.empty { "No servers are listed right now." }
+        } @else {
+            ul.rows.servers {
+                @for s in &list {
+                    li {
+                        b { (s.name) }
+                        span { (s.players) " of " (s.max_players) " playing" }
+                        span.mono { (s.address) " " a.copy href="#" data-copy=(s.address) { "copy" } }
+                        @if !s.about.is_empty() { span.sub { (s.about) } }
+                        @let names: Vec<&str> = s.creations.iter().filter_map(|c| c["name"].as_str()).collect();
+                        @if !names.is_empty() { span.sub { "Runs " (names.join(", ")) } }
+                        span.tag { "for " (join_text(&s.join)) }
+                        @if moderator {
+                            form.inline method="post" action={ "/servers/" (s.id) "/hide" } { button.btn type="submit" { "Take off the list" } }
+                        }
+                    }
+                }
+            }
+        }
+        p.sub { "Running a server of your own? " a href="/me/servers" { "Add it to the list" } "." }
+    };
+    layout(&app, &p, "Servers", "", body).into_response()
+}
+
+async fn my_servers(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    my_servers_page(&app, &p, &me, None)
+}
+
+/// Your servers, with a new server's token when one was just made: it's
+/// shown on this page only, never in an address.
+fn my_servers_page(app: &App, p: &Page, me: &Account, new: Option<(i64, String)>) -> Response {
+    let list = match app.my_servers(me) {
+        Ok(l) => l,
+        Err(e) => return fail_page(app, p, e),
+    };
+    let body = html! {
+        h1 { "Your servers" }
+        p.sub { "A server shows in the list while it's on and the market can reach it at the address it gives. Put its token in the server's server.toml, with list = true and that address." }
+        @if let Some((_, token)) = &new {
+            div.note.ok {
+                "Your new server's token, shown only this once. Put it in its server.toml:"
+                pre.mono { "list = true\naddress = \"wss://your.server.example\"\nmarket_token = \"" (token) "\"" }
+            }
+        }
+        @if list.is_empty() {
+            div.empty { "No servers yet." }
+        } @else {
+            ul.rows {
+                @for s in &list {
+                    li {
+                        b { (s.name) }
+                        @if s.address.is_empty() { span.sub { "hasn't been in touch yet" } } @else { span.mono { (s.address) } }
+                        @if s.last_seen > 0 { span.sub { "last heard " (ago(s.last_seen)) } }
+                        @if s.hidden { span.tag.bad { "taken off the list by a moderator" } }
+                        @else if s.last_seen > 0 && !s.reachable { span.tag.warn { "the market couldn't reach its status page" } }
+                        @else if s.reachable { span.tag { "listed" } }
+                        form.inline method="post" action={ "/me/servers/" (s.id) "/remove" } { button.btn type="submit" { "Remove" } }
+                    }
+                }
+            }
+        }
+        div.box style="max-width:520px" {
+            h4 { "Add a server" }
+            form.stack method="post" action="/me/servers" {
+                input name="name" placeholder="Its name" required maxlength="40";
+                button.btn.pri type="submit" { "Make a token" }
+            }
+        }
+    };
+    layout(app, p, "Your servers", "", body).into_response()
+}
+
+#[derive(Deserialize)]
+struct AddServerForm {
+    name: String,
+}
+
+async fn add_server(State(app): State<Shared>, h: HeaderMap, Form(f): Form<AddServerForm>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.add_server(&me, &f.name) {
+        Ok((id, token)) => my_servers_page(&app, &p, &me, Some((id, token))),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn remove_server(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.remove_server(&me, id) {
+        Ok(()) => Redirect::to("/me/servers").into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn hide_server(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.hide_server(&me, id, true) {
+        Ok(()) => Redirect::to("/servers").into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+// ---------- devices ----------
+
+/// What the devices page has just made, to show once.
+enum Made {
+    Nothing,
+    Unlinked,
+    LinkCode(String),
+    Recovery(String),
+}
+
+async fn my_devices(State(app): State<Shared>, h: HeaderMap, Query(q): Query<MeQ>) -> Response {
+    let p = page(&app, &h);
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    devices_page(&app, &p, &me, if q.done == "unlinked" { Made::Unlinked } else { Made::Nothing })
+}
+
+/// Your devices: the first, the ones linked since, a code to link another
+/// and the recovery code. New codes are shown on this page only.
+fn devices_page(app: &App, p: &Page, me: &Account, made: Made) -> Response {
+    let (list, recovery) = match (app.devices(me), app.recovery_made(me)) {
+        (Ok(l), Ok(r)) => (l, r),
+        (Err(e), _) | (_, Err(e)) => return fail_page(app, p, e),
+    };
+    let body = html! {
+        h1 { "Your devices" }
+        p.sub { "Play as you on every device: your name, your block head and what you've shared come along. Nobody needs an email or a password." }
+        @match &made {
+            Made::Unlinked => { div.note.ok { "Unlinked. That device starts an account of its own next time it plays." } }
+            Made::LinkCode(code) => {
+                div.note.ok {
+                    p { "On the new device, in Potluck, choose Settings, then Link a device, and type:" }
+                    p { span.bigcode { (pretty(code)) } }
+                    p { "It works once, in the next ten minutes." }
+                }
+            }
+            Made::Recovery(code) => {
+                div.note.ok {
+                    p { "Your recovery code, shown only this once. Write it down and keep it somewhere safe:" }
+                    p { span.bigcode { (pretty(code)) } }
+                    p { "If you lose every device, type it in Potluck under Settings, then Link a device. It works once, and making a new one stops this one working." }
+                }
+            }
+            Made::Nothing => {}
+        }
+        ul.rows {
+            li {
+                b { "The first device" }
+                span.sub { "started this account " (ago(me.created)) }
+                span.tag { "always yours" }
+            }
+            @for d in &list {
+                li {
+                    b { @if d.label.is_empty() { "A device" } @else { (d.label) } }
+                    span.sub { "linked " (ago(d.linked)) }
+                    span.when { "last here " (ago(d.seen)) }
+                    form.inline method="post" action={ "/me/devices/" (d.id) "/unlink" } { button.btn type="submit" { "Unlink" } }
+                }
+            }
+        }
+        div.two {
+            div.box {
+                h4 { "Link a device" }
+                p.sub { "Make a code here, or in Potluck on a device that's already yours, and type it on the new one under Settings, then Link a device." }
+                form method="post" action="/me/devices/code" { button.btn.pri type="submit" { "Make a code" } }
+            }
+            div.box {
+                h4 { "Recovery code" }
+                @match recovery {
+                    Some(at) => p.sub { "You made one " (ago(at)) ". If every device is lost, it brings your account to a new one." },
+                    None => p.sub { "If every device is lost, a recovery code brings your account to a new one. Make one and keep it somewhere safe." },
+                }
+                form method="post" action="/me/recovery" { button.btn type="submit" { @if recovery.is_some() { "Make a new one" } @else { "Make a recovery code" } } }
+            }
+        }
+    };
+    layout(app, p, "Your devices", "", body).into_response()
+}
+
+async fn device_code(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.link_code(&me) {
+        Ok(code) => devices_page(&app, &p, &me, Made::LinkCode(code)),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn make_recovery(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.recovery_code(&me) {
+        Ok(code) => devices_page(&app, &p, &me, Made::Recovery(code)),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn unlink_device(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.unlink(&me, id) {
+        Ok(()) => Redirect::to("/me/devices?done=unlinked").into_response(),
+        Err(e) => fail_page(&app, &p, e),
     }
 }

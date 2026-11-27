@@ -1,0 +1,12 @@
+name = "Rodeo Ram"
+by = "Potluck"
+kind = "game"
+about = "A ram by the paddock that does not want a rider. Climb on and hold on: the longest rides go on the board."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"
+game = "0.1"

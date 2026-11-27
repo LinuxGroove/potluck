@@ -630,6 +630,13 @@ pub fn portal_xs() -> [i32; 4] {
     [gx - 15, gx - 5, gx + 5, gx + 15]
 }
 
+/// A bend in the creek north-east of the Green, where water creatures live
+/// (the creek is carved in `height`, along z = 198 + sin(x / 18) * 8).
+pub fn creek() -> Vec3 {
+    let x = 214.0;
+    Vec3::new(x, SEA as f32 + 1.0, 198.0 + (x / 18.0f32).sin() * 8.0)
+}
+
 /// The paddock east of the well, where mossbacks start.
 pub fn paddock() -> Vec3 {
     Vec3::new(GREEN.x + 14.5, GREEN_Y as f32 + 1.0, GREEN.z + 4.5)
