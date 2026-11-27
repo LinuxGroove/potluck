@@ -833,8 +833,8 @@ fn news_for(me: u32, at: Vec3, seen: &mut Seen, everyone: &[PlayerSnap], bodies:
         let changed = old.is_none_or(|old| moved(old.pos, b.pos) || (old.yaw - b.yaw).abs() > 0.01 || old.rider != b.rider || old.says != b.says || old.rev != b.rev);
         if changed {
             let mut snap = b.clone();
-            if old.is_some() {
-                // what it is doesn't change
+            if old.is_some_and(|o| o.kind == b.kind) {
+                // what it is only changes when it becomes another kind
                 snap.creation.clear();
                 snap.kind.clear();
             }
