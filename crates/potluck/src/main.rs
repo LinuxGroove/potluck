@@ -49,7 +49,10 @@ fn main() {
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
         // checks the graphics card itself, and stays idle on one that can't ray trace
-        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, render::raytrace_meshes);
+        app.add_plugins((bevy::solari::SolariPlugins, bevy::post_process::auto_exposure::AutoExposurePlugin))
+            .add_systems(PostUpdate, render::raytrace_meshes)
+            .add_systems(PostStartup, render::adapt::setup)
+            .add_systems(Update, render::adapt::follow_day);
         // the ray tracer binds each vertex slab whole, and some cards bind at most 128 MiB
         use bevy::render::{mesh::allocator::MeshAllocatorSettings, slab_allocator::SlabAllocatorSettings};
         let slabs = SlabAllocatorSettings { max_slab_size: 64 << 20, large_threshold: 32 << 20, ..default() };

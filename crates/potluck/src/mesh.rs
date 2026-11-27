@@ -38,13 +38,15 @@ pub struct Off {
     pub wind: bool,
     pub lod: bool,
     pub sky: bool,
+    /// Leaves out of the ray traced scene (the tracer counts them as solid)
+    pub rtleaves: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves") }
     }
 }
 
@@ -982,6 +984,9 @@ pub fn remesh(
             match i {
                 2 => {
                     e.insert((bevy::light::NotShadowCaster, crate::render::NotRaytraced));
+                }
+                1 if cover.off.rtleaves => {
+                    e.insert(crate::render::NotRaytraced);
                 }
                 3 => {
                     e.insert(crate::render::NotRaytraced);

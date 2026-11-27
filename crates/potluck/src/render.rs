@@ -16,6 +16,8 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
 pub mod motes;
+#[cfg(feature = "raytracing")]
+pub mod adapt;
 
 use crate::mesh::BlockMaterials;
 use crate::player::{MainCamera, Me};
