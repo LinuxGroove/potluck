@@ -15,6 +15,7 @@ pub mod green;
 pub mod halves;
 pub mod hosting;
 pub mod input;
+pub mod items;
 pub mod keyboard;
 pub mod made;
 pub mod map;

@@ -303,7 +303,6 @@ fn install(s: &mut [Option<Slot>], id: BlockId, entry: Entry, def: Def) {
         hardness: def.hardness,
         model,
         solid: def.solid,
-        item: false,
     }));
     blocks::set_made(id, Some(block));
     s[(id - FIRST_MADE) as usize] = Some(Slot { entry: Entry { id, ..entry }, def, tiles });

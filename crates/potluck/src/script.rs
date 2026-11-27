@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use mlua::{Function, Lua, Table, Value, Vector, VmState};
 
 use crate::blocks;
+use crate::items::{self, Slots, Thing};
 use crate::creations::{ActionDef, Creation};
 use crate::creatures::{Body, Herd, Part};
 use crate::noise::Rng;
@@ -184,7 +185,7 @@ pub struct GameShared {
     /// Messages creations sent their client halves since the host last
     /// looked: (one player, or everyone here; the message).
     pub notes: Vec<(Option<u32>, Note)>,
-    /// The blocks each player carries, as their game last said.
+    /// What each player carries, as their game last said.
     pub pockets: HashMap<u32, Pockets>,
     /// The time of day (`render::Clock::time`), set by the host each frame;
     /// none yet is the clock's own start.
@@ -198,11 +199,11 @@ pub struct GameShared {
     /// Players whose healing changed since the host last looked.
     pub healing_changed: BTreeSet<u32>,
     /// What each player has in hand, as their game last said (`world.held`).
-    pub held: HashMap<u32, blocks::BlockId>,
+    pub held: HashMap<u32, Thing>,
     /// How much faster holding something digs each kind of block
     /// (`world.digging`): (what's held, creation) to speeds in the order of
     /// `sound::DIG_KINDS`.
-    pub digging: BTreeMap<(blocks::BlockId, String), [f32; 5]>,
+    pub digging: BTreeMap<(Thing, String), [f32; 5]>,
     /// Whether `digging` changed since the host last sent it.
     pub digging_changed: bool,
 }
@@ -228,54 +229,55 @@ fn down_to(n: Option<f64>) -> mlua::Result<f32> {
     }
 }
 
-/// The most blocks `world.give` or `world.take` moves at once.
+/// The most `world.give` or `world.take` moves at once.
 pub const MAX_GIVE: u32 = 64;
 
-/// What a player carries (`world.pockets`). Their blocks live on their own
-/// game: the host goes by what it last heard, and sends changes back.
+/// What a player carries (`world.pockets`). Their pockets live on their own
+/// game: the host keeps a copy of their slots as it last heard, gives and
+/// takes on it as their game will, and sends the changes back.
 #[derive(Default, Clone, Debug)]
 pub struct Pockets {
-    /// In creative a player has every block, and nothing is counted.
+    /// In creative a player has everything, and nothing is counted.
     pub survival: bool,
-    pub items: BTreeMap<blocks::BlockId, u32>,
+    pub slots: Slots,
     /// How many lots of changes the host has sent them, so a report from
     /// before the last one arrived is ignored.
     pub sent: u32,
-    /// Changes not sent yet: (block, more or fewer).
-    pub changes: Vec<(blocks::BlockId, i32)>,
+    /// Changes not sent yet: (thing, more or fewer).
+    pub changes: Vec<(Thing, i32)>,
 }
 
 impl Pockets {
-    /// What `world.give` puts in a survival player's hotbar: all of it, if
-    /// they carry that block already or have a slot free.
-    fn give(&mut self, b: blocks::BlockId, n: u32) -> u32 {
-        let carried = self.items.get(&b).is_some_and(|c| *c > 0);
-        if !carried && self.items.values().filter(|c| **c > 0).count() >= 9 {
-            return 0;
+    /// What `world.give` puts in a survival player's pockets: as many as
+    /// there's room for, the hotbar first.
+    pub fn give(&mut self, t: Thing, n: u32) -> u32 {
+        let k = self.slots.give(t, n);
+        if k > 0 {
+            self.changes.push((t, k as i32));
         }
-        *self.items.entry(b).or_default() += n;
-        self.changes.push((b, n as i32));
-        n
+        k
     }
 
-    fn take(&mut self, b: blocks::BlockId, n: u32) -> bool {
-        let have = self.items.entry(b).or_default();
-        if *have < n {
+    pub fn take(&mut self, t: Thing, n: u32) -> bool {
+        if !self.slots.take(t, n) {
             return false;
         }
-        *have -= n;
-        self.changes.push((b, -(n as i32)));
+        self.changes.push((t, -(n as i32)));
         true
+    }
+
+    pub fn count(&self, t: Thing) -> u32 {
+        self.slots.count(t)
     }
 }
 
-/// A block a player can carry, by name, for give and take.
-fn carried_block(name: &str) -> mlua::Result<blocks::BlockId> {
-    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-    if id == blocks::AIR || id == blocks::WATER || blocks::block(id).hardness < 0.0 {
+/// Something a player can carry, by name, for give, take and holding.
+pub(crate) fn carried_thing(name: &str) -> mlua::Result<Thing> {
+    let t = items::by_name(name).ok_or_else(|| bad(format!("there's nothing called \"{name}\" to carry")))?;
+    if !items::carriable(t) {
         return Err(bad(format!("players can't carry {name}")));
     }
-    Ok(id)
+    Ok(t)
 }
 
 /// How many for give and take: a whole number from 1 to `MAX_GIVE`, 1 if left out.
@@ -867,8 +869,12 @@ pub(crate) fn spot(name: &str) -> Option<Vec3> {
 
 /// `world.kind`: what a block is made of. Client halves share it.
 pub(crate) fn kind_of(name: &str) -> mlua::Result<&'static str> {
-    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-    Ok(crate::sound::material(id).name())
+    if let Some(id) = blocks::by_name(name) {
+        return Ok(crate::sound::material(id).name());
+    }
+    // things to hold go by their names, as the game's blocks do
+    let t = items::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+    Ok(crate::sound::named(items::name(t)).name())
 }
 
 /// `world.find_block`: the middle of the nearest block of that name within
@@ -1274,8 +1280,8 @@ impl Vm {
                             return Ok(Value::Nil);
                         }
                         let t = lua.create_table()?;
-                        for (b, n) in p.iter().flat_map(|p| p.items.iter()).filter(|(_, n)| **n > 0) {
-                            t.set(blocks::block(*b).name, *n)?;
+                        for (thing, n) in p.map(|p| p.slots.carried()).unwrap_or_default() {
+                            t.set(items::name(thing), n)?;
                         }
                         Ok(Value::Table(t))
                     })?,
@@ -1285,10 +1291,10 @@ impl Vm {
                     "has",
                     lua.create_function(move |_, (player, name): (Value, String)| {
                         let pid = pid_of(&player)?;
-                        let b = carried_block(&name)?;
+                        let t = carried_thing(&name)?;
                         Ok(match sh.lock().unwrap().pockets.get(&pid) {
                             Some(p) if !p.survival => f64::INFINITY,
-                            Some(p) => p.items.get(&b).copied().unwrap_or(0) as f64,
+                            Some(p) => p.count(t) as f64,
                             None => 0.0,
                         })
                     })?,
@@ -1298,10 +1304,10 @@ impl Vm {
                     "take",
                     lua.create_function(move |_, (player, name, n): (Value, String, Option<f64>)| {
                         let pid = pid_of(&player)?;
-                        let (b, n) = (carried_block(&name)?, how_many(n)?);
+                        let (t, n) = (carried_thing(&name)?, how_many(n)?);
                         Ok(match sh.lock().unwrap().pockets.get_mut(&pid) {
                             Some(p) if !p.survival => true,
-                            Some(p) => p.take(b, n),
+                            Some(p) => p.take(t, n),
                             None => false,
                         })
                     })?,
@@ -1311,10 +1317,10 @@ impl Vm {
                     "give",
                     lua.create_function(move |_, (player, name, n): (Value, String, Option<f64>)| {
                         let pid = pid_of(&player)?;
-                        let (b, n) = (carried_block(&name)?, how_many(n)?);
+                        let (t, n) = (carried_thing(&name)?, how_many(n)?);
                         Ok(match sh.lock().unwrap().pockets.get_mut(&pid) {
                             Some(p) if !p.survival => n,
-                            Some(p) => p.give(b, n),
+                            Some(p) => p.give(t, n),
                             None => 0,
                         })
                     })?,
@@ -1396,8 +1402,8 @@ impl Vm {
                     "held",
                     lua.create_function(move |_, player: Value| {
                         let pid = pid_of(&player)?;
-                        let b = sh.lock().unwrap().held.get(&pid).copied().unwrap_or(blocks::AIR);
-                        Ok((b != blocks::AIR).then(|| blocks::block(b).name))
+                        let t = sh.lock().unwrap().held.get(&pid).copied().unwrap_or(0);
+                        Ok((t != 0).then(|| items::name(t)))
                     })?,
                 )?;
                 world.set("kind", lua.create_function(move |_, name: String| kind_of(&name))?)?;
@@ -1405,7 +1411,7 @@ impl Vm {
                 world.set(
                     "digging",
                     lua.create_function(move |_, (name, speeds): (String, Option<Table>)| {
-                        let id = carried_block(&name)?;
+                        let id = carried_thing(&name)?;
                         let mut by_kind = [1.0f32; 5];
                         if let Some(t) = &speeds {
                             for pair in t.pairs::<String, f64>() {
@@ -1851,10 +1857,10 @@ impl Vm {
             })?)?;
             world.set("set_block", s.create_function(move |_, (p, name): (Value, String)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?;
-                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                if blocks::is_item(id) {
+                if items::by_name(&name).is_some_and(items::is_item) {
                     return Err(bad(format!("{name} is something to hold, not a block to put down")));
                 }
+                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
                 Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
@@ -2420,19 +2426,19 @@ impl Scripts {
 
     /// What a player's game says they carry. A report from before the
     /// host's last changes reached them is ignored.
-    pub fn set_pockets(&mut self, player: u32, survival: bool, items: &[(blocks::BlockId, u32)], seen: u32) {
+    pub fn set_pockets(&mut self, player: u32, survival: bool, slots: &[(u8, Thing, u32)], seen: u32) {
         let mut sh = self.shared.lock().unwrap();
         let p = sh.pockets.entry(player).or_default();
         if seen < p.sent || !p.changes.is_empty() {
             return;
         }
         p.survival = survival;
-        p.items = items.iter().filter(|(_, n)| *n > 0).map(|(b, n)| (*b, (*n).min(1 << 20))).collect();
+        p.slots = Slots::from_filled(slots);
     }
 
     /// Changes creations made to what players carry: (player, how many
     /// lots they've been sent now, the changes).
-    pub fn pocket_changes(&mut self) -> Vec<(u32, u32, Vec<(blocks::BlockId, i32)>)> {
+    pub fn pocket_changes(&mut self) -> Vec<(u32, u32, Vec<(Thing, i32)>)> {
         let mut sh = self.shared.lock().unwrap();
         let mut out = vec![];
         for (pid, p) in sh.pockets.iter_mut().filter(|(_, p)| !p.changes.is_empty()) {
@@ -2474,16 +2480,16 @@ impl Scripts {
     }
 
     /// What a player has in hand now, as their game says (`world.held`).
-    pub fn set_held(&mut self, player: u32, b: blocks::BlockId) {
+    pub fn set_held(&mut self, player: u32, b: Thing) {
         self.shared.lock().unwrap().held.insert(player, b);
     }
 
     /// How much faster each thing held digs each kind of block, every
     /// creation's `world.digging` multiplied together: what every game is
     /// told, in order of what's held.
-    pub fn digging(&self) -> Vec<(blocks::BlockId, [f32; 5])> {
+    pub fn digging(&self) -> Vec<(Thing, [f32; 5])> {
         let sh = self.shared.lock().unwrap();
-        let mut out: BTreeMap<blocks::BlockId, [f32; 5]> = BTreeMap::new();
+        let mut out: BTreeMap<Thing, [f32; 5]> = BTreeMap::new();
         for ((b, _), s) in &sh.digging {
             let e = out.entry(*b).or_insert([1.0; 5]);
             for k in 0..5 {
@@ -2494,7 +2500,7 @@ impl Scripts {
     }
 
     /// `digging()`, when it changed since the last time this was asked.
-    pub fn digging_changes(&mut self) -> Option<Vec<(blocks::BlockId, [f32; 5])>> {
+    pub fn digging_changes(&mut self) -> Option<Vec<(Thing, [f32; 5])>> {
         let changed = std::mem::take(&mut self.shared.lock().unwrap().digging_changed);
         changed.then(|| self.digging())
     }

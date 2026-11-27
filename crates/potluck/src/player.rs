@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 
 use crate::blocks::{self, BlockId, Shape, AIR, STARTER_HOTBAR, WATER};
+use crate::items::{self, Slots, Thing, HOTBAR};
 use crate::input::Controls;
 use crate::settings::Settings;
 use crate::ui::Focus;
@@ -38,10 +39,12 @@ pub struct Me {
     pub flying: bool,
     pub sprint: bool,
     pub in_water: bool,
+    /// The hotbar's chosen slot.
     pub slot: usize,
-    pub hotbar: [BlockId; 9],
-    /// How many of each hotbar block (survival only).
-    pub counts: [u32; 9],
+    /// What the player carries: the hotbar's nine slots, then the
+    /// backpack's 27. In creative the hotbar holds what they chose and
+    /// nothing is counted.
+    pub pockets: Slots,
     pub health: f32,
     fall_from: f32,
     last_jump: f64,
@@ -71,7 +74,7 @@ pub struct Me {
     /// Messages creations sent their client halves on this game, for
     /// `halves::run` to hand over.
     pub notes: Vec<crate::script::Note>,
-    /// How many lots of changes to the hotbar creations have made here
+    /// How many lots of changes to the pockets creations have made here
     /// (`world.give`, `world.take`), for the host to know a report is new.
     pub pockets_seen: u32,
     /// Hurts (less than 0) and heals creations sent, for `walk` to apply
@@ -85,7 +88,7 @@ pub struct Me {
     pub healing: f32,
     /// How much faster what's in hand digs each kind of block
     /// (`world.digging`, in the order of `sound::DIG_KINDS`), by what it is.
-    pub digging: std::collections::HashMap<BlockId, [f32; 5]>,
+    pub digging: std::collections::HashMap<Thing, [f32; 5]>,
     /// Blocks this player placed and broke since the host last looked:
     /// (where, what it was, what it is now), for creations' block events.
     pub built: Vec<(IVec3, BlockId, BlockId)>,
@@ -110,8 +113,7 @@ impl Default for Me {
             sprint: false,
             in_water: false,
             slot: 0,
-            hotbar: STARTER_HOTBAR,
-            counts: [0; 9],
+            pockets: Slots::starting(STARTER_HOTBAR),
             health: MAX_HEALTH,
             fall_from: 0.0,
             last_jump: -10.0,
@@ -189,43 +191,28 @@ impl Me {
         self.breaking = None;
     }
 
-    pub fn give(&mut self, id: BlockId) {
-        if let Some(i) = self.hotbar.iter().position(|&b| b == id) {
-            self.counts[i] += 1;
-        } else if let Some(i) = (0..9).find(|&i| self.counts[i] == 0) {
-            self.hotbar[i] = id;
-            self.counts[i] = 1;
-        }
+    /// Puts one of a thing in the pockets (survival), if there's room.
+    pub fn give(&mut self, t: Thing) -> bool {
+        self.pockets.give(t, 1) == 1
     }
 
-    /// What's in the hotbar, by block (survival).
-    pub fn carried(&self) -> Vec<(BlockId, u32)> {
-        let mut out: Vec<(BlockId, u32)> = vec![];
-        for (b, n) in self.hotbar.iter().zip(self.counts).filter(|(_, n)| *n > 0) {
-            match out.iter_mut().find(|(c, _)| c == b) {
-                Some(c) => c.1 += n,
-                None => out.push((*b, n)),
-            }
-        }
-        out.sort();
-        out
+    /// What's carried, by thing (survival).
+    pub fn carried(&self) -> Vec<(Thing, u32)> {
+        self.pockets.carried()
     }
 
-    /// Blocks a creation gave (more) or took (fewer).
-    pub fn change_pockets(&mut self, changes: &[(BlockId, i32)]) {
-        for &(b, d) in changes {
+    /// Things a creation gave (more) or took (fewer), as the host worked
+    /// them out on its copy of these pockets.
+    pub fn change_pockets(&mut self, changes: &[(Thing, i32)]) {
+        for &(t, d) in changes {
             if d > 0 {
-                for _ in 0..d.min(crate::script::MAX_GIVE as i32) {
-                    self.give(b);
-                }
-            }
-            let mut left = d.min(0).unsigned_abs();
-            for i in (0..9).filter(|&i| self.hotbar[i] == b) {
-                let n = self.counts[i].min(left);
-                self.counts[i] -= n;
-                left -= n;
+                self.pockets.give(t, (d as u32).min(crate::script::MAX_GIVE));
+            } else if d < 0 {
+                let n = d.unsigned_abs().min(self.pockets.count(t));
+                self.pockets.take(t, n);
             }
         }
+        self.pockets.refill(self.slot);
     }
 
     /// Notes a block this player changed, for the host to tell creations.
@@ -235,10 +222,11 @@ impl Me {
         }
     }
 
-    /// What's in hand: the hotbar's chosen slot, or nothing when it's an
-    /// empty one in survival.
-    pub fn held(&self, survival: bool) -> BlockId {
-        if survival && self.counts[self.slot] == 0 { AIR } else { self.hotbar[self.slot] }
+    /// What's in hand: the hotbar's chosen slot, or nothing (0) when it's
+    /// an empty one in survival.
+    pub fn held(&self, survival: bool) -> Thing {
+        let s = self.pockets.0[self.slot.min(HOTBAR - 1)];
+        if survival && s.empty() { 0 } else { s.thing }
     }
 
     /// How much faster than by hand the thing in hand breaks a block in
@@ -524,6 +512,7 @@ pub fn build(
     mut me: ResMut<Me>,
     herd: Res<crate::creatures::Herd>,
     mut heard: ResMut<crate::sound::Heard>,
+    mut toasts: ResMut<crate::ui::Toasts>,
 ) {
     let dt = time.delta_secs();
     let dir = me.forward();
@@ -533,7 +522,7 @@ pub fn build(
         return;
     }
     if c.hotbar_step != 0 {
-        me.slot = (me.slot as i32 + c.hotbar_step).rem_euclid(9) as usize;
+        me.slot = (me.slot as i32 + c.hotbar_step).rem_euclid(HOTBAR as i32) as usize;
     }
     if let Some(s) = c.hotbar_slot {
         me.slot = s;
@@ -563,7 +552,9 @@ pub fn build(
                     if voxels.set(hit.block, AIR) {
                         me.note_built(hit.block, hit.id, AIR);
                     }
-                    me.give(hit.id);
+                    if !me.give(items::of_block(hit.id)) {
+                        toasts.push("Your pockets are full");
+                    }
                     me.breaking = None;
                     if let Some(n) = stuff.breaks() {
                         heard.game(n, centre, 0.7, 1.0);
@@ -598,8 +589,9 @@ pub fn build(
     }
     // placing
     if c.place_pressed {
-        let id = me.hotbar[me.slot];
-        if settings.survival && me.counts[me.slot] == 0 || blocks::is_item(id) {
+        let slot = me.pockets.0[me.slot];
+        let Some(id) = items::block(slot.thing) else { return };
+        if settings.survival && slot.empty() {
             return;
         }
         let at = if blocks::shape(hit.id) == Shape::Cross { hit.block } else { hit.block + hit.normal };
@@ -630,7 +622,9 @@ pub fn build(
             heard.game("place", at.as_vec3() + Vec3::splat(0.5), 0.6, crate::sound::material(id).knock());
             if settings.survival {
                 let s = me.slot;
-                me.counts[s] -= 1;
+                me.pockets.0[s].count -= 1;
+                // the backpack's next lot of it comes to hand
+                me.pockets.refill(s);
             }
         }
     }
@@ -682,8 +676,8 @@ pub fn report_pockets(
     lib: Res<crate::creations::Library>,
     net: Res<crate::net::Net>,
     mut actions: ResMut<crate::game::Actions>,
-    mut last: Local<Option<(u32, bool, Vec<(BlockId, u32)>, u32)>>,
-    mut held: Local<Option<(u32, BlockId)>>,
+    mut last: Local<Option<(u32, bool, Vec<(u8, Thing, u32)>, u32)>>,
+    mut held: Local<Option<(u32, Thing)>>,
 ) {
     let Some(mut me) = me else { return };
     if !info.in_world {
@@ -693,9 +687,9 @@ pub fn report_pockets(
         // a new world counts the host's changes from nothing
         me.pockets_seen = 0;
     }
-    let now = (lib.world, settings.survival, if settings.survival { me.carried() } else { vec![] }, me.pockets_seen);
+    let now = (lib.world, settings.survival, if settings.survival { me.pockets.filled() } else { vec![] }, me.pockets_seen);
     if last.as_ref() != Some(&now) {
-        actions.0.push((net.my_id, crate::game::Action::Pockets { survival: now.1, items: now.2.clone(), seen: now.3 }));
+        actions.0.push((net.my_id, crate::game::Action::Pockets { survival: now.1, slots: now.2.clone(), seen: now.3 }));
         *last = Some(now);
     }
     // what's in hand, for `world.held`

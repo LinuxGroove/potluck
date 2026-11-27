@@ -523,16 +523,17 @@ impl Harness {
                     Vec3::new(g.x, self.voxels.top(g.x as i32, g.z as i32) as f32 + 1.0, g.z)
                 });
                 let survival = opts.as_ref().and_then(|o| o.get::<Option<bool>>("survival").ok().flatten()).unwrap_or(false);
-                let mut items = Vec::new();
+                // what they carry, put in their pockets as the game would
+                let mut pockets = crate::items::Slots::default();
                 if let Some(Ok(carry)) = opts.as_ref().map(|o| o.get::<Option<Table>>("carrying")) {
-                    for (block, count) in carry.into_iter().flat_map(|t| t.pairs::<String, u32>().flatten().collect::<Vec<_>>()) {
-                        let b = blocks::by_name(&block).ok_or_else(|| Stop::Problem(format!("test.player: there's no block called \"{block}\" to carry")))?;
-                        items.push((b, count));
+                    for (thing, count) in carry.into_iter().flat_map(|t| t.pairs::<String, u32>().flatten().collect::<Vec<_>>()) {
+                        let t = crate::items::by_name(&thing).ok_or_else(|| Stop::Problem(format!("test.player: there's nothing called \"{thing}\" to carry")))?;
+                        pockets.give(t, count);
                     }
                 }
                 let p = PlayerInfo { id: FIRST_PLAYER + n, name, pos: at };
                 self.scripts.players.push(p.clone());
-                self.scripts.set_pockets(p.id, survival, &items, 0);
+                self.scripts.set_pockets(p.id, survival, &pockets.filled(), 0);
                 self.health.insert(p.id, 20.0);
                 one(Value::Table(script::player_table(self.lua(), &p).map_err(fail)?))
             }
@@ -556,20 +557,16 @@ impl Harness {
                 match op.as_str() {
                     "place" => {
                         let name = arg(3).and_then(|v| v.as_string().map(|s| s.to_string_lossy())).unwrap_or_default();
-                        let b = blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.place: there's no block called \"{name}\"")))?;
-                        if blocks::is_item(b) {
+                        if crate::items::by_name(&name).is_some_and(crate::items::is_item) {
                             return Err(Stop::Problem(format!("test.place: {name} is something to hold, not to put down")));
                         }
+                        let b = blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.place: there's no block called \"{name}\"")))?;
                         // a survival player puts down what they carry
                         {
                             let mut sh = self.scripts.shared.lock().unwrap();
                             let pockets = sh.pockets.entry(p.id).or_default();
-                            if pockets.survival {
-                                let have = pockets.items.entry(b).or_default();
-                                if *have == 0 {
-                                    return Err(Stop::Problem(format!("test.place: {} isn't carrying any {name}", p.name)));
-                                }
-                                *have -= 1;
+                            if pockets.survival && !pockets.slots.take(crate::items::of_block(b), 1) {
+                                return Err(Stop::Problem(format!("test.place: {} isn't carrying any {name}", p.name)));
                             }
                         }
                         self.voxels.set(at, b);
@@ -580,7 +577,7 @@ impl Harness {
                             let mut sh = self.scripts.shared.lock().unwrap();
                             let pockets = sh.pockets.entry(p.id).or_default();
                             if pockets.survival {
-                                *pockets.items.entry(old).or_default() += 1;
+                                pockets.slots.give(crate::items::of_block(old), 1);
                             }
                         }
                         self.voxels.set(at, blocks::AIR);
@@ -616,8 +613,8 @@ impl Harness {
             "hold" => {
                 let p = self.player(arg(1), "hold")?;
                 let b = match arg(2).and_then(|v| v.as_string().map(|s| s.to_string_lossy())) {
-                    None => blocks::AIR,
-                    Some(name) => blocks::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's no block called \"{name}\"")))?,
+                    None => 0,
+                    Some(name) => crate::items::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's nothing called \"{name}\"")))?,
                 };
                 self.scripts.set_held(p.id, b);
                 nothing

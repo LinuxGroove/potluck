@@ -708,12 +708,14 @@ fn look_around(radius: f32, cx: &Cx) -> Value {
         "mode": if cx.survival { "survival" } else { "build" },
         "flying": me.flying,
         "standing_on": name(cx.voxels.at(feet - IVec3::Y)),
-        "in_hand": name(me.hotbar[me.slot.min(8)]),
-        "hotbar": me.hotbar.iter().map(|b| name(*b)).collect::<Vec<_>>(),
+        "in_hand": crate::items::name(me.held(cx.survival)),
+        "hotbar": me.pockets.0[..crate::items::HOTBAR].iter().map(|s| crate::items::name(s.thing)).collect::<Vec<_>>(),
     });
     if cx.survival {
         you["health"] = json!(me.health);
-        you["counts"] = json!(me.counts);
+        you["counts"] = json!(me.pockets.0[..crate::items::HOTBAR].iter().map(|s| s.count).collect::<Vec<_>>());
+        // the backpack: what's in it, slot by slot
+        you["backpack"] = me.pockets.0[crate::items::HOTBAR..].iter().map(|s| if s.empty() { json!(null) } else { json!([crate::items::name(s.thing), s.count]) }).collect::<Vec<_>>().into();
     }
     if let Some(r) = me.riding {
         you["riding"] = json!(r);

@@ -60,8 +60,8 @@ pub const COLUMN: BlockId = 44;
 pub const BRAZIER: BlockId = 45;
 pub const FENCE: BlockId = 46;
 // 47 to 63 are kept for the looks; 64 and up are for the creations' work.
-pub const WOODEN_PICKAXE: BlockId = 64;
-pub const STONE_SWORD: BlockId = 71;
+// 64 to 71 were tools before items had ids of their own (`items`): no
+// world has them, so they're free.
 pub const BALLOON_BASKET: BlockId = 72;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,8 +91,6 @@ pub struct Block {
     pub model: &'static [Cuboid],
     /// Whether bodies bump into a model (a table, but not a candle).
     pub solid: bool,
-    /// Something to carry and hold (a tool, a sword) that's never placed.
-    pub item: bool,
 }
 
 /// Which way a side faces: east, west, up, down, south, north.
@@ -161,17 +159,12 @@ impl Cuboid {
 }
 
 const fn b(name: &'static str, faces: [&'static str; 3], shape: Shape, hardness: f32) -> Block {
-    Block { name, faces, shape, light: false, hardness, model: &[], solid: false, item: false }
+    Block { name, faces, shape, light: false, hardness, model: &[], solid: false }
 }
 
 /// A block made of boxes.
 const fn m(name: &'static str, faces: [&'static str; 3], model: &'static [Cuboid], solid: bool, hardness: f32) -> Block {
-    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid, item: false }
-}
-
-/// Something to hold, never placed: its tile is its icon.
-const fn item(name: &'static str, tile: &'static str) -> Block {
-    Block { name, faces: [tile, tile, tile], shape: Shape::Air, light: false, hardness: 0.0, model: &[], solid: false, item: true }
+    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid }
 }
 
 const fn lit(mut b: Block) -> Block {
@@ -306,15 +299,15 @@ pub static BLOCKS: &[Block] = &[
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
-    // 64 on: tools and swords (the tools and gloomlings creations say what they do)
-    item("Wooden pickaxe", "pickaxe_wood"),
-    item("Stone pickaxe", "pickaxe_stone"),
-    item("Wooden axe", "axe_wood"),
-    item("Stone axe", "axe_stone"),
-    item("Wooden shovel", "shovel_wood"),
-    item("Stone shovel", "shovel_stone"),
-    item("Wooden sword", "sword_wood"),
-    item("Stone sword", "sword_stone"),
+    // 64 to 71: free (tools are items now)
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
     // 72: put down, it becomes a hot air balloon (the balloon creation)
     m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
 ];
@@ -326,7 +319,7 @@ static MADE: [AtomicPtr<Block>; 128] = [const { AtomicPtr::new(std::ptr::null_mu
 
 /// A made block's id that no creation here has given a block (a guest's
 /// copy of a world before the host's list comes).
-static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false, item: false };
+static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false };
 
 /// Gives a made block's id its block, or takes it away (`made` only).
 pub(crate) fn set_made(id: BlockId, b: Option<&'static Block>) {
@@ -351,11 +344,6 @@ pub fn block(id: BlockId) -> &'static Block {
         return made(id).unwrap_or(&UNKNOWN);
     }
     BLOCKS.get(id as usize).unwrap_or(&BLOCKS[0])
-}
-
-/// Something to hold (a tool), never placed.
-pub fn is_item(id: BlockId) -> bool {
-    block(id).item
 }
 
 pub fn shape(id: BlockId) -> Shape {
