@@ -143,12 +143,14 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
         ..default()
     };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
+    // water reflects about 2% straight on (reflectance 0.35), and is deep
+    // enough to hide most of the sand under it
     let water = StandardMaterial {
-        base_color: Color::srgba(1.0, 1.0, 1.0, 0.82),
+        base_color: Color::srgba(0.85, 0.95, 1.0, 0.95),
         base_color_texture: Some(atlas.color.clone()),
         alpha_mode: AlphaMode::Blend,
-        perceptual_roughness: 0.08,
-        reflectance: 0.5,
+        perceptual_roughness: 0.06,
+        reflectance: 0.35,
         double_sided: true,
         cull_mode: None,
         ..default()
@@ -213,7 +215,8 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
             color: Color::srgba(0.62, 0.74, 0.88, 1.0),
             directional_light_color: Color::srgba(1.0, 0.93, 0.8, 0.4),
             directional_light_exponent: 24.0,
-            falloff: FogFalloff::Linear { start: 140.0, end: 330.0 },
+            // with the sky's own haze on Medium and up, fog only softens the far hills
+            falloff: if medium { FogFalloff::Linear { start: 160.0, end: 520.0 } } else { FogFalloff::Linear { start: 140.0, end: 330.0 } },
         },
     )).id();
     if let Some(off) = off {
@@ -222,7 +225,10 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
     }
     if medium {
         commands.entity(cam).insert((AtmosphereSettings::default(), AtmosphereEnvironmentMapLight::default(), Bloom::NATURAL));
-        commands.spawn(Atmosphere::earth(media.add(ScatteringMedium::earth(256, 256))));
+        // past the island is sea, not the beige ground under Earth's sky
+        let mut air = Atmosphere::earth(media.add(ScatteringMedium::earth(256, 256)));
+        air.ground_albedo = Vec3::new(0.02, 0.07, 0.11);
+        commands.spawn(air);
     }
     if high {
         // TAA in place of MSAA: SSAO and contact shadows need it, and it
@@ -291,6 +297,7 @@ pub fn sky(
     mut ambient: ResMut<GlobalAmbientLight>,
     mut haze: Query<(&mut Transform, &mut FogVolume), (With<Haze>, Without<Sun>, Without<MainCamera>)>,
     me: Res<Me>,
+    rt: Res<Raytraced>,
 ) {
     if clock.running {
         clock.time = (clock.time + time.delta_secs() / (DAY_MINUTES * 60.0)) % 1.0;
@@ -308,6 +315,11 @@ pub fn sky(
         *t = Transform::from_translation(Vec3::ZERO).looking_to(-dir, Vec3::Y);
         l.illuminance = if up > -0.05 { lux::RAW_SUNLIGHT * strength.max(0.002) } else { 900.0 };
         l.color = Color::srgb(1.0, 0.86 + 0.14 * day, 0.7 + 0.3 * day);
+        if rt.0 {
+            // the sky reddens a low sun for the other tiers; ray tracing needs telling
+            let low = 1.0 - crate::noise::smooth(0.02, 0.4, up);
+            l.color = Color::srgb(1.0, 0.86 + 0.14 * day - 0.36 * low, 0.7 + 0.3 * day - 0.52 * low);
+        }
     }
     let medium = Tier::of(&settings.lighting) >= Tier::Medium;
     if let Ok((mut t, mut v)) = haze.single_mut() {
@@ -319,10 +331,15 @@ pub fn sky(
     if let Ok((mut ex, mut fog, mut proj)) = cam.single_mut() {
         // eyes adjust to the dark, gently
         ex.ev100 = 13.0 - (1.0 - day) * 5.2;
+        if rt.0 {
+            // ray traced light has no made-up fill from everywhere, so the
+            // eye opens up a stop
+            ex.ev100 -= 1.0;
+        }
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);
         let f = night_fog.lerp(day_fog, day);
-        fog.color = Color::srgba(f.x, f.y, f.z, 1.0);
+        fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });
         if let Projection::Perspective(p) = &mut *proj {
             p.fov = settings.fov.clamp(70.0, 110.0).to_radians() * 0.75;
         }
