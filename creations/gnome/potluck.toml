@@ -1,0 +1,11 @@
+name = "Gnome Gardener"
+by = "Potluck"
+kind = "creature"
+about = "Two gardeners who keep the Green in flowers. Ask one and they'll tell you how things work round here."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

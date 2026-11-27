@@ -38,6 +38,7 @@ pub enum Screen {
     Tweak(String),
     Share(String),
     Join,
+    Servers,
     Code,
     Library,
     Settings,
@@ -57,6 +58,7 @@ pub enum Act {
     Host,
     JoinAddress(String),
     OpenJoin,
+    OpenServers,
     OpenCode,
     LoadCode(String),
     OpenLibrary,
@@ -142,6 +144,8 @@ pub struct Focus {
     pub suggestions: Vec<crate::share::Suggestion>,
     /// The market link on the Link screen: (address, what it's for).
     pub link: Option<(String, String)>,
+    /// Servers listed on the market.
+    pub servers: Vec<crate::share::Listed>,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -159,6 +163,7 @@ impl Default for Focus {
             items: vec![],
             suggestions: vec![],
             link: None,
+            servers: vec![],
             qr: None,
         }
     }
@@ -391,6 +396,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             for (name, addr) in &focus.lan {
                 v.push(button(format!("{name}  ({addr})"), Act::JoinAddress(addr.clone())));
             }
+            v.push(button("Servers on the market", Act::OpenServers));
             v.push(Item { label: "Or type an address".into(), kind: Kind::Field { key: "address".into(), value: focus.fields.get("address").cloned().unwrap_or_default() } });
             v.push(button("Join that address", Act::JoinAddress(focus.fields.get("address").cloned().unwrap_or_default())));
             if !focus.status.is_empty() {
@@ -398,6 +404,38 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             }
             v.push(button("Back", Act::Back));
             ("Join a friend".into(), v)
+        }
+        Screen::Servers => {
+            let mut v = vec![];
+            for s in &focus.servers {
+                let full = s.max_players > 0 && s.players >= s.max_players;
+                let label = format!("{}  ·  {} of {} here{}", s.name, s.players, s.max_players, if full { ", full" } else { "" });
+                v.push(button(label, Act::JoinAddress(s.address.clone())));
+                let mut about = s.about.clone();
+                if !s.creations.is_empty() {
+                    if !about.is_empty() {
+                        about.push_str("  ·  ");
+                    }
+                    about.push_str(&format!("Runs {}", s.creations.join(", ")));
+                }
+                if s.join == "signed-in" || s.join == "list" {
+                    if !about.is_empty() {
+                        about.push_str("  ·  ");
+                    }
+                    about.push_str(if s.join == "list" { "Invited players only" } else { "Signed-in players only" });
+                }
+                if !about.is_empty() {
+                    v.push(note(about));
+                }
+            }
+            if focus.servers.is_empty() && focus.status.is_empty() {
+                v.push(note("Asking the market..."));
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::Back));
+            ("Servers".into(), v)
         }
         Screen::Code => {
             let code = focus.fields.get("code").cloned().unwrap_or_default();

@@ -1,0 +1,11 @@
+name = "Woolly"
+by = "Potluck"
+kind = "creature"
+about = "Sheep that graze the Green. Pat one and it follows you about for a while; bop one and it's off."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

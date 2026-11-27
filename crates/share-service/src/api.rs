@@ -45,6 +45,11 @@ pub fn routes() -> Router<Shared> {
         .route("/api/suggestions/{id}/close", post(close))
         .route("/api/signin", post(signin))
         .route("/api/invite", post(invite))
+        .route("/api/pass", post(pass))
+        .route("/api/servers", get(servers))
+        .route("/api/servers/heartbeat", post(heartbeat))
+        .route("/api/servers/boards", post(boards_post))
+        .route("/api/c/{code}/boards", get(boards))
         .route("/f/{sha}", get(file))
 }
 
@@ -230,6 +235,62 @@ async fn invite(State(app): State<Shared>, h: HeaderMap, Json(r): Json<InviteReq
     let a = who(&app, &h).await?;
     app.redeem_invite(&a, &r.code)?;
     Ok(Json(json!({ "beta": true })))
+}
+
+#[derive(Deserialize, Default)]
+struct PassReq {
+    #[serde(default)]
+    server: String,
+}
+
+/// A pass for joining a server: who the market says this player is.
+async fn pass(State(app): State<Shared>, h: HeaderMap, body: axum::body::Bytes) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let server = serde_json::from_slice::<PassReq>(&body).unwrap_or_default().server;
+    Ok(Json(json!({ "pass": app.pass(&a, &server)?, "expires_in": crate::servers::PASS_SECONDS })))
+}
+
+async fn servers(State(app): State<Shared>) -> R<Json<Value>> {
+    let list: Vec<Value> = app
+        .listed_servers()?
+        .into_iter()
+        .map(|s| {
+            json!({
+                "name": s.name, "about": s.about, "address": s.address, "players": s.players, "max_players": s.max_players,
+                "join": s.join, "version": s.version,
+                "creations": s.creations.iter().filter_map(|c| c["name"].as_str()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "servers": list })))
+}
+
+fn server_token(h: &HeaderMap) -> R<String> {
+    h.get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Server "))
+        .map(|s| s.trim().to_string())
+        .ok_or(Fail { status: 401, message: "a server token goes in Authorization: Server <token>".into() })
+}
+
+async fn heartbeat(State(app): State<Shared>, h: HeaderMap, Json(hb): Json<crate::servers::Heartbeat>) -> R<Json<Value>> {
+    let t = server_token(&h)?;
+    Ok(Json(app.heartbeat(&t, hb).await?))
+}
+
+#[derive(Deserialize)]
+struct BoardsReq {
+    boards: Vec<crate::servers::BoardPost>,
+}
+
+async fn boards_post(State(app): State<Shared>, h: HeaderMap, Json(b): Json<BoardsReq>) -> R<Json<Value>> {
+    let t = server_token(&h)?;
+    let n = app.post_boards(&t, b.boards)?;
+    Ok(Json(json!({ "scores": n })))
+}
+
+async fn boards(State(app): State<Shared>, Path(code): Path<String>) -> R<Json<Value>> {
+    Ok(Json(json!({ "boards": app.boards_for(&codes::clean(&code))? })))
 }
 
 /// A file by its hash. It never changes, so anything may keep it forever.

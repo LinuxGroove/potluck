@@ -1,0 +1,54 @@
+# potluck-server's settings. Every line is optional: delete what you don't
+# need. potluck-server reads server.toml from its data folder (POTLUCK_HOME),
+# or the file given with --config=FILE. Command line options win over this.
+
+# What players see in the server list and when they join.
+name = "Potluck server"
+about = ""
+
+# Plain WebSocket and the status page. Players join with host:port.
+port = 47126
+
+# TLS (wss:// and https://) with a certificate of your own:
+# tls_port = 47443
+# cert = "/etc/letsencrypt/live/example.org/fullchain.pem"
+# key = "/etc/letsencrypt/live/example.org/privkey.pem"
+
+# The seed of a new world. A world that's already saved keeps its own.
+seed = 26
+
+max_players = 50
+
+# Who may join: "anyone" who knows the address, "signed-in" players the
+# market vouches for, or only the handles in allow ("list").
+join = "anyone"
+allow = []
+ban = []
+
+# Whether players may bring their own creations: "anyone", "signed-in" or
+# "nobody". The creations below run either way.
+bring = "anyone"
+
+# Whether players may place and break blocks.
+build = true
+
+# Tell the local network about this world.
+beacon = true
+
+# Creations this world always runs, by their market code. Add @N for one
+# version (ABCD2345@3); without it, the server takes the newest each start.
+creations = []
+
+# The market: where pinned creations come from, and the server list.
+market = "https://potluck.linuxgroove.com"
+
+# Show this world in the market's server list. Make a token on the market's
+# Your servers page, and give the address players use.
+list = false
+address = ""
+market_token = ""
+
+# Other servers creations may send players to, by name. A creation calls
+# game.send(player, "rodeo").
+[links]
+# rodeo = "wss://rodeo.example.org"

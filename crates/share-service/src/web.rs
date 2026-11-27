@@ -47,6 +47,10 @@ pub fn routes() -> Router<Shared> {
         .route("/me", get(me))
         .route("/me/invite", post(invite))
         .route("/me/profile", get(profile).post(save_profile))
+        .route("/me/servers", get(my_servers).post(add_server))
+        .route("/me/servers/{id}/remove", post(remove_server))
+        .route("/servers", get(servers_page))
+        .route("/servers/{id}/hide", post(hide_server))
         .route("/avatar/{file}", get(avatar))
         .route("/review", get(review))
         .route("/review/{id}", get(review_item).post(decide))
@@ -106,6 +110,7 @@ fn layout(app: &App, p: &Page, title: &str, q: &str, body: Markup) -> Html<Strin
                         nav.top {
                             a href="/?sort=new" { "New" }
                             a href="/?sort=remixed" { "Most remixed" }
+                            a href="/servers" { "Servers" }
                         }
                         div.who {
                             @match &p.me {
@@ -303,6 +308,7 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
         let starred = p.me.as_ref().is_some_and(|m| app.starred(m, &c));
         (versions, parent, open, starred)
     };
+    let boards = app.boards_for(&c.code).unwrap_or_default();
     let shown = q.v.and_then(|n| versions.iter().find(|v| v.n == n && (mine || v.state != "held"))).or_else(|| if mine { versions.first() } else { versions.iter().find(|v| v.state != "held") });
     let Some(shown) = shown.cloned() else { return error_page(&app, &p, 404, "This creation has no version you can see yet.") };
     let manifest: Option<Manifest> = serde_json::from_str(&shown.manifest).ok();
@@ -388,6 +394,16 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
                 div.box {
                     h4 { "Checks for version " (shown.n) }
                     (checks_list(&checks))
+                }
+                @for b in &boards {
+                    div.box {
+                        h4 { (b.name) }
+                        ol.board {
+                            @for s in &b.scores {
+                                li { b { (s.name) } " " span.score { (number(s.value)) } span.sub { " on " (s.server) } }
+                            }
+                        }
+                    }
                 }
                 @if c.visible_to_all() {
                     div.box {
@@ -800,6 +816,7 @@ async fn me(State(app): State<Shared>, h: HeaderMap, Query(q): Query<MeQ>) -> Re
             }
             div.acts {
                 a.btn.pri href="/me/profile" { "Edit your profile" }
+                a.btn href="/me/servers" { "Your servers" }
                 form.inline method="post" action="/signout" { button.btn type="submit" { "Sign out" } }
             }
         }
@@ -1258,5 +1275,162 @@ async fn git(State(app): State<Shared>, method: Method, h: HeaderMap, Path((owne
             Response::builder().status(status).header(header::CONTENT_TYPE, ctype).header(header::CACHE_CONTROL, "no-cache").body(Body::from_stream(stream)).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
         }
         Err(e) => (StatusCode::NOT_FOUND, e.message).into_response(),
+    }
+}
+
+// ---------- servers ----------
+
+/// A score as people read it: whole numbers without the point.
+fn number(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v:.2}")
+    }
+}
+
+fn join_text(j: &str) -> &'static str {
+    match j {
+        "signed-in" => "signed-in players",
+        "list" => "invited players",
+        _ => "anyone",
+    }
+}
+
+async fn servers_page(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    let list = match app.listed_servers() {
+        Ok(l) => l,
+        Err(e) => return fail_page(&app, &p, e),
+    };
+    let moderator = p.me.as_ref().is_some_and(|m| m.moderator);
+    let body = html! {
+        h1 { "Servers" }
+        p.sub { "Worlds that are always on. In Potluck, open Join a friend's world, then Servers on the market, or type an address." }
+        @if list.is_empty() {
+            div.empty { "No servers are listed right now." }
+        } @else {
+            ul.rows.servers {
+                @for s in &list {
+                    li {
+                        b { (s.name) }
+                        span { (s.players) " of " (s.max_players) " playing" }
+                        span.mono { (s.address) " " a.copy href="#" data-copy=(s.address) { "copy" } }
+                        @if !s.about.is_empty() { span.sub { (s.about) } }
+                        @let names: Vec<&str> = s.creations.iter().filter_map(|c| c["name"].as_str()).collect();
+                        @if !names.is_empty() { span.sub { "Runs " (names.join(", ")) } }
+                        span.tag { "for " (join_text(&s.join)) }
+                        @if moderator {
+                            form.inline method="post" action={ "/servers/" (s.id) "/hide" } { button.btn type="submit" { "Take off the list" } }
+                        }
+                    }
+                }
+            }
+        }
+        p.sub { "Running a server of your own? " a href="/me/servers" { "Add it to the list" } "." }
+    };
+    layout(&app, &p, "Servers", "", body).into_response()
+}
+
+async fn my_servers(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    my_servers_page(&app, &p, &me, None)
+}
+
+/// Your servers, with a new server's token when one was just made: it's
+/// shown on this page only, never in an address.
+fn my_servers_page(app: &App, p: &Page, me: &Account, new: Option<(i64, String)>) -> Response {
+    let list = match app.my_servers(me) {
+        Ok(l) => l,
+        Err(e) => return fail_page(app, p, e),
+    };
+    let body = html! {
+        h1 { "Your servers" }
+        p.sub { "A server shows in the list while it's on and the market can reach it at the address it gives. Put its token in the server's server.toml, with list = true and that address." }
+        @if let Some((_, token)) = &new {
+            div.note.ok {
+                "Your new server's token, shown only this once. Put it in its server.toml:"
+                pre.mono { "list = true\naddress = \"wss://your.server.example\"\nmarket_token = \"" (token) "\"" }
+            }
+        }
+        @if list.is_empty() {
+            div.empty { "No servers yet." }
+        } @else {
+            ul.rows {
+                @for s in &list {
+                    li {
+                        b { (s.name) }
+                        @if s.address.is_empty() { span.sub { "hasn't been in touch yet" } } @else { span.mono { (s.address) } }
+                        @if s.last_seen > 0 { span.sub { "last heard " (ago(s.last_seen)) } }
+                        @if s.hidden { span.tag.bad { "taken off the list by a moderator" } }
+                        @else if s.last_seen > 0 && !s.reachable { span.tag.warn { "the market couldn't reach its status page" } }
+                        @else if s.reachable { span.tag { "listed" } }
+                        form.inline method="post" action={ "/me/servers/" (s.id) "/remove" } { button.btn type="submit" { "Remove" } }
+                    }
+                }
+            }
+        }
+        div.box style="max-width:520px" {
+            h4 { "Add a server" }
+            form.stack method="post" action="/me/servers" {
+                input name="name" placeholder="Its name" required maxlength="40";
+                button.btn.pri type="submit" { "Make a token" }
+            }
+        }
+    };
+    layout(app, p, "Your servers", "", body).into_response()
+}
+
+#[derive(Deserialize)]
+struct AddServerForm {
+    name: String,
+}
+
+async fn add_server(State(app): State<Shared>, h: HeaderMap, Form(f): Form<AddServerForm>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.add_server(&me, &f.name) {
+        Ok((id, token)) => my_servers_page(&app, &p, &me, Some((id, token))),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn remove_server(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.remove_server(&me, id) {
+        Ok(()) => Redirect::to("/me/servers").into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn hide_server(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.hide_server(&me, id, true) {
+        Ok(()) => Redirect::to("/servers").into_response(),
+        Err(e) => fail_page(&app, &p, e),
     }
 }

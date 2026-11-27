@@ -193,16 +193,20 @@ pub fn slug(s: &str) -> String {
     if out.is_empty() { "creation".into() } else { out }
 }
 
-/// The base game's creations, built into the binary.
-const BASE: &[(&str, &[(&str, &str)])] = &[(
-    "mossback",
-    &[
-        ("potluck.toml", include_str!("../../../creations/mossback/potluck.toml")),
-        ("main.luau", include_str!("../../../creations/mossback/main.luau")),
-        ("AGENTS.md", include_str!("../../../creations/AGENTS.md")),
-        ("types/potluck.d.luau", include_str!("../../../creations/types/potluck.d.luau")),
-    ],
-)];
+/// The base game's creations, built into the binary: each folder in
+/// `creations/` with its manifest and code, and the API's notes and types.
+macro_rules! base {
+    ($($id:literal),* $(,)?) => {
+        &[$(($id, &[
+            ("potluck.toml", include_str!(concat!("../../../creations/", $id, "/potluck.toml"))),
+            ("main.luau", include_str!(concat!("../../../creations/", $id, "/main.luau"))),
+            ("AGENTS.md", AGENTS_MD),
+            ("types/potluck.d.luau", TYPES),
+        ])),*]
+    };
+}
+
+const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram", "jelly", "tag-bot"];
 
 pub const AGENTS_MD: &str = include_str!("../../../creations/AGENTS.md");
 pub const TYPES: &str = include_str!("../../../creations/types/potluck.d.luau");

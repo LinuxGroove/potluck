@@ -1,0 +1,11 @@
+name = "Frog"
+by = "Potluck"
+kind = "creature"
+about = "Frogs that hop about the creek bank and sing when nobody's close."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

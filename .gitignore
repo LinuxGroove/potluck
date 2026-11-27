@@ -4,3 +4,5 @@
 /VERSION
 *.swp
 .DS_Store
+# snaps built here, which tools/server-snap.sh would copy
+*.snap
