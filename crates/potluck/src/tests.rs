@@ -2992,7 +2992,7 @@ fn a_table_is_a_workbench_for_survival_players() {
         vec!["Planks"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat"],
-        vec!["Planks", "Cobblestone"],
+        vec!["Planks", "Cobblestone", "Flint", "Iron ingot"],
         vec!["Planks", "Cobblestone"],
         vec!["Cream wool", "Planks", "Lantern"],
     ];
@@ -4902,6 +4902,64 @@ fn made_blocks_are_drawn_into_the_atlas() {
         assert!(n < 256);
     }
     assert!(n > 40, "room for plenty of made blocks: {n}");
+}
+
+/// world 0.14: a made block's frames, read and checked like its picture,
+/// and drawn once each so the game only sends the frame it shows.
+#[test]
+fn made_blocks_can_move() {
+    use crate::made;
+    let spec = |t: &str| -> serde_json::Value { serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()).unwrap() };
+    let pic = |c: char| format!("[{}]", vec![format!("\"{}\"", c.to_string().repeat(8)); 8].join(", "));
+    let base = format!("colors = {{ a = \"#c83c28\", b = \"#ffd27a\" }}\nglow = \"b\"\nlight = true\npicture = {}\n", pic('a'));
+    // what's wrong is said plainly
+    for (bad, says) in [
+        (format!("{base}speed = 2\n"), "speed is for a block with frames"),
+        (format!("{base}frames = []\n"), "frames is a list of 1 to 7"),
+        (format!("{base}frames = \"fast\"\n"), "frames is a list"),
+        (format!("{base}[[frames]]\ncolour = \"#fff\"\n"), "there's no colour for a frame"),
+        (format!("{base}[[frames]]\npicture = [\"ccc\"]\n"), "frames[1].picture"),
+        (format!("{base}speed = 9\n[[frames]]\npicture = {}\n", pic('b')), "speed is how many pictures a second"),
+        (format!("{base}{}", (0..8).map(|_| format!("[[frames]]\npicture = {}\n", pic('b'))).collect::<String>()), "1 to 7"),
+    ] {
+        let e = made::read("flicker", &spec(&bad)).err().unwrap_or_else(|| panic!("{bad} should be refused"));
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    // a frame that gives only a side keeps the block's own top and bottom
+    let def = made::read("flicker", &spec(&format!("{base}speed = 2\n[[frames]]\nside = {}\n[[frames]]\npicture = {}\n", pic('b'), pic('a')))).unwrap();
+    assert_eq!((def.frames.len(), def.speed), (2, 2.0));
+    assert!(def.moves(1) && !def.moves(0) && !def.moves(2), "only the side changes");
+    assert_eq!(def.same, [0, 1, 0], "the side has a tile of its own, the top and bottom share one");
+    assert!(def.frames[0][1].glow[0] && !def.faces[1].glow[0], "frames glow by the block's letters");
+    let still = made::read("flicker", &spec(&base)).unwrap();
+    assert!(still.frames.is_empty() && !(0..3).any(|f| still.moves(f)));
+
+    // frames go round at the block's speed, and stay on the first with Reduce flashing
+    assert_eq!((0..8).map(|i| made::frame_at(i as f64 * 0.25, 4.0, 3, false)).collect::<Vec<_>>(), [0, 1, 2, 0, 1, 2, 0, 1]);
+    assert_eq!(made::frame_at(1.6, 0.5, 4, false), 0);
+    assert_eq!(made::frame_at(2.0, 0.5, 4, false), 1);
+    assert!((0..40).all(|i| made::frame_at(i as f64 * 0.1, 8.0, 4, true) == 0), "still with Reduce flashing on");
+    assert_eq!(made::frame_at(5.0, 4.0, 1, false), 0);
+
+    // each frame's writes are worked out once, all into the same tile
+    let mut images = Assets::<Image>::default();
+    let mut atlas = crate::textures::build(&mut images);
+    let (red, gold) = (vec![[200u8, 60, 40, 255]; 64], vec![[255u8, 210, 120, 255]; 64]);
+    let (dark, lit) = (vec![false; 64], vec![true; 64]);
+    let frames = atlas.put_moving(&mut images, "test/flicker/side", &[(&red[..], &dark[..], 8), (&gold[..], &lit[..], 8)]).expect("room in the atlas");
+    let slot = atlas.tile("test/flicker/side");
+    let plain = atlas.put(&mut images, "test/plain/top", &red, 8, &dark).unwrap();
+    assert!(slot > plain + crate::textures::GRID as u16, "kept with the glowing tiles, since a frame glows: {slot} {plain}");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].len(), frames[1].len(), "every frame writes the same cells");
+    let first = |f: &Vec<crate::textures::TileWrite>, image| f.iter().find(|w| w.image == image && w.level == 0).unwrap().clone();
+    assert_eq!(&first(&frames[0], atlas.color.id()).data[..3], &[200, 60, 40]);
+    assert_eq!(&first(&frames[1], atlas.color.id()).data[..3], &[255, 210, 120]);
+    assert_eq!(&first(&frames[0], atlas.glow.id()).data[..3], &[0, 0, 0], "the first frame doesn't glow");
+    assert_eq!(&first(&frames[1], atlas.glow.id()).data[..3], &[255, 210, 120], "the second does");
+    let (a, b) = (first(&frames[0], atlas.color.id()), first(&frames[1], atlas.color.id()));
+    assert_eq!((a.x, a.y, a.size), (b.x, b.y, b.size));
+    assert_eq!(atlas.put_moving(&mut images, "test/flicker/side", &[(&gold[..], &lit[..], 8), (&red[..], &dark[..], 8)]).map(|_| atlas.tile("test/flicker/side")), Some(slot), "drawing it again reuses its tile");
 }
 
 #[test]

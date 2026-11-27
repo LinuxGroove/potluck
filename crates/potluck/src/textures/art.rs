@@ -15,6 +15,7 @@ use super::{hex, Tex, ART};
 
 mod ores;
 mod props;
+mod smelting;
 mod tools;
 mod travel;
 use crate::noise::{seed_of, Rng};
@@ -730,5 +731,6 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     .chain(tools::tiles())
     .chain(travel::tiles())
     .chain(ores::tiles())
+    .chain(smelting::tiles())
     .collect()
 }

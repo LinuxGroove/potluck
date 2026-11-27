@@ -951,6 +951,8 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                     Item { label: "Full screen (F11)".into(), kind: Kind::Toggle { key: "fullscreen".into(), value: settings.fullscreen } },
                     Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
                     Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
+                    Item { label: "Reduce flashing".into(), kind: Kind::Toggle { key: "reduce_flashing".into(), value: settings.reduce_flashing } },
+                    note("Fire and other moving blocks keep still."),
                 ],
                 "Online" => vec![
                     Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: field_of("server", &settings.server) } },
@@ -1346,6 +1348,7 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("survival", KnobValue::Toggle(b)) => settings.survival = b,
         ("volume", KnobValue::Number(n)) => settings.volume = n.clamp(0.0, 1.0) as f32,
         ("subtitles", KnobValue::Toggle(b)) => settings.subtitles = b,
+        ("reduce_flashing", KnobValue::Toggle(b)) => settings.reduce_flashing = b,
         ("fullscreen", KnobValue::Toggle(b)) => settings.fullscreen = b,
         ("bridge", KnobValue::Toggle(b)) => settings.dev_bridge = b,
         ("minimap_turns", KnobValue::Toggle(b)) => settings.minimap_turns = b,

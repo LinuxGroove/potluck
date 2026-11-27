@@ -27,10 +27,17 @@ pub const MOST_COLORS: usize = 24;
 pub const MOST_BOXES: usize = 16;
 /// How many pixels across a picture can be.
 pub const SIZES: [usize; 4] = [8, 16, 32, 64];
+/// How many pictures a moving block can show in turn, its own included.
+pub const MOST_FRAMES: usize = 8;
+/// How fast a moving block's pictures can change, a second: slow, for
+/// comfort.
+pub const FASTEST: f32 = 8.0;
 /// The longest name a made block can have.
 const LONGEST_NAME: usize = 24;
 /// The keys a block's table can have.
-const KEYS: &[&str] = &["name", "shape", "kind", "hardness", "light", "glow", "colors", "picture", "top", "side", "bottom", "boxes", "solid"];
+const KEYS: &[&str] = &["name", "shape", "kind", "hardness", "light", "glow", "colors", "picture", "top", "side", "bottom", "boxes", "solid", "frames", "speed"];
+/// The keys each of a moving block's other pictures can have.
+const FRAME_KEYS: &[&str] = &["picture", "top", "side", "bottom"];
 
 /// One made block as a world keeps it, saves it and sends it: its id here,
 /// the creation that made it, its name there, and its table as written.
@@ -66,9 +73,21 @@ pub struct Def {
     /// Whether bodies bump into a block made of boxes.
     pub solid: bool,
     /// Top, sides and bottom; `same[i]` is the first face with the same
-    /// picture, which shares its tile.
+    /// picture in every frame, which shares its tile.
     pub faces: [Picture; 3],
     pub same: [usize; 3],
+    /// A moving block's other pictures, shown in turn after `faces`, each
+    /// face as it is in that frame (new in world 0.14), and how many a
+    /// second.
+    pub frames: Vec<[Picture; 3]>,
+    pub speed: f32,
+}
+
+impl Def {
+    /// Whether a face's picture changes from frame to frame.
+    pub fn moves(&self, face: usize) -> bool {
+        self.frames.iter().any(|f| f[face] != self.faces[face])
+    }
 }
 
 struct Slot {
@@ -267,18 +286,65 @@ pub fn read(key: &str, spec: &Value) -> Result<Def, String> {
     let glow_bright = light && glow.is_empty();
     let all = t.get("picture");
     let mut faces = Vec::with_capacity(3);
-    let mut texts = Vec::with_capacity(3);
-    for face in ["top", "side", "bottom"] {
+    // each face's pictures as written, frame by frame, to see which faces
+    // can share a tile
+    let mut texts: Vec<Vec<Value>> = vec![vec![]; 3];
+    for (i, face) in ["top", "side", "bottom"].into_iter().enumerate() {
         let Some(v) = t.get(face).or(all) else {
             return Err(format!("{what}: a block needs a picture (or a top, a side and a bottom)"));
         };
         let label = if t.contains_key(face) { format!("{what}.{face}") } else { format!("{what}.picture") };
         faces.push(picture(&label, v, &colors, &glow, glow_bright, clear_ok)?);
-        texts.push(v.clone());
+        texts[i].push(v.clone());
     }
+    let mut frames = vec![];
+    match t.get("frames") {
+        None => {}
+        Some(Value::Array(list)) if !list.is_empty() && list.len() < MOST_FRAMES => {
+            for (n, frame) in list.iter().enumerate() {
+                let label = format!("{what}.frames[{}]", n + 1);
+                let Value::Object(f) = frame else {
+                    return Err(format!("{label}: each of frames is a table with a picture (or a top, a side or a bottom)"));
+                };
+                if let Some(k) = f.keys().find(|k| !FRAME_KEYS.contains(&k.as_str())) {
+                    return Err(format!("{label}: there's no {k} for a frame (there are: {})", FRAME_KEYS.join(", ")));
+                }
+                if f.is_empty() {
+                    return Err(format!("{label}: a frame needs a picture (or a top, a side or a bottom)"));
+                }
+                let mut these = Vec::with_capacity(3);
+                for (i, face) in ["top", "side", "bottom"].into_iter().enumerate() {
+                    // a face the frame doesn't give stays as the block's own
+                    let given = match (f.get(face), f.get("picture")) {
+                        (Some(v), _) => Some((v, format!("{label}.{face}"))),
+                        (None, Some(v)) => Some((v, format!("{label}.picture"))),
+                        (None, None) => None,
+                    };
+                    match given {
+                        Some((v, label)) => {
+                            these.push(picture(&label, v, &colors, &glow, glow_bright, clear_ok)?);
+                            texts[i].push(v.clone());
+                        }
+                        None => {
+                            these.push(faces[i].clone());
+                            let own = texts[i][0].clone();
+                            texts[i].push(own);
+                        }
+                    }
+                }
+                frames.push(<[Picture; 3]>::try_from(these).unwrap());
+            }
+        }
+        Some(_) => return Err(format!("{what}: frames is a list of 1 to {} more pictures to show in turn, each [[blocks.{key}.frames]] with a picture (or a top, a side or a bottom)", MOST_FRAMES - 1)),
+    }
+    let speed = match t.get("speed") {
+        None => 4.0,
+        Some(_) if frames.is_empty() => return Err(format!("{what}: speed is for a block with frames")),
+        Some(v) => v.as_f64().filter(|s| (0.5..=FASTEST as f64).contains(s)).ok_or_else(|| format!("{what}: speed is how many pictures a second it shows, 0.5 to {FASTEST}"))? as f32,
+    };
     let same = [0, if texts[1] == texts[0] { 0 } else { 1 }, if texts[2] == texts[0] { 0 } else if texts[2] == texts[1] { 1 } else { 2 }];
     let faces: [Picture; 3] = faces.try_into().unwrap();
-    Ok(Def { name, shape, hardness, light, kind, boxes, solid, faces, same })
+    Ok(Def { name, shape, hardness, light, kind, boxes, solid, faces, same, frames, speed })
 }
 
 /// Reads all of a creation's blocks.
@@ -465,12 +531,61 @@ pub struct MadePlugin;
 
 impl Plugin for MadePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, draw);
+        app.init_resource::<Moving>().add_systems(Update, (draw, animate).chain());
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render
                 .init_resource::<Writes>()
                 .add_systems(bevy::render::ExtractSchedule, take_writes)
                 .add_systems(bevy::render::Render, send_writes.in_set(bevy::render::RenderSystems::PrepareResources));
+        }
+    }
+}
+
+/// How much memory moving pictures may keep their frames in, ready to
+/// send: past it, a block's picture stays still.
+const MOVING_BYTES: usize = 32 << 20;
+
+/// Made blocks' moving pictures: each tile's frames, ready to draw into the
+/// atlas, and the one it shows.
+#[derive(Resource, Default)]
+pub struct Moving {
+    tiles: Vec<MovingTile>,
+    bytes: usize,
+}
+
+struct MovingTile {
+    frames: Vec<Vec<crate::textures::TileWrite>>,
+    speed: f32,
+    shown: usize,
+}
+
+impl Moving {
+    /// How many tiles move.
+    pub fn len(&self) -> usize {
+        self.tiles.len()
+    }
+}
+
+/// Which frame a moving picture shows `secs` into the game: always the
+/// first with Reduce flashing on.
+pub fn frame_at(secs: f64, speed: f32, frames: usize, still: bool) -> usize {
+    if still || frames < 2 {
+        0
+    } else {
+        (secs * speed as f64) as usize % frames
+    }
+}
+
+/// Shows each moving picture's frame for now, sending a tile only when its
+/// frame changes.
+fn animate(time: Res<Time>, settings: Option<Res<crate::settings::Settings>>, atlas: Option<ResMut<crate::textures::BlockAtlas>>, mut moving: ResMut<Moving>) {
+    let Some(mut atlas) = atlas else { return };
+    let still = settings.is_some_and(|s| s.reduce_flashing);
+    for tile in &mut moving.tiles {
+        let f = frame_at(time.elapsed_secs_f64(), tile.speed, tile.frames.len(), still);
+        if f != tile.shown {
+            tile.shown = f;
+            atlas.writes.extend(tile.frames[f].iter().cloned());
         }
     }
 }
@@ -508,6 +623,7 @@ pub fn draw(
     mut images: ResMut<Assets<Image>>,
     mut voxels: ResMut<crate::world::Voxels>,
     mut map: Option<ResMut<crate::map::MapImage>>,
+    mut moving: ResMut<Moving>,
     mut seen: Local<(u64, u64)>,
 ) {
     let (g, world) = (generation(), voxels.id);
@@ -516,6 +632,9 @@ pub fn draw(
     *seen = (g, world);
     let mut full = false;
     let mut made = vec![];
+    if fresh {
+        *moving = Moving::default();
+    }
     {
         let s = slots();
         for x in s.iter().flatten() {
@@ -524,7 +643,19 @@ pub fn draw(
                 continue;
             }
             for (i, face) in x.def.faces.iter().enumerate() {
-                if x.def.same[i] == i && atlas.put(&mut images, x.tiles[i], &face.rgba, face.size, &face.glow).is_none() {
+                if x.def.same[i] != i {
+                    continue;
+                }
+                if x.def.moves(i) && moving.bytes < MOVING_BYTES {
+                    let frames: Vec<(&[[u8; 4]], &[bool], usize)> = std::iter::once(face).chain(x.def.frames.iter().map(|f| &f[i])).map(|p| (&p.rgba[..], &p.glow[..], p.size)).collect();
+                    match atlas.put_moving(&mut images, x.tiles[i], &frames) {
+                        Some(frames) => {
+                            moving.bytes += frames.iter().flatten().map(|w| w.data.len()).sum::<usize>();
+                            moving.tiles.push(MovingTile { frames, speed: x.def.speed, shown: 0 });
+                        }
+                        None => full = true,
+                    }
+                } else if atlas.put(&mut images, x.tiles[i], &face.rgba, face.size, &face.glow).is_none() {
                     full = true;
                 }
             }
@@ -532,6 +663,9 @@ pub fn draw(
     }
     if full {
         warn!("The block atlas is full; some blocks creations made show as missing");
+    }
+    if moving.bytes >= MOVING_BYTES {
+        warn!("Creations' moving blocks fill the memory kept for them; the rest stay still");
     }
     if let Some(map) = map.as_mut() {
         for (id, _) in &made {

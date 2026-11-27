@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.12")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.12. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.14")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.14. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.13
+### `@potluck/world` 0.14
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -129,7 +129,7 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords (one to a slot), and what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
+- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels, swords and the Flint and steel (one to a slot), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
@@ -209,7 +209,7 @@ local Woolly = world.creature {
 
 #### Blocks of its own (0.12)
 
-A creation makes blocks in `potluck.toml`, one table each, drawn in letters: each letter in a picture is one pixel, coloured by `colors`, and `.` is see-through. Players and code use them by name like the game's own (`world.set_block(at, "Red bricks")`, `world.give`, `follow_food`), and they stay in the world as long as it lasts, even if the creation goes. Require `@potluck/world@0.12` so an older game says it needs updating instead of running the code without its blocks.
+A creation makes blocks in `potluck.toml`, one table each, drawn in letters: each letter in a picture is one pixel, coloured by `colors`, and `.` is see-through. Players and code use them by name like the game's own (`world.set_block(at, "Red bricks")`, `world.give`, `follow_food`), and they stay in the world as long as it lasts, even if the creation goes. Require `@potluck/world@0.12` (or newer) so an older game says it needs updating instead of running the code without its blocks.
 
 ```toml
 [blocks.red_bricks]
@@ -235,6 +235,36 @@ mmmmmmmm
 - `light = true` lights up what's round it, and the letters in `glow` (`glow = "yo"`) shine; a light with no `glow` shines in its brightest pixels.
 - Up to 16 blocks, 24 colours each. A block's name in `potluck.toml` is lowercase letters, digits and `_`; what players see it called can't be one of the game's blocks. Names are shared by every creation in a world, so pick one nobody else has.
 - Change a colour or a row and save, and the world shows it. Each world gives a creation's blocks their ids the first time it runs there and keeps them.
+
+#### Moving pictures (0.14)
+
+A block can flicker, flow or glow on and off: `frames` gives it more pictures, shown in turn, and `speed` how many a second (0.5 to 8, 4 if left out). Require `@potluck/world@0.14` for them.
+
+```toml
+[blocks.fire]
+shape = "plant"
+light = true
+glow = "oyw"
+speed = 4
+colors = { r = "#7a1c08", o = "#e8661c", y = "#ffaa2c", w = "#fff2c0" }
+picture = """
+...
+"""
+
+[[blocks.fire.frames]]
+picture = """
+...
+"""
+
+[[blocks.fire.frames]]
+picture = """
+...
+"""
+```
+
+- Each `[[blocks.name.frames]]` is one more picture, up to 7 (8 with the block's own), with `picture`, `top`, `side` or `bottom` as the block has them; a side a frame leaves out stays as the block has it. They share the block's `colors` and `glow`.
+- The block's own picture is the first frame, and what players with Reduce flashing on (in Settings, Picture and sound) always see, so draw it as a still picture that stands for the rest.
+- Every world shares about 32 MB for moving pictures; past that, new ones stay still. Fire, the lit furnace and the campfire in the base game are examples.
 
 ### `@potluck/tweak` 0.1
 
