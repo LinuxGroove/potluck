@@ -18,11 +18,15 @@ fn main() {
         settings.lighting = render::Tier::NAMES[render::Tier::of(&l) as usize].into();
     }
     let size = opt("size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some(UVec2::new(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(UVec2::new(1600, 900));
+    // screenshots and recordings draw offscreen at exactly --size, in a window
+    // that fits the screen
+    let offscreen = opt("shot").is_some() || opt("demo").is_some();
+    let window = if offscreen { (size.as_vec2() * (1600.0 / size.x as f32).min(900.0 / size.y as f32).min(1.0)).as_uvec2() } else { size };
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Potluck".into(),
-            resolution: WindowResolution::new(size.x, size.y),
+            resolution: WindowResolution::new(window.x, window.y),
             // --no-vsync to see how fast a card really draws
             present_mode: if args.iter().any(|a| a == "--no-vsync") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
             ..default()
@@ -30,6 +34,9 @@ fn main() {
         ..default()
     }));
     sim(&mut app, SEED);
+    if offscreen {
+        app.insert_resource(OffscreenSize(size));
+    }
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
         // checks the graphics card itself, and stays idle on one that can't ray trace
@@ -85,6 +92,10 @@ fn main() {
     app.run();
 }
 
+/// The size the tools draw at, offscreen.
+#[derive(Resource)]
+struct OffscreenSize(UVec2);
+
 #[derive(Resource)]
 struct Shot {
     path: String,
@@ -106,9 +117,10 @@ fn shot(
     mut focus: ResMut<ui::Focus>,
     mut info: ResMut<ui::WorldInfo>,
     herd: Res<creatures::Herd>,
+    off: Option<Res<render::Offscreen>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+    use bevy::render::view::screenshot::save_to_disk;
     if let Some(t) = s.tod {
         clock.time = t;
         clock.running = false;
@@ -143,7 +155,7 @@ fn shot(
         s.done = true;
         info!("Shot: {:.0} frames a second over the last 3 s", s.frames as f32 / 3.0);
         let path = s.path.clone();
-        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
+        commands.spawn(render::screenshot(off.as_deref())).observe(save_to_disk(path));
     }
     if t > s.after + 2.0 {
         exit.write(AppExit::Success);
@@ -159,13 +171,18 @@ fn setup(
     voxels: Res<world::Voxels>,
     mut me: ResMut<player::Me>,
     device: Option<Res<bevy::render::renderer::RenderDevice>>,
+    offscreen: Option<Res<OffscreenSize>>,
 ) {
     let atlas = textures::build(&mut images);
     commands.insert_resource(render::make_materials(&atlas, &mut mats));
     commands.insert_resource(atlas);
     let rt = render::Raytraced::new(&settings, device.as_deref());
     commands.insert_resource(rt);
-    render::spawn_sky(&mut commands, &settings, &mut media, rt);
+    let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
+    render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
+    if let Some(off) = off {
+        commands.insert_resource(off);
+    }
     me.respawn(&voxels, None);
 }
 

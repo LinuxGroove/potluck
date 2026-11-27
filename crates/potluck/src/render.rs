@@ -156,7 +156,47 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
     BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water)] }
 }
 
-pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Assets<ScatteringMedium>, rt: Raytraced) {
+/// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked
+/// for, whatever size the screen lets the window be, shown scaled in the window.
+#[derive(Resource, Clone)]
+pub struct Offscreen {
+    pub image: Handle<Image>,
+    pub size: UVec2,
+}
+
+impl Offscreen {
+    pub fn new(images: &mut Assets<Image>, size: UVec2) -> Self {
+        use bevy::render::render_resource::{TextureFormat, TextureUsages};
+        let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
+        // screenshots copy out of it
+        image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        Self { image: images.add(image), size }
+    }
+
+    /// The window shows the image, scaled to fit.
+    fn show(&self, commands: &mut Commands) {
+        use bevy::camera::ScalingMode;
+        commands.spawn((
+            Camera2d,
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::AutoMin { min_width: self.size.x as f32, min_height: self.size.y as f32 },
+                ..OrthographicProjection::default_2d()
+            }),
+        ));
+        commands.spawn(Sprite::from_image(self.image.clone()));
+    }
+}
+
+/// A screenshot of what the game draws: the offscreen image when there is one.
+pub fn screenshot(off: Option<&Offscreen>) -> bevy::render::view::screenshot::Screenshot {
+    use bevy::render::view::screenshot::Screenshot;
+    match off {
+        Some(o) => Screenshot::image(o.image.clone()),
+        None => Screenshot::primary_window(),
+    }
+}
+
+pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Assets<ScatteringMedium>, rt: Raytraced, off: Option<&Offscreen>) {
     let tier = Tier::of(&settings.lighting);
     let medium = tier >= Tier::Medium;
     // ray tracing does the shadows, corners and bounced light itself
@@ -176,6 +216,10 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
             falloff: FogFalloff::Linear { start: 140.0, end: 330.0 },
         },
     )).id();
+    if let Some(off) = off {
+        commands.entity(cam).insert((bevy::camera::RenderTarget::Image(off.image.clone().into()), IsDefaultUiCamera));
+        off.show(commands);
+    }
     if medium {
         commands.entity(cam).insert((AtmosphereSettings::default(), AtmosphereEnvironmentMapLight::default(), Bloom::NATURAL));
         commands.spawn(Atmosphere::earth(media.add(ScatteringMedium::earth(256, 256))));

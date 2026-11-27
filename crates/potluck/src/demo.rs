@@ -16,7 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use bevy::render::view::screenshot::ScreenshotCaptured;
 
 use crate::creations::Library;
 use crate::creatures::Herd;
@@ -92,10 +92,14 @@ impl Recorder {
         if let Some(p) = still {
             let _ = rgba.save(&p);
         }
-        if rgba.width() != self.size.x || rgba.height() != self.size.y {
-            return;
-        }
-        self.waiting.insert(n, rgba.into_raw());
+        // every frame has to go in, or the ones after it wait for it forever
+        let bytes = if rgba.width() != self.size.x || rgba.height() != self.size.y {
+            warn!("Demo: frame {n} is {}x{}, not {}x{}", rgba.width(), rgba.height(), self.size.x, self.size.y);
+            vec![0; (self.size.x * self.size.y * 4) as usize]
+        } else {
+            rgba.into_raw()
+        };
+        self.waiting.insert(n, bytes);
         if self.ffmpeg.is_none() && !self.failed {
             let video = self.out.join("potluck-test-run.mp4");
             let child = Command::new("ffmpeg")
@@ -195,6 +199,7 @@ fn drive(
     world: (Res<Herd>, Res<Library>, Res<Scripts>, Res<Settings>, Res<WorldInfo>, Res<Voxels>),
     mut caption: Query<(&mut Text, &mut Visibility), With<Caption>>,
     mut mem: Local<Mem>,
+    off: Option<Res<crate::render::Offscreen>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let (herd, lib, scripts, settings, info, voxels) = world;
@@ -258,7 +263,7 @@ fn drive(
         demo.dir.join(format!("{:02}-{name}.png", demo.stills))
     });
     let rec = demo.rec.clone();
-    commands.spawn(Screenshot::primary_window()).observe(move |shot: On<ScreenshotCaptured>| {
+    commands.spawn(crate::render::screenshot(off.as_deref())).observe(move |shot: On<ScreenshotCaptured>| {
         rec.lock().unwrap().frame(n, &shot.image, still_path.clone());
     });
     if n % 60 == 0 {
