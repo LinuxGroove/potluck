@@ -235,6 +235,17 @@ impl Forgejo {
         Ok(Some(sha.to_string()))
     }
 
+    /// Changes one file on a branch, as the service, written down as `name`.
+    pub async fn update_file(&self, repo: &str, branch: &str, path: &str, old_sha: &str, text: &str, handle: &str, name: &str, message: &str) -> R<String> {
+        let who = json!({ "name": name, "email": format!("{handle}@{}", self.email_domain) });
+        let body = json!({
+            "branch": branch, "message": message, "author": who, "committer": who,
+            "files": [{ "operation": "update", "path": path, "sha": old_sha, "content": base64::engine::general_purpose::STANDARD.encode(text) }],
+        });
+        let v = self.call(Method::POST, &format!("/repos/{repo}/contents"), None, Some(body)).await?;
+        v.pointer("/commit/sha").and_then(|s| s.as_str()).map(String::from).ok_or_else(|| err(500, "no commit came back"))
+    }
+
     pub async fn tag(&self, repo: &str, handle: &str, tag: &str, target: &str, message: &str) -> R<()> {
         let body = json!({ "tag_name": tag, "target": target, "message": message });
         match self.call(Method::POST, &format!("/repos/{repo}/tags"), Some(handle), Some(body)).await {

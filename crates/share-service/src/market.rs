@@ -329,7 +329,8 @@ impl App {
             let why = if c.listing == "listed" { "update" } else { "new_maker" };
             db::enqueue(&db, c.id, n, why, "")?;
         }
-        if !held && checks::warned(&results) {
+        // The game's own creations aren't a stranger's code: no person needs to look.
+        if !held && c.base.is_none() && checks::warned(&results) {
             let notes: Vec<String> = results.iter().filter(|c| c.result == "warn").map(|c| format!("{}: {}", c.name, c.note)).collect();
             db::enqueue(&db, c.id, n, "checks", &notes.join("; "))?;
         }
@@ -535,7 +536,8 @@ impl App {
         let id = match existing {
             Some((id, _)) => {
                 // the same remix suggesting again: its branch moves on to the newest version
-                self.git.copy_commit(&remix.path(), "main", &parent.path(), &format!("suggestion-{id}"), &scratch).await?;
+                let sha = self.git.copy_commit(&remix.path(), "main", &parent.path(), &format!("suggestion-{id}"), &scratch).await?;
+                self.keep_name_on_branch(&parent, &format!("suggestion-{id}"), &sha, me).await?;
                 self.db().execute("UPDATE suggestions SET from_version = ?2, title = ?3, body = ?4 WHERE id = ?1", params![id, remix.latest, title, body])?;
                 id
             }
@@ -550,7 +552,8 @@ impl App {
                 };
                 let branch = format!("suggestion-{id}");
                 let opened = async {
-                    self.git.copy_commit(&remix.path(), "main", &parent.path(), &branch, &scratch).await?;
+                    let sha = self.git.copy_commit(&remix.path(), "main", &parent.path(), &branch, &scratch).await?;
+                    self.keep_name_on_branch(&parent, &branch, &sha, me).await?;
                     self.git.ensure_user(&me.handle, &me.name).await?;
                     self.git.open_pull(&parent.path(), &branch, &me.handle, &title, &body).await
                 }
@@ -570,6 +573,21 @@ impl App {
         };
         db::log(&self.db(), &me.user_id, "suggest", &parent.code, &format!("from {}", remix.code));
         Ok(id)
+    }
+
+    /// A remix renames its maker and says what it came from; on a suggestion's
+    /// branch that goes back to the original's own, so the change shows (and
+    /// merges) only what the remix really changed.
+    async fn keep_name_on_branch(&self, parent: &Creation, branch: &str, sha: &str, me: &Account) -> Result<(), crate::forgejo::Error> {
+        let repo = parent.path();
+        let tree = self.git.tree(&repo, sha).await?;
+        let Some(blob) = tree.get("potluck.toml") else { return Ok(()) };
+        let theirs = String::from_utf8_lossy(&self.git.read(&repo, "potluck.toml", sha).await?).to_string();
+        let ours = String::from_utf8_lossy(&self.git.read(&repo, "potluck.toml", "main").await?).to_string();
+        if let Some(kept) = keep_identity(&ours, &theirs) {
+            self.git.update_file(&repo, branch, "potluck.toml", blob, &kept, &me.handle, &me.name, "Keep the original's name and maker").await?;
+        }
+        Ok(())
     }
 
     pub fn suggestion(&self, id: i64) -> R<Suggestion> {
@@ -776,7 +794,11 @@ impl App {
             "dismiss" => {
                 db.execute("UPDATE creations SET listing = COALESCE(hidden_from, listing), hidden_from = NULL WHERE id = ?1 AND listing = 'hidden'", [creation])?;
                 db.execute("UPDATE reports SET open = 0 WHERE creation = ?1", [creation])?;
-                db.execute("UPDATE queue SET open = 0, decided_by = ?2, decision = 'dismiss', decided_at = ?3 WHERE id = ?1", params![item, moderator.user_id, now()])?;
+                // every reason this version waited for was on the one page
+                db.execute(
+                    "UPDATE queue SET open = 0, decided_by = ?2, decision = 'dismiss', decided_at = ?3 WHERE id = ?1 OR (creation = ?4 AND version = ?5 AND open = 1)",
+                    params![item, moderator.user_id, now(), creation, version],
+                )?;
             }
             _ => return fail(400, "that isn't a decision"),
         }
@@ -945,17 +967,25 @@ pub fn local_path(p: &str) -> Option<&str> {
 /// suggestion brings the remix's; this puts the creation's own back, or
 /// None when they already match.
 pub fn keep_identity(old: &str, merged: &str) -> Option<String> {
-    let old: toml::Table = old.parse().ok()?;
-    let mut new: toml::Table = merged.parse().ok()?;
+    let before: toml::Table = old.parse().ok()?;
+    let after: toml::Table = merged.parse().ok()?;
+    let ours: toml_edit::DocumentMut = old.parse().ok()?;
+    // Edit the merged file in place, so the rest of it keeps its order and layout.
+    let mut doc: toml_edit::DocumentMut = merged.parse().ok()?;
     let mut changed = false;
     for key in ["name", "by", "remix_of", "from", "version"] {
-        if old.get(key) != new.get(key) {
-            changed = true;
-            match old.get(key) {
-                Some(v) => new.insert(key.into(), v.clone()),
-                None => new.remove(key),
-            };
+        if before.get(key) == after.get(key) {
+            continue;
+        }
+        changed = true;
+        match ours.get(key) {
+            Some(item) => {
+                doc.insert(key, item.clone());
+            }
+            None => {
+                doc.remove(key);
+            }
         }
     }
-    changed.then(|| toml::to_string_pretty(&new).unwrap_or_default())
+    changed.then(|| doc.to_string())
 }

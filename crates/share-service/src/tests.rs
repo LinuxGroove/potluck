@@ -242,7 +242,7 @@ async fn the_market_end_to_end() {
     assert!(tree.contains(&codes::pretty(&moss)) && tree.contains(&codes::pretty(&ada_code)) && tree.contains(&codes::pretty(&bo_code)));
     let (_, page) = m.page(&format!("/c/{moss}?tab=remixes"), None).await;
     assert!(page.contains(&format!("/c/{ada_code}")), "Mossback's tree has Ada's listed remix");
-    assert!(!page.contains(&format!("/c/{bo_code}")) && page.contains("One more remix is shared only by its code."), "but not Bo's, shared only by code");
+    assert!(!page.contains(&format!("/c/{bo_code}")) && page.contains("One more remix isn"), "but not Bo's, shared only by code");
 
     // Bo suggests the change to Ada, who sees it and its diff.
     let (status, s) = m.call(Some(&bo), "POST", &format!("/api/c/{bo_code}/suggest"), Some(json!({ "title": "Humming", "body": "They hum when you pat them." }))).await;
@@ -253,6 +253,7 @@ async fn the_market_end_to_end() {
     let (_, sug) = m.call(Some(&ada), "GET", &format!("/api/suggestions/{id}"), None).await;
     assert!(sug["diff"].as_str().unwrap().contains("+-- Bo's: they hum when you pat them"), "{sug}");
     assert!(sug["added"].as_i64().unwrap() >= 1);
+    assert!(!sug["diff"].as_str().unwrap().contains("+by = ") && !sug["diff"].as_str().unwrap().contains("Hummy"), "the change keeps Ada's name and maker: {}", sug["diff"]);
     let (status, _) = m.call(Some(&bo), "POST", &format!("/api/suggestions/{id}/merge"), None).await;
     assert_eq!(status, 403, "only the maker merges");
 
@@ -346,6 +347,9 @@ async fn keep_identity_puts_the_makers_name_back() {
     assert!(kept.get("remix_of").is_none());
     assert!(kept["needs"].get("tweak").is_some(), "the rest of the change stays");
     assert!(crate::market::keep_identity(old, old).is_none());
+    let tidy = "name = \"Mossy\"\nby = \"Bo\"\ndescription = \"hums\"\nversion = 1\n\n[needs]\nworld = \"0.1\"\n";
+    let kept = crate::market::keep_identity(old, tidy).unwrap();
+    assert_eq!(kept, "name = \"Mossy\"\nby = \"Ada\"\ndescription = \"hums\"\nversion = 2\n\n[needs]\nworld = \"0.1\"\n", "only the maker's fields change, in place");
     assert_eq!(crate::market::local_path("/c/ABCD2345"), Some("/c/ABCD2345"));
     assert_eq!(crate::market::local_path("//evil.example"), None);
     assert_eq!(crate::market::local_path("https://evil.example"), None);

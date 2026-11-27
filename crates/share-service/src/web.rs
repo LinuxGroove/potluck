@@ -138,6 +138,15 @@ fn fail_page(app: &App, p: &Page, f: Fail) -> Response {
     error_page(app, p, f.status, &f.message)
 }
 
+/// "1 star", "2 stars", "1 remix", "3 remixes".
+pub fn count(n: i64, one: &str) -> String {
+    match (n, one.ends_with('x') || one.ends_with('s')) {
+        (1, _) => format!("1 {one}"),
+        (_, true) => format!("{n} {one}es"),
+        _ => format!("{n} {one}s"),
+    }
+}
+
 pub fn ago(t: i64) -> String {
     let d = (now() - t).max(0);
     match d {
@@ -156,7 +165,7 @@ fn card(c: &Creation) -> Markup {
             h3 { (c.name) }
             div.by { (head(&c.handle, 18)) "by " (c.maker) }
             @if !c.about.is_empty() { p { (c.about) } }
-            div.stats { span { (c.stars) " stars" } span { (c.plays) " plays" } span { (c.remixes) " remixes" } }
+            div.stats { span { (count(c.stars, "star")) } span { (count(c.plays, "play")) } span { (count(c.remixes, "remix")) } }
         }
     }
 }
@@ -475,15 +484,15 @@ fn family_tab(c: &Creation, line: &[Creation], tree: &[(Creation, usize)], me: &
                         @if x.id == c.id { span.here { (x.name) } } @else { a href={ "/c/" (x.code) } { b { (x.name) } } }
                         " by " (x.maker)
                         " " span.codechip { (pretty(&x.code)) }
-                        @if x.remixes > 0 { " · " (x.remixes) " remixes" }
+                        @if x.remixes > 0 { " · " (count(x.remixes, "remix")) }
                     }
                 } @else {
                     @let _ = { private += 1; };
                 }
             }
         }
-        @if private == 1 { p.sub { "One more remix is shared only by its code." } }
-        @if private > 1 { p.sub { (private) " more remixes are shared only by their codes." } }
+        @if private == 1 { p.sub { "One more remix isn't on the market: it's shared by its code, or waiting for a moderator." } }
+        @if private > 1 { p.sub { (private) " more remixes aren't on the market: they're shared by their codes, or waiting for a moderator." } }
     }
 }
 
@@ -864,7 +873,7 @@ async fn profile(State(app): State<Shared>, h: HeaderMap) -> Response {
                 div {
                     div.box {
                         label.field { span { "Name" } input name="name" value=(me.name) required maxlength="32" autocomplete="nickname"; }
-                        p.sub { "Everyone sees this beside what you share. Your handle stays @" (me.handle) "." }
+                        p.sub.hint { "Everyone sees this beside what you share. Your handle stays @" (me.handle) "." }
                         label.field { span { "About you" } textarea name="about" maxlength="280" rows="3" placeholder="What do you like making?" { (me.about) } }
                     }
                     div.box {
@@ -981,33 +990,49 @@ async fn review(State(app): State<Shared>, h: HeaderMap, Query(q): Query<ReviewQ
         let mut st = db.prepare("SELECT l.at, COALESCE(a.handle, l.actor), l.action, l.target, l.note FROM log l LEFT JOIN accounts a ON a.user_id = l.actor WHERE l.action IN ('list','unlist','hide','remove','dismiss','hide','trusted=true','trusted=false','beta=true','banned=true','moderator=true') ORDER BY l.id DESC LIMIT 30").unwrap();
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map(|r| r.flatten().collect()).unwrap_or_default()
     };
+    // One row per version, with every reason it's waiting.
+    let mut groups: Vec<(i64, Creation, i64, Vec<(String, String)>, i64)> = Vec::new();
+    for (id, c, v, why, detail, t) in items {
+        match groups.iter_mut().find(|g| g.1.id == c.id && g.2 == v) {
+            Some(g) => g.3.push((why, detail)),
+            None => groups.push((id, c, v, vec![(why, detail)], t)),
+        }
+    }
     let body = html! {
         h1 { "Review queue" }
         p.sub { "Creations wait here before they're listed for Everyone, when players report them, and when a check wants a person to look. Reported ones come first." }
         @if !q.invites.is_empty() {
             div.note.ok { "New invite codes: " span.mono { (q.invites.replace(',', ", ")) } }
         }
-        @if items.is_empty() {
-            div.empty { "Nothing waiting. Nice." }
-        } @else {
-            ul.rows {
-                @for (id, c, v, why, detail, t) in &items {
-                    li {
-                        a href={ "/review/" (id) } { b { (c.name) } }
-                        span { "by " (c.maker) " · version " (v) }
-                        span.tag.warn[why != "reports"].bad[why == "reports"] { (why_text(why)) }
-                        @if !detail.is_empty() { span.sub { (detail) } }
-                        span.when { (ago(*t)) }
-                    }
-                }
-            }
-        }
         div.two {
             div {
+                @if groups.is_empty() {
+                    div.empty { "Nothing waiting. Nice." }
+                } @else {
+                    ul.rows {
+                        @for (id, c, v, whys, t) in &groups {
+                            li {
+                                a href={ "/review/" (id) } { b { (c.name) } }
+                                span { "by " (c.maker) " · version " (v) }
+                                @for (why, _) in whys {
+                                    span.tag.warn[why != "reports"].bad[why == "reports"] { (why_text(why)) }
+                                }
+                                @for (_, detail) in whys {
+                                    @if !detail.is_empty() { span.sub { (detail) } }
+                                }
+                                span.when { (ago(*t)) }
+                            }
+                        }
+                    }
+                }
                 h2 { "Lately" }
-                ul.rows {
-                    @for (t, who, action, target, note) in &log {
-                        li { b { (action) } span { a href={ "/c/" (target) } { (target) } } span.sub { (note) } span.when { (who) " · " (ago(*t)) } }
+                @if log.is_empty() {
+                    p.sub { "Nothing decided yet." }
+                } @else {
+                    ul.rows {
+                        @for (t, who, action, target, note) in &log {
+                            li { b { (action) } span { a href={ "/c/" (target) } { (target) } } span.sub { (note) } span.when { (who) " · " (ago(*t)) } }
+                        }
                     }
                 }
             }
@@ -1047,6 +1072,14 @@ async fn review_item(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64
     let row: Option<(i64, i64, String, String, i64)> = app.db().query_row("SELECT creation, version, why, detail, open FROM queue WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).optional().ok().flatten();
     let Some((cid, n, why, detail, open)) = row else { return error_page(&app, &p, 404, "That's not in the queue.") };
     let Ok(Some(c)) = db::creation(&app.db(), cid) else { return error_page(&app, &p, 404, "Gone.") };
+    // The other reasons this version is waiting, shown on the same page.
+    let mut whys = vec![(why, detail)];
+    if open == 1 {
+        let db = app.db();
+        if let Ok(mut st) = db.prepare("SELECT why, detail FROM queue WHERE creation = ?1 AND version = ?2 AND open = 1 AND id != ?3 ORDER BY id") {
+            whys.extend(st.query_map(params![cid, n, id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map(|r| r.flatten().collect::<Vec<_>>()).unwrap_or_default());
+        }
+    }
     let (v, reports, maker, last_ok) = {
         let db = app.db();
         let v = db::version(&db, cid, n).ok().flatten();
@@ -1068,7 +1101,7 @@ async fn review_item(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64
         div.head {
             div {
                 h1 { (c.name) " · version " (n) }
-                p.sub { "by " a href={ "/@" (c.handle) } { (c.maker) } " · " (why_text(&why)) @if !detail.is_empty() { " · " (detail) } " · now " b { (c.listing) } }
+                p.sub { "by " a href={ "/@" (c.handle) } { (c.maker) } @for (why, detail) in &whys { " · " (why_text(why)) @if !detail.is_empty() { " (" (detail) ")" } } " · now " b { (c.listing) } }
             }
             div.acts { a.btn href={ "/c/" (c.code) "?v=" (n) } { "Its page" } }
         }
@@ -1085,7 +1118,7 @@ async fn review_item(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64
                         textarea name="note" rows="2" placeholder="A note for the log (optional)" {}
                         button.btn.pri type="submit" name="decision" value="list" { "Fine: list it" @if c.visibility != "everyone" { " (stays shared by code)" } }
                         button.btn type="submit" name="decision" value="unlist" { "Fine by code, not for the market" }
-                        @if why == "reports" { button.btn type="submit" name="decision" value="dismiss" { "The reports are wrong" } }
+                        @if whys.iter().any(|(w, _)| w == "reports") { button.btn type="submit" name="decision" value="dismiss" { "The reports are wrong" } }
                         button.btn type="submit" name="decision" value="hide" { "Hide it for now" }
                         button.btn.danger type="submit" name="decision" value="remove" { "Take it down, and its files" }
                     }
