@@ -18,12 +18,17 @@ use crate::textures::BlockAtlas;
 use crate::world::{Voxels, CHUNK};
 
 /// How thickly grass covers the ground: the share of grass blocks that get a
-/// tuft where it's lush (fewer on the Steam Deck), and whether ground cover
-/// near the player casts shadows. Set from the lighting tier at start.
+/// tuft where it's lush (fewer on the Steam Deck), whether ground cover
+/// near the player casts shadows, and whether leaf fins do. Set from the
+/// lighting tier at start.
 #[derive(Resource, Clone, Copy)]
 pub struct Cover {
     pub density: f32,
     pub shadows: bool,
+    /// Off on Low, where a forest's fins cost its shadow pass nearly half
+    /// (6 of 13.6 ms on the p16g3's Intel chip): there trees' shadows are
+    /// their leaf blocks', and the fins go in with the ground cover
+    pub fin_shadows: bool,
     /// What's left out, for measuring what each costs:
     /// `POTLUCK_OFF=tufts,fins,lips,wind,lod,sky` (lod: every chunk in
     /// full; sky: no darker rooms under roofs).
@@ -55,7 +60,7 @@ impl Off {
 
 impl Default for Cover {
     fn default() -> Self {
-        Cover { density: 1.0, shadows: true, off: Off::default() }
+        Cover { density: 1.0, shadows: true, fin_shadows: true, off: Off::default() }
     }
 }
 
@@ -67,7 +72,7 @@ impl Cover {
             Tier::Medium => (0.8, false),
             Tier::High | Tier::Ultra => (1.0, true),
         };
-        Cover { density, shadows, off: Off::from_env() }
+        Cover { density, shadows, fin_shadows: tier != Tier::Low, off: Off::from_env() }
     }
 }
 
@@ -732,8 +737,6 @@ fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 
     }
 }
 
-/// A chunk's meshes, with as much detail as `detail` says; near the player,
-/// its plants move in the wind.
 /// The ray tracer's stand-in for a chunk's leaves. It counts everything as
 /// solid, so a canopy of whole leaf blocks would shut out the sky and leave
 /// the forest floor black; here about half the leaf blocks are left out and
@@ -766,6 +769,8 @@ pub fn porous_leaves(w: &Voxels, c: IVec3) -> MeshData {
     m
 }
 
+/// A chunk's meshes, with as much detail as `detail` says; near the player,
+/// its plants move in the wind.
 pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail: Detail) -> ChunkMesh {
     let detail = if cover.off.lod { Detail::Near } else { detail };
     // past the middle distance a fin is a few pixels
@@ -897,7 +902,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             let n = f.n.map(|v| v as f32);
                             let flip = occ[0] + occ[2] > occ[1] + occ[3];
                             if matches!(id, LEAVES | BIRCH_LEAVES | PINE) && nb == AIR && fins {
-                                leaf_fins(&mut layers[layer], corners, n, rect, light, hash2(x * 3 + f.n[0], y * 5 + f.n[1], z * 7 + f.n[2]));
+                                leaf_fins(&mut layers[if cover.fin_shadows { layer } else { COVER }], corners, n, rect, light, hash2(x * 3 + f.n[0], y * 5 + f.n[1], z * 7 + f.n[2]));
                             }
                             if id == GRASS && f.s == 0 && nb != WATER {
                                 // grass takes its colour from where it grows

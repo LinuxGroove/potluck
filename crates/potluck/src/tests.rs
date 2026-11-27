@@ -1748,8 +1748,11 @@ fn lows_sky_meets_the_fog_and_burns_toward_a_low_sun() {
     // at the horizon away from the sun it's the fog the far hills fade into
     let away = dome::colour(-flat, sun, day, low);
     assert!((away - fog_colour(day, low)).length() < 0.02, "{away} against the fog's {}", fog_colour(day, low));
-    // toward the sun it's gold, overhead it's blue
-    let toward = dome::colour(flat, sun, day, low);
+    // just over the horizon toward the sun it's gold, overhead it's blue
+    let toward = dome::colour((flat + Vec3::Y * 0.08).normalize(), sun, day, low);
+    // under the horizon it's the fog's colour all round, as the far sea is,
+    // so where the sea stops at the dome there's no line
+    assert!((dome::colour((flat - Vec3::Y * 0.03).normalize(), sun, day, low) - fog_colour(day, low)).length() < 0.02);
     assert!(toward.x > away.x + 0.15 && toward.x > toward.z + 0.3, "sunset {toward}");
     let up = dome::colour(Vec3::Y, sun, day, low);
     assert!(up.z > up.x + 0.2, "overhead {up}");

@@ -361,6 +361,11 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         // (sizes must be powers of two: Bevy rounds anything else up)
         commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 1024 } else if ultra { 4096 } else { 2048 } });
     }
+    if tier == Tier::Low {
+        // a forest's shadows are most of Low's frame on integrated graphics,
+        // and over Low's 80 blocks of shadow 1024 still shows each leaf block
+        commands.insert_resource(DirectionalLightShadowMap { size: 1024 });
+    }
     let cascades = CascadeShadowConfigBuilder {
         num_cascades: if medium { 4 } else { 2 },
         first_cascade_far_bound: if high { 10.0 } else { 12.0 },
@@ -558,6 +563,7 @@ pub fn flicker(time: Res<Time>, mut lights: Query<(&LanternLight, &mut PointLigh
 /// the rest just glow.
 pub fn lanterns(
     mut commands: Commands,
+    settings: Res<Settings>,
     voxels: Res<Voxels>,
     me: Res<Me>,
     clock: Res<Clock>,
@@ -572,7 +578,9 @@ pub fn lanterns(
     *every = 0.3;
     let mut near: Vec<IVec3> = voxels.lanterns.iter().copied().filter(|p| p.as_vec3().distance(me.pos) < 48.0).collect();
     near.sort_by(|a, b| a.as_vec3().distance(me.pos).total_cmp(&b.as_vec3().distance(me.pos)));
-    near.truncate(20);
+    // on Low each light costs integrated graphics dearly, and the furthest
+    // still glow without lighting the ground round them
+    near.truncate(if Tier::of(&settings.lighting) == Tier::Low { 8 } else { 20 });
     let night = 1.0 - clock.daylight();
     let lumens = 40_000.0 + 260_000.0 * night;
     let mut have: Vec<_> = lights.iter_mut().collect();
