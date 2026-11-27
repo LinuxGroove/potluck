@@ -1,11 +1,15 @@
-//! The base game's block textures, drawn from code at 32 px: albedo, a normal
-//! map from each texture's height, and glow. They go into one atlas with its
+//! The base game's block textures, drawn from code: albedo, a normal map
+//! from each texture's height, roughness and glow. The blocks themselves are
+//! 64 px pixel art painted in `art`; plants, leaves and glowing tiles are
+//! drawn here at 64 px, and the rest at 32. They go into one atlas with its
 //! own mip levels, made tile by tile so neighbours never bleed together, each
 //! tile in a gutter of itself wrapped round (see `GUTTER`).
 //!
 //! Blocks baked by `tools/blocks.py` (in `assets/blocks`, built in by
-//! build.rs) take the place of the drawn ones, with their own normal,
-//! roughness and see-through maps; drawn tiles are scaled up to match.
+//! build.rs) take the place of the 32 px drawings, with their own normal,
+//! roughness and see-through maps; every tile is scaled (nearest) to the
+//! bakes' size. `POTLUCK_DUMP_TEX=<dir> cargo test dump_textures` writes
+//! every drawn texture out to look at.
 
 use std::collections::HashMap;
 
@@ -17,6 +21,8 @@ use bevy::{
 };
 
 use crate::noise::{seed_of, tfbm, tnoise, Rng};
+
+mod art;
 
 /// How big the drawn textures are.
 pub const TILE: usize = 32;
@@ -42,6 +48,8 @@ struct Tex {
     height: Vec<f32>,
     bump: f32,
     glow: bool,
+    /// Roughness per texel (0 is a mirror); `ROUGH` all over without.
+    rough: Option<Vec<f32>>,
 }
 
 #[derive(Resource, Clone)]
@@ -107,7 +115,7 @@ fn make(name: &str, bump: f32, mut f: impl FnMut(f32, f32, &mut Rng) -> ([f32; 4
             height.push(h);
         }
     }
-    Tex { size: TILE, rgba, height, bump, glow: false }
+    Tex { size: TILE, rgba, height, bump, glow: false, rough: None }
 }
 
 /// New art is drawn at 64 px (the stylised look Ken picked) by stamping
@@ -152,7 +160,7 @@ impl Canvas {
     }
 
     fn tex(self, bump: f32) -> Tex {
-        Tex { size: ART, rgba: self.rgba, height: self.height, bump, glow: false }
+        Tex { size: ART, rgba: self.rgba, height: self.height, bump, glow: false, rough: None }
     }
 }
 
@@ -501,6 +509,13 @@ fn draw_all() -> Vec<(&'static str, Tex)> {
     t.push(("leaves", leaf_art("leaves", LEAF, 330, (5.0, 8.0), false)));
     t.push(("birch_leaves", leaf_art("birch_leaves", BIRCH, 360, (4.0, 6.0), false)));
     t.push(("pine", leaf_art("pine", PINE, 700, (6.0, 10.0), true)));
+    // the blocks in the new look take the old drawings' places
+    for (name, tex) in art::blocks() {
+        match t.iter_mut().find(|(n, _)| *n == name) {
+            Some(slot) => slot.1 = tex,
+            None => t.push((name, tex)),
+        }
+    }
     t
 }
 
@@ -664,7 +679,7 @@ pub(crate) fn baked() -> (HashMap<&'static str, Vec<[f32; 4]>>, usize) {
         }
         out.insert(name, data.chunks_exact(4).map(|p| [p[0] as f32, p[1] as f32, p[2] as f32, p[3] as f32]).collect());
     }
-    (out, size.max(TILE))
+    (out, size.max(ART))
 }
 
 pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
@@ -690,7 +705,13 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
                     .unwrap_or_else(|| vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full]);
                 Maps { color, normal, rough }
             }
-            None => Maps { color: resample(&t.rgba, t.size, full), normal: resample(&normal_of(t), t.size, full), rough: vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full] },
+            None => {
+                let rough = match &t.rough {
+                    Some(r) => resample(&r.iter().map(|r| [0.0, r * 255.0, 0.0, 255.0]).collect::<Vec<_>>(), t.size, full),
+                    None => vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full],
+                };
+                Maps { color: resample(&t.rgba, t.size, full), normal: resample(&normal_of(t), t.size, full), rough }
+            }
         })
         .collect();
     if full > TILE {
@@ -740,4 +761,33 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         tiles,
         icons,
     }
+}
+
+/// Writes every drawn tile to `dir` as PPM pictures at its own size:
+/// `<name>.ppm` (colour over grey where see-through), `<name>_n.ppm` and
+/// `<name>_r.ppm`. For looking at textures while drawing them.
+pub fn dump(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (name, t) in draw_all() {
+        let n = t.size;
+        let write = |suffix: &str, f: &dyn Fn(usize) -> [f32; 3]| -> std::io::Result<()> {
+            let mut out = format!("P6 {n} {n} 255\n").into_bytes();
+            for i in 0..n * n {
+                out.extend(f(i).map(|v| v.round().clamp(0.0, 255.0) as u8));
+            }
+            std::fs::write(dir.join(format!("{name}{suffix}.ppm")), out)
+        };
+        write("", &|i| {
+            let p = t.rgba[i];
+            let a = p[3] / 255.0;
+            [p[0] * a + 128.0 * (1.0 - a), p[1] * a + 128.0 * (1.0 - a), p[2] * a + 128.0 * (1.0 - a)]
+        })?;
+        let normal = normal_of(&t);
+        write("_n", &|i| [normal[i][0], normal[i][1], normal[i][2]])?;
+        write("_r", &|i| {
+            let r = t.rough.as_ref().map(|r| r[i]).unwrap_or(ROUGH) * 255.0;
+            [r, r, r]
+        })?;
+    }
+    Ok(())
 }

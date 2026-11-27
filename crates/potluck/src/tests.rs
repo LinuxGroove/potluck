@@ -318,6 +318,14 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
     assert_eq!(herd, 3, "and so do its creatures");
 }
 
+/// With POTLUCK_DUMP_TEX=<dir>, writes every drawn texture there to look at.
+#[test]
+fn dump_textures_when_asked() {
+    if let Some(dir) = std::env::var_os("POTLUCK_DUMP_TEX") {
+        crate::textures::dump(std::path::Path::new(&dir)).unwrap();
+    }
+}
+
 #[test]
 fn every_baked_block_texture_is_read() {
     let (maps, size) = crate::textures::baked();

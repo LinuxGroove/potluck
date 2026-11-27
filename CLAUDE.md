@@ -38,7 +38,8 @@ Run the tests before every commit. Set `POTLUCK_HOME` to a scratch folder for ru
 | `src/ui.rs`, `game.rs` | Menus (`Screen`, `Act`), HUD, what menu choices do, interacting |
 | `src/demo.rs` | The scripted, recorded play-through |
 | `src/tests.rs` | Tests that need no window |
-| `tools/blocks.py`, `assets/blocks/` | Block textures baked in Blender (colour, normal, roughness, see-through); `build.rs` builds in whatever is in `assets/blocks`, and drawn textures fill the gaps |
+| `src/textures/art.rs` | The blocks' 64 px pixel art, painted from code (palettes, cells, heights for the normal map, roughness per texel); it wins over the bakes. `POTLUCK_DUMP_TEX=<dir> cargo test dump_textures` writes every drawn texture out |
+| `tools/blocks.py`, `assets/blocks/` | Block textures baked in Blender (colour, normal, roughness, see-through); `build.rs` builds in whatever is in `assets/blocks`, and fills the gaps the drawn textures leave |
 | `creations/` | The base game's creations (embedded at build time), `AGENTS.md` (the API, copied into every remix) and the API's types |
 | `crates/share-service/` | `potluck-share`, the market: `market.rs` (sharing, versions, remixes, suggestions, moderation, sign-in links), `forgejo.rs` (repositories, commits, tags, pull requests; remixes copy history with git, since Forgejo allows one fork per person), `checks.rs`, `store.rs` (files by hash, folder or S3), `db.rs` (the SQLite index), `api.rs` (the game's API) and `web.rs` (the pages, in maud), `avatar.rs` (block heads), `tests.rs` |
 | `deploy/market/` | The market's config, word list, Dockerfile, compose file (Forgejo, the service, Caddy) and `test.sh` |
