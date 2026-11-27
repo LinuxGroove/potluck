@@ -199,6 +199,9 @@ fn main() {
                 .chain()
                 .after(Sim),
         );
+    // what it holds in memory, logged on quitting (and every so often with
+    // --memory[=seconds] or POTLUCK_MEMORY=seconds)
+    memory::add(&mut app, &args);
     // where a frame's time goes, logged with a shot: --timings
     if args.iter().any(|a| a == "--timings") {
         app.add_plugins((bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(), bevy::render::diagnostic::RenderDiagnosticsPlugin));

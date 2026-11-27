@@ -11,6 +11,7 @@ pub mod green;
 pub mod halves;
 pub mod hosting;
 pub mod input;
+pub mod memory;
 pub mod mesh;
 pub mod net;
 pub mod noise;

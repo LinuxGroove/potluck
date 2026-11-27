@@ -1961,6 +1961,11 @@ fn tidy_error(e: &mlua::Error) -> String {
 }
 
 impl Scripts {
+    /// Bytes every running creation's Luau holds, for the memory report.
+    pub fn memory(&self) -> usize {
+        self.vms.values().map(|vm| vm.lua.used_memory()).sum()
+    }
+
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
         let saved = creation.knobs.clone();
         let mut vm = Vm::load(creation, &saved, self.shared.clone())?;

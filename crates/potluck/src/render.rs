@@ -261,6 +261,7 @@ impl Offscreen {
         let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
         // screenshots copy out of it
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        image.texture_descriptor.label = Some("offscreen shot");
         Self { image: images.add(image), size }
     }
 
