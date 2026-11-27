@@ -6,8 +6,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 | File | What |
 |---|---|
-| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.2"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.1"` for sounds), its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
-| `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder |
+| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.2"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.1"` for sounds, `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
+| `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder. It runs on the world's host, the only place the world changes |
+| `client.luau` | Only if it has a client half (`client = "client.luau"` in potluck.toml): code that runs on each player's own game, for what only they see. See `@potluck/net` |
 | `types/potluck.d.luau` | The API's types, for editors and AI helpers. Don't edit it: the game writes it |
 
 ## The API
@@ -172,6 +173,41 @@ for _, name in sound.names() do print(name) end
 - A creation plays at most 10 sounds a second; past that, `play` skips the sound and returns false.
 - Players who turn on **Subtitles for sounds** read each sound's caption, and which side it came from, so pick a caption that says what made it (`"Mossback hums"`).
 
+### `@potluck/net` 0.1
+
+A creation can have a **client half**: a second file, named by `client` in potluck.toml, that runs on each player's own game while the main file runs on the world's host. Use it for what only that player sees and that would otherwise mean a message ten times a second: a clock ticking down, a line that follows what they do, a sound only for them. The half never sees or changes the world; it gets only what its creation sends it, and answers the same way.
+
+```luau
+-- main.luau, on the host
+local net = require("@potluck/net")
+net.send(player, "round", { seconds = 30 })   -- to one player's half
+net.send(nil, "over", { winner = "Ada" })      -- to every player here now
+net.on("ready", function(player, value)      -- from a player's half
+	print(player.name .. " is ready")
+end)
+
+-- client.luau, on each player's game
+local net = require("@potluck/net")
+local ui = require("@potluck/ui")
+local world = require("@potluck/world")
+net.on("round", function(value)
+	local ends = world.time() + value.seconds
+	world.every(0.1, function()
+		ui.show(nil, "clock", string.format("%.1f s left", math.max(0, ends - world.time())), { at = "bottom" })
+	end)
+end)
+net.send("ready", { name = net.me().name })
+```
+
+- In the main file: `net.send(player, topic, value?)` sends a message to that player's half, and `net.send(nil, topic, value?)` to every player in the world now (not to those who come later). `net.on(topic, fn(player, value))` is called on the next tick for each message a player's half sends.
+- In the client half: `net.send(topic, value?)` sends a message to the main file, `net.on(topic, fn(value))` is called for each message the main file sends this player, and `net.me()` is this player (`id`, `name` and where they stand).
+- A topic is 1 to 32 letters. A value is what the store keeps (numbers, strings, true or false, vectors, and tables of those), at most 4 KB as JSON.
+- The main file sends at most 30 messages a second, and each player's half 10; past that, `send` returns false and the message isn't sent. The host drops what a half sends beyond that too.
+- What a client half has: `@potluck/net`; `@potluck/ui`'s `show` and `hide`, for this player only (`player` is nil, or `net.me()`), at most 8 lines; `@potluck/sound`'s `play`, heard only by this player; and from `@potluck/world` its timers (`after`, `every`, `cancel`), `time` (seconds since this half started, so send it lengths of time rather than the host's times), `random` and `spot`. The rest of the API is the main file's, and says so if a half calls it.
+- A half starts when its player arrives or the creation loads, and starts again, fresh, whenever any of the creation's files change. If it needs to know what's going on, have it say hello (`net.send("hello")`) and answer that from the main file.
+- Its lines share ids with the main file's lines for that player, so the last to show one wins. Its lines go when it stops.
+- A half has 16 MB and 4 ms of each frame. One that fails or runs too long stops, and Look inside shows why (its prints show there too, marked `client:`).
+
 ### `@potluck/game` 0.1
 
 For mini games: boards and other servers.
@@ -194,7 +230,7 @@ end
 ## Rules of the sandbox
 
 - No files, no network, no other creation's memory. `os`, `io` and loading bytecode aren't there.
-- Each creation gets 32 MB and a slice of each tick (15 ms for its timers, events and creatures together); a loop that never ends is stopped with an error.
+- Each creation gets 32 MB and a slice of each tick (15 ms for its timers, events and creatures together); a loop that never ends is stopped with an error. A client half gets 16 MB and 4 ms a frame on its player's game.
 - At most 64 creatures and 16 kinds per creation.
 - Creations can't shake, roll or zoom the player's camera, and can't cover the game's own menus: their lines and questions sit under them.
 

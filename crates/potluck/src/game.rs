@@ -28,6 +28,8 @@ pub enum Action {
     /// An answer to a creation's question (`ui.ask`): a choice from 0, or
     /// None for closing it.
     Answer { ask: u32, choice: Option<u32> },
+    /// A message from this player's client half to its creation (`@potluck/net`).
+    Net(crate::script::Note),
 }
 
 /// What players did this frame: (player id, action).
@@ -229,6 +231,7 @@ pub fn host_step(
                 }
             }
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
+            Action::Net(note) => scripts.hear(pid, note),
         }
     }
     let w = &*voxels;
@@ -254,6 +257,14 @@ pub fn host_step(
             me.as_mut().unwrap().show(change);
         } else {
             net.send_ui(pid, change);
+        }
+    }
+    // messages creations sent their client halves
+    for (pid, note) in scripts.net_changes(&here) {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().notes.push(note);
+        } else {
+            net.send_note(pid, note);
         }
     }
     // sounds creations played, to whoever's near
@@ -778,6 +789,7 @@ fn goes_online(act: &Act) -> bool {
 /// The creations a fresh world starts with: the base game's.
 pub fn start_world(lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, net: &mut Net, toasts: &mut Toasts) {
     lib.running.clear();
+    lib.world += 1;
     scripts.vms.clear();
     {
         // what creations held of players' controls and screens goes with them

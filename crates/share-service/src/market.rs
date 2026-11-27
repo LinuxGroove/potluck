@@ -121,17 +121,18 @@ pub fn slug(s: &str) -> String {
 /// from something Potluck made. Keep in step with `BASE` in the game's
 /// creations.rs.
 macro_rules! base {
-    ($($id:literal),* $(,)?) => {
+    ($($id:literal $(+ $file:literal)*),* $(,)?) => {
         &[$(($id, &[
             ("potluck.toml", include_str!(concat!("../../../creations/", $id, "/potluck.toml"))),
             ("main.luau", include_str!(concat!("../../../creations/", $id, "/main.luau"))),
+            $(($file, include_str!(concat!("../../../creations/", $id, "/", $file))),)*
             ("AGENTS.md", include_str!("../../../creations/AGENTS.md")),
             ("types/potluck.d.luau", include_str!("../../../creations/types/potluck.d.luau")),
         ])),*]
     };
 }
 
-pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram", "jelly", "tag-bot"];
+pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot"];
 
 pub const POTLUCK: &str = "potluck";
 

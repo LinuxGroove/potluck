@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -109,6 +109,8 @@ pub enum Msg {
     Panel(Option<crate::script::Panel>),
     /// A sound a creation played near you, or for you (`sound.play`).
     Sound(crate::sound::Play),
+    /// A message from a creation to its client half on your game (`net.send`).
+    Net(crate::script::Note),
 }
 
 pub enum Event {
@@ -673,6 +675,14 @@ impl Net {
     }
 
     /// A sound for one player to hear.
+    pub fn send_note(&self, pid: u32, note: crate::script::Note) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Net(note)));
+            }
+        }
+    }
+
     pub fn send_sound(&self, pid: u32, play: crate::sound::Play) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
@@ -862,6 +872,7 @@ pub fn client_net(
                     clock.time = time;
                     herd.bodies.clear();
                     lib.running.clear();
+                    lib.world += 1;
                     scripts.vms.clear();
                     if let Role::Client(c) = &mut net.role {
                         c.welcomed = true;
@@ -971,6 +982,7 @@ pub fn client_net(
                 Msg::Piece { creation, id, piece } => me.show(crate::script::UiChange::Piece { creation, id, piece }),
                 Msg::Panel(p) => me.show(crate::script::UiChange::Panel(p)),
                 Msg::Sound(p) => heard.0.push(p),
+                Msg::Net(n) => me.notes.push(n),
                 _ => {}
             },
         }

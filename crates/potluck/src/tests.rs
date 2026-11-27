@@ -1737,3 +1737,210 @@ fn clouds_keep_their_mesh_to_recolour() {
     assert!(disc.asset_usage.contains(bevy::asset::RenderAssetUsages::MAIN_WORLD));
     assert!(disc.attribute(Mesh::ATTRIBUTE_COLOR).is_some());
 }
+
+#[test]
+fn a_creation_talks_to_its_client_half_on_each_players_game() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::game::{Action, Actions};
+    use crate::halves::Halves;
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::script::{Note, Piece};
+    use crate::settings::Settings;
+    use crate::ui::WorldInfo;
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let main = r#"
+local net = require("@potluck/net@0.1")
+net.on("hello", function(p, v)
+	print("hello from " .. p.name .. " " .. tostring(v.n))
+	net.send(p, "hi", { n = v.n + 1, at = vector.create(1, 2, 3), list = { "a", "b" } })
+end)
+net.on("spam", function(p) print("spam " .. p.name) end)
+print(pcall(net.send, nil, "", 1) and "empty ok" or "no empty topic")
+print(pcall(net.send, nil, "big", string.rep("x", 5000)) and "big ok" or "no big")
+print(pcall(net.send, nil, "fn", function() end) and "fn ok" or "no fn")
+print(pcall(net.me) and "me ok" or "no me")
+local sent = 0
+for i = 1, 40 do
+	if net.send(nil, "all", i) then sent += 1 end
+end
+print("sent " .. sent)
+"#;
+    let client = r#"
+local net = require("@potluck/net@0.1")
+local ui = require("@potluck/ui@0.1")
+local sound = require("@potluck/sound@0.1")
+local world = require("@potluck/world@0.2")
+local me = net.me()
+print("I am " .. me.name)
+print(pcall(world.set_block, vector.create(0, 0, 0), "stone") and "set ok" or "no set_block")
+print(pcall(require, "@potluck/store@0.1") and "store ok" or "no store")
+print(pcall(ui.show, 99, "x", "y") and "others ok" or "not for others")
+print(pcall(ui.ask, me, { text = "?" }, function() end) and "ask ok" or "no ask")
+net.on("hi", function(v)
+	ui.show(nil, "hi", "hi " .. v.n .. " " .. v.list[2] .. " " .. v.at.y, { at = "bottom" })
+	sound.play("ding", { at = v.at })
+end)
+local got = 0
+net.on("all", function() got += 1 end)
+net.on("boom", function() error("oops") end)
+world.every(0.5, function() ui.show(me, "got", "got " .. got .. " at " .. string.format("%.2f", world.time())) end)
+net.send("hello", { n = 1 })
+for i = 1, 15 do net.send("spam") end
+"#;
+    let mut c = creation(main);
+    c.files.insert("client.luau".into(), client.into());
+    c.manifest.client = Some("client.luau".into());
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::new(2.0, 40.0, 0.0) };
+    scripts.players = vec![ada.clone(), bo.clone()];
+    scripts.start(&c, &mut herd).unwrap();
+    let log = |s: &Scripts| s.vms["test"].log.join("\n");
+    for want in ["no empty topic", "no big", "no fn", "no me", "sent 30"] {
+        assert!(log(&scripts).contains(want), "{want}: {}", log(&scripts));
+    }
+
+    // each player's game runs its own half, which says hello
+    let mut lib = Library::default();
+    lib.list.insert("test".into(), c.clone());
+    lib.running.push("test".into());
+    lib.world = 1;
+    let mut halves = [Halves::default(), Halves::default()];
+    for (h, p) in halves.iter_mut().zip([&ada, &bo]) {
+        h.sync(Some(&lib), p);
+        assert_eq!(h.list["test"].error, None);
+    }
+    let out = halves[0].take();
+    let l = halves[0].list["test"].log.join("\n");
+    for want in ["I am Ada", "no set_block", "no store", "not for others", "no ask"] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    assert_eq!(out.notes.len(), 10, "ten a second from a half");
+    assert_eq!(out.notes[0], Note { creation: "test".into(), topic: "hello".into(), value: serde_json::json!({ "n": 1 }) });
+    for n in out.notes {
+        scripts.hear(7, n);
+    }
+    // the host holds each player to the same: an eleventh is dropped
+    scripts.hear(7, Note { creation: "test".into(), topic: "spam".into(), value: serde_json::Value::Null });
+    for n in halves[1].take().notes.into_iter().take(1) {
+        scripts.hear(8, n);
+    }
+    scripts.hear(8, Note { creation: "nobody".into(), topic: "hello".into(), value: serde_json::Value::Null });
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let l = log(&scripts);
+    assert!(l.contains("hello from Ada 1") && l.contains("hello from Bo 1"), "{l}");
+    assert_eq!(l.matches("spam Ada").count(), 9, "{l}");
+
+    // what the creation sent goes to whoever it was for
+    let notes = scripts.net_changes(&[7, 8]);
+    let for_ada: Vec<Note> = notes.iter().filter(|(p, _)| *p == 7).map(|(_, n)| n.clone()).collect();
+    assert_eq!(for_ada.iter().filter(|n| n.topic == "all").count(), 30);
+    assert_eq!(for_ada.iter().filter(|n| n.topic == "hi").count(), 1);
+    assert_eq!(notes.iter().filter(|(p, _)| *p == 8).count(), 31);
+    assert!(scripts.net_changes(&[7, 8]).is_empty(), "sent once");
+    halves[0].frame(0.1, &ada, for_ada);
+    halves[0].frame(0.45, &ada, vec![]);
+    let out = halves[0].take();
+    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into() });
+    assert!(out.pieces.contains(&("test".into(), "hi".into(), piece("hi 2 b 2", "bottom"))), "{:?}", out.pieces);
+    assert!(out.pieces.contains(&("test".into(), "got".into(), piece("got 30 at 0.55", "right"))), "its own clock: {:?}", out.pieces);
+    assert_eq!(out.sounds.len(), 1);
+    assert_eq!((out.sounds[0].name.as_str(), out.sounds[0].at), ("ding", Some([1.0, 2.0, 3.0])));
+
+    // a new version starts it afresh, and takes its lines off the screen
+    let mut c2 = c.clone();
+    c2.files.insert("client.luau".into(), format!("{client}\nprint(\"again\")"));
+    lib.list.insert("test".into(), c2.clone());
+    halves[0].sync(Some(&lib), &ada);
+    let out = halves[0].take();
+    assert!(out.pieces.contains(&("test".into(), "hi".into(), None)) && out.pieces.contains(&("test".into(), "got".into(), None)), "{:?}", out.pieces);
+    assert!(halves[0].list["test"].log.join("\n").contains("again"));
+    // so does a new world
+    lib.world = 2;
+    halves[0].sync(Some(&lib), &ada);
+    assert_eq!(halves[0].take().notes.len(), 10, "a new half says hello again");
+
+    // a half that fails stops and says why; one that never stops is stopped
+    halves[0].frame(0.1, &ada, vec![Note { creation: "test".into(), topic: "boom".into(), value: serde_json::Value::Null }]);
+    assert!(halves[0].list["test"].error.as_deref().unwrap_or("").contains("oops"), "{:?}", halves[0].list["test"].error);
+    let mut c3 = c.clone();
+    c3.files.insert("client.luau".into(), "while true do end".into());
+    lib.list.insert("test".into(), c3);
+    halves[0].sync(Some(&lib), &ada);
+    assert!(halves[0].list["test"].error.as_deref().unwrap_or("").contains("too long"));
+    // and leaving the world stops them all
+    halves[1].sync(None, &bo);
+    assert!(halves[1].list.is_empty());
+
+    // what goes between devices
+    let n = Note { creation: "test".into(), topic: "hi".into(), value: serde_json::json!({ "n": 2, "at": { "__vector": [1.0, 2.0, 3.0] } }) };
+    for m in [Msg::Net(n.clone()), Msg::Act(Action::Net(n.clone()))] {
+        let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+
+    // on the host's own game: the half's hello reaches the creation, and its answer the screen
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings { name: "Cy".into(), ..default() }).insert_resource(crate::player::Me::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    {
+        let mut lib = app.world_mut().resource_mut::<Library>();
+        lib.list.insert("test".into(), c.clone());
+        lib.running = vec!["test".into()];
+    }
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&c, &mut herd).unwrap();
+    });
+    app.world_mut().run_system_once(crate::halves::run).unwrap();
+    assert!(app.world().resource::<Actions>().0.iter().any(|(_, a)| matches!(a, Action::Net(n) if n.topic == "hello")));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        w.resource_scope(|w, mut v: Mut<Voxels>| {
+            let mut h = w.resource_mut::<Herd>();
+            s.tick(&mut v, &mut h, 0.2);
+        })
+    });
+    assert!(app.world().resource::<Scripts>().vms["test"].log.join("\n").contains("hello from Cy 1"));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    app.world_mut().run_system_once(crate::halves::run).unwrap();
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!(me.pieces.get(&("test".to_string(), "hi".to_string())).map(|p| p.text.as_str()), Some("hi 2 b 2"), "{:?}", me.pieces);
+}
+
+#[test]
+fn the_rodeo_rams_clock_runs_on_the_riders_game() {
+    use crate::halves::Halves;
+    home();
+    let lib = Library::load();
+    let ram = lib.list["rodeo-ram"].clone();
+    assert_eq!(ram.manifest.client.as_deref(), Some("client.luau"));
+    let mut mine = Library::default();
+    mine.list.insert(ram.id.clone(), ram.clone());
+    mine.running.push(ram.id.clone());
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
+    let mut h = Halves::default();
+    h.sync(Some(&mine), &ada);
+    assert_eq!(h.list["rodeo-ram"].error, None);
+    let note = |topic: &str, value: serde_json::Value| crate::script::Note { creation: "rodeo-ram".into(), topic: topic.into(), value };
+    h.frame(0.05, &ada, vec![note("ride", serde_json::json!({ "best": 1.0 }))]);
+    for _ in 0..12 {
+        h.frame(0.1, &ada, vec![]);
+    }
+    let out = h.take();
+    let last = out.pieces.iter().rev().find(|p| p.1 == "ride").and_then(|p| p.2.clone()).expect("a clock");
+    assert!(last.text.starts_with("Riding 1.") && last.text.contains("past the record"), "{}", last.text);
+    assert_eq!(out.sounds.iter().filter(|s| s.name == "sparkle").count(), 1, "once, as it passes");
+    h.frame(0.1, &ada, vec![note("done", serde_json::json!({ "time": 1.3, "record": true }))]);
+    let out = h.take();
+    assert_eq!(out.pieces.last().and_then(|p| p.2.clone()).map(|p| p.text), Some("You rode 1.3 s, the longest yet!".into()));
+    for _ in 0..41 {
+        h.frame(0.1, &ada, vec![]);
+    }
+    assert_eq!(h.take().pieces.last().map(|p| p.2.clone()), Some(None), "gone after a while");
+    assert_eq!(h.list["rodeo-ram"].error, None);
+}
