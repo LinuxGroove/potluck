@@ -3457,6 +3457,10 @@ end
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mine = v["creations"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap();
     assert!(mine["running"] == true && mine["folder"].as_str().is_some() && mine["knobs"]["glow"]["label"] == "Glow" && mine["error"].as_str().is_some_and(|e| e.contains("main.luau:3")), "{mine}");
+    // its budgets, as Look inside shows them
+    let budgets = mine["budgets"].as_str().unwrap_or_default();
+    assert!(budgets.starts_with("a tick takes ") && budgets.contains("of its 15") && budgets.contains("of 32 MB"), "{budgets}");
+    assert!(cx.scripts.vms[id].tick_ms > 0.0, "its ticks are timed");
     assert!(v["creations"].as_array().unwrap().iter().any(|c| c["id"] == "mossback" && c["origin"] == "the base game"));
     let (text, err) = bridge_tool(&open, &mut cx, "guide", json!({}));
     assert!(!err && text.contains("@potluck/world"));

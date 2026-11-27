@@ -965,7 +965,8 @@ pub fn draw_menu(
             let log: Vec<String> = log.iter().rev().take(6).rev().cloned().collect();
             let err = vm.and_then(|v| v.error.clone()).or_else(|| half.and_then(|h| h.error.as_ref()).map(|e| format!("Its client half stopped: {e}")));
             let ms = vm.map(|v| v.load_ms).unwrap_or(0.0);
-            (c.manifest.main.clone(), src, log, err, ms)
+            let budget = vm.map(|v| v.budget());
+            (c.manifest.main.clone(), src, log, err, ms, budget)
         }),
         _ => None,
     };
@@ -1094,7 +1095,7 @@ pub fn draw_menu(
                 }
             });
             // Look inside: the code, the log and any error
-            if let Some((file, src, log, err, ms)) = side {
+            if let Some((file, src, log, err, ms, budget)) = side {
                 root.spawn((
                     Node {
                         flex_direction: FlexDirection::Column,
@@ -1110,6 +1111,10 @@ pub fn draw_menu(
                 ))
                 .with_children(|p| {
                     p.spawn((Text::new(format!("{file}  ·  loaded in {ms:.0} ms  ·  wheel or right stick to scroll")), TextFont { font: ui.clone().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
+                    // how it's doing against its budgets, as it runs
+                    if let Some(b) = budget {
+                        p.spawn((Text::new(cap(&b)), TextFont { font: ui.clone().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
+                    }
                     let lines: Vec<&str> = src.lines().collect();
                     let start = (scroll as usize).min(lines.len().saturating_sub(1));
                     let shown: String = lines.iter().enumerate().skip(start).take(30).map(|(n, l)| format!("{:>3}  {}\n", n + 1, l.replace('\t', "    "))).collect();

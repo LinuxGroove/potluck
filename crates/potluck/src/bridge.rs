@@ -542,6 +542,7 @@ fn list(cx: &Cx) -> Value {
             e["kinds"] = json!(vm.kinds.iter().map(|k| k.name.clone()).collect::<Vec<_>>());
             e["load_ms"] = json!(tenths(vm.load_ms));
             e["memory_kb"] = json!(vm.memory() / 1024);
+            e["budgets"] = json!(vm.budget());
             e["knobs"] = vm
                 .knobs
                 .iter()
