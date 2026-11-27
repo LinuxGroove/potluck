@@ -40,6 +40,9 @@ pub struct Voxels {
     data: Vec<BlockId>,
     /// Chunks whose mesh is out of date.
     pub dirty: HashSet<IVec3>,
+    /// Chunks whose sky a change may have opened or closed (`mesh::Sky`),
+    /// remeshed a few at a time once the dirty ones are done.
+    pub shade: HashSet<IVec3>,
     /// Block changes since the last network send: (position, block).
     pub changes: Vec<(IVec3, BlockId)>,
     /// Lantern positions, for the lights near the player.
@@ -52,6 +55,7 @@ impl Voxels {
             seed,
             data: vec![AIR; (WX * WY * WZ) as usize],
             dirty: HashSet::new(),
+            shade: HashSet::new(),
             changes: Vec::new(),
             lanterns: HashSet::new(),
         }
@@ -110,20 +114,17 @@ impl Voxels {
             self.lanterns.insert(p);
         }
         // the chunk and any neighbour the block touches (for faces and AO)
-        let c = p.div_euclid(IVec3::splat(CHUNK));
-        let l = p.rem_euclid(IVec3::splat(CHUNK));
-        for dz in -1..=1 {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let d = IVec3::new(dx, dy, dz);
-                    let near = |a: i32, v: i32| a == 0 || (a < 0 && v == 0) || (a > 0 && v == CHUNK - 1);
-                    if near(dx, l.x) && near(dy, l.y) && near(dz, l.z) {
-                        let n = c + d;
-                        if n.x >= 0 && n.y >= 0 && n.z >= 0 && n.x < CX && n.y < CY && n.z < CZ {
-                            self.dirty.insert(n);
-                        }
-                    }
-                }
+        let chunks = |d: IVec3, u: IVec3| {
+            let lo = (p - d).div_euclid(IVec3::splat(CHUNK)).max(IVec3::ZERO);
+            let hi = (p + u).div_euclid(IVec3::splat(CHUNK)).min(IVec3::new(CX - 1, CY - 1, CZ - 1));
+            (lo.z..=hi.z).flat_map(move |z| (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z))))
+        };
+        self.dirty.extend(chunks(IVec3::ONE, IVec3::ONE));
+        // and, soon after, any whose sky it can block (below and across)
+        let r = crate::mesh::SKY_REACH + 1;
+        for c in chunks(IVec3::splat(r), IVec3::new(r, 1, r)) {
+            if !self.dirty.contains(&c) {
+                self.shade.insert(c);
             }
         }
     }

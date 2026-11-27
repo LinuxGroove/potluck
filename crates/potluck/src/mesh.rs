@@ -1,5 +1,6 @@
 //! Turning chunks of blocks into meshes: one face per side that can be seen,
-//! with ambient occlusion at the corners.
+//! with ambient occlusion at the corners and, at each corner, how much of
+//! the sky it sees (`Sky`).
 
 use std::collections::HashMap;
 
@@ -9,9 +10,9 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::tasks::ComputeTaskPool;
 
-use std::f32::consts::{FRAC_PI_4, PI};
+use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
-use crate::blocks::{self, BlockId, Shape, AIR, BIRCH_LEAVES, BUSH, CARROTS, FERN, GRASS, LEAVES, PINE, WATER, WHEAT};
+use crate::blocks::{self, BlockId, Shape, AIR, BIRCH_LEAVES, BUSH, CARROTS, FERN, GLASS, GRASS, LEAVES, PINE, WATER, WHEAT};
 use crate::noise::{fbm, hash2, smooth, vnoise};
 use crate::textures::BlockAtlas;
 use crate::world::{Voxels, CHUNK};
@@ -24,7 +25,8 @@ pub struct Cover {
     pub density: f32,
     pub shadows: bool,
     /// What's left out, for measuring what each costs:
-    /// `POTLUCK_OFF=tufts,fins,lips,wind,lod` (lod: every chunk in full).
+    /// `POTLUCK_OFF=tufts,fins,lips,wind,lod,sky` (lod: every chunk in
+    /// full; sky: no darker rooms under roofs).
     pub off: Off,
 }
 
@@ -35,13 +37,14 @@ pub struct Off {
     pub lips: bool,
     pub wind: bool,
     pub lod: bool,
+    pub sky: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky") }
     }
 }
 
@@ -65,8 +68,9 @@ impl Cover {
 
 /// How much detail a chunk's meshes carry, by how far it is from the player.
 /// Near, everything, swaying in the wind; further out, fewer, wider tufts
-/// that keep still; furthest, no tufts or leaf fins. Out there each would be
-/// a few pixels, and tiny triangles are what cards draw slowest.
+/// that keep still, and past the middle distance no leaf fins; furthest, no
+/// tufts either. Out there each would be a few pixels, and tiny triangles
+/// are what cards draw slowest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Detail {
     Near,
@@ -133,6 +137,8 @@ pub struct MeshData {
     idx: Vec<u32>,
     /// How far each vertex moves in the wind (plant tips; zero elsewhere).
     sway: Vec<Vec3>,
+    /// How much of the sky each vertex sees (`Sky`), 1 until worked out.
+    sky: Vec<f32>,
 }
 
 /// Plants sway in a breeze. Each plant's tip has a sway (how far and which
@@ -213,6 +219,7 @@ impl MeshData {
             self.col.push(tint[k]);
             self.tan.push([t.x, t.y, t.z, w]);
             self.sway.push(Vec3::ZERO);
+            self.sky.push(1.0);
         }
         if flip {
             self.idx.extend_from_slice(&[base + 1, base + 2, base + 3, base + 1, base + 3, base]);
@@ -248,8 +255,9 @@ impl MeshData {
         Some(out)
     }
 
-    /// The mesh, with corner shading in its vertex colours unless the world
-    /// is ray traced (which shades corners itself, and takes only position,
+    /// The mesh, with corner shading in its vertex colours and the sky each
+    /// corner sees in its second UVs, unless the world is ray traced (which
+    /// shades corners and finds the sky itself, and takes only position,
     /// normal, UV and tangent).
     pub fn into_mesh(self, raytraced: bool) -> Mesh {
         let targets = self.wind_targets();
@@ -259,6 +267,7 @@ impl MeshData {
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv);
         if !raytraced {
             m.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
+            m.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.sky.iter().map(|&s| [sky_u(s), 0.5]).collect::<Vec<_>>());
         }
         if let Some(t) = targets {
             m.set_morph_targets(t);
@@ -308,6 +317,215 @@ const FACES: [Face; 6] = [
 ];
 
 const AO: [f32; 4] = [1.0, 0.78, 0.6, 0.45];
+
+/// How far sky light is looked for, up and across, in blocks.
+pub const SKY_REACH: i32 = 12;
+/// How many steps the ambient light curve's texture has (`sky_ambient`).
+pub const SKY_STEPS: usize = 64;
+
+/// How much of the ambient light (the sky's and the flat fill) a face gets
+/// for the share of the sky it sees: a little always, since light bounces in
+/// through doors and windows, and all of it in the open.
+pub fn sky_ambient(s: f32) -> f32 {
+    0.13 + 0.87 * s.clamp(0.0, 1.0)
+}
+
+/// Where a share of sky falls in the curve's texture.
+fn sky_u(s: f32) -> f32 {
+    (0.5 + s.clamp(0.0, 1.0) * (SKY_STEPS - 1) as f32) / SKY_STEPS as f32
+}
+
+/// How much light a block lets through on the way to the sky: solid blocks
+/// none, leaves, glass and water some.
+fn sky_through(b: BlockId) -> f32 {
+    match b {
+        AIR => 1.0,
+        LEAVES | BIRCH_LEAVES | PINE => 0.7,
+        GLASS => 0.85,
+        WATER => 0.8,
+        _ if blocks::is_opaque(b) => 0.0,
+        _ => 1.0,
+    }
+}
+
+/// How much of the sky the open cells round a chunk see, which is how much
+/// of the ambient light reaches the faces beside them. Rooms under a roof
+/// would otherwise be lit by the open sky as if they had none. Only ambient
+/// light is scaled (through the chunk materials' occlusion texture, read
+/// with the second UVs), so sun through a skylight still lands bright on a
+/// library floor whose walls are in shade. Rays go up from each cell:
+/// straight up, eight halfway to the horizon and four lower ones that find
+/// doors and windows; further out, where rooms can't be seen into, four
+/// halfway instead of eight.
+struct Sky {
+    /// The blocks round the chunk the rays can reach, copied out of the
+    /// world so tracing stays in the cache.
+    ids: Vec<BlockId>,
+    /// Each cell's share of sky (for cells in and just round the chunk),
+    /// NaN until it's worked out and -1 for solid blocks.
+    cells: Vec<f32>,
+    rays: &'static [SkyRay],
+    /// Where each ray's cells are in `ids`, from the cell it starts in.
+    steps: Vec<Vec<usize>>,
+    /// The corner of `ids`, and of `cells`.
+    lo: IVec3,
+    cells_lo: IVec3,
+}
+
+/// A ray to the sky: the cells it crosses from a cell's middle, in order,
+/// and how much of the sky it stands for.
+struct SkyRay {
+    cells: Vec<IVec3>,
+    weight: f32,
+}
+
+/// How far past the chunk's edges cells are worked out (vertices of fins,
+/// lips and models reach a little outside it).
+const SKY_PAD: i32 = 3;
+const SKY_SPAN: i32 = CHUNK + 2 * SKY_PAD;
+/// How far round the chunk the copy of blocks reaches: far enough for every
+/// ray from every cell worked out.
+const SKY_AROUND: IVec3 = IVec3::new(SKY_PAD + SKY_REACH, SKY_PAD, SKY_PAD + SKY_REACH);
+const SKY_REGION: IVec3 = IVec3::new(CHUNK + 2 * SKY_AROUND.x, CHUNK + 2 * SKY_PAD + SKY_REACH + 1, CHUNK + 2 * SKY_AROUND.z);
+
+/// How much sky light each block lets through (`sky_through`), by id.
+fn sky_through_all() -> &'static [f32; 256] {
+    static ALL: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| std::array::from_fn(|i| sky_through(i as BlockId)))
+}
+
+/// The rays near the player and further out (see `Sky`).
+fn sky_rays(full: bool) -> &'static [SkyRay] {
+    static RAYS: std::sync::OnceLock<[Vec<SkyRay>; 2]> = std::sync::OnceLock::new();
+    let make = |full: bool| {
+        let mut dirs = vec![(Vec3::Y, 2.0)];
+        let mut ring = |up: f32, n: usize, weight: f32| {
+            for k in 0..n {
+                let a = k as f32 * TAU / n as f32;
+                dirs.push((Vec3::new(a.cos() * up.cos(), up.sin(), a.sin() * up.cos()), weight));
+            }
+        };
+        if full {
+            ring(FRAC_PI_4, 8, 0.75);
+        } else {
+            ring(FRAC_PI_4, 4, 1.5);
+        }
+        ring(0.33, 4, 0.8);
+        let total: f32 = dirs.iter().map(|d| d.1).sum();
+        dirs.into_iter()
+            .map(|(d, weight)| {
+                // every cell the ray passes through, in small enough steps not
+                // to slip between two blocks meeting at an edge
+                let mut cells: Vec<IVec3> = Vec::new();
+                let mut s = 0.25;
+                while s <= SKY_REACH as f32 {
+                    let p = (Vec3::splat(0.5) + d * s).floor().as_ivec3();
+                    if p != IVec3::ZERO && cells.last() != Some(&p) {
+                        cells.push(p);
+                    }
+                    s += 0.25;
+                }
+                SkyRay { cells, weight: weight / total }
+            })
+            .collect::<Vec<_>>()
+    };
+    &RAYS.get_or_init(|| [make(true), make(false)])[if full { 0 } else { 1 }]
+}
+
+impl Sky {
+    fn new(w: &Voxels, o: IVec3, detail: Detail) -> Self {
+        let rays = sky_rays(matches!(detail, Detail::Near | Detail::Mid));
+        let lo = o - SKY_AROUND;
+        let n = SKY_REGION;
+        let mut ids = Vec::with_capacity((n.x * n.y * n.z) as usize);
+        for y in lo.y..lo.y + n.y {
+            for z in lo.z..lo.z + n.z {
+                for x in lo.x..lo.x + n.x {
+                    ids.push(w.get(x, y, z));
+                }
+            }
+        }
+        let steps = rays.iter().map(|r| r.cells.iter().map(|d| ((d.y * n.z + d.z) * n.x + d.x) as isize as usize).collect()).collect();
+        Sky { ids, cells: vec![f32::NAN; (SKY_SPAN * SKY_SPAN * SKY_SPAN) as usize], rays, steps, lo, cells_lo: o - IVec3::splat(SKY_PAD) }
+    }
+
+    /// The share of sky a cell sees, or None for a solid block (or a cell
+    /// too far out of the chunk to have been copied).
+    fn cell(&mut self, c: IVec3) -> Option<f32> {
+        let l = c - self.cells_lo;
+        if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(SKY_SPAN)).any() {
+            return None;
+        }
+        let i = ((l.y * SKY_SPAN + l.z) * SKY_SPAN + l.x) as usize;
+        if self.cells[i].is_nan() {
+            let r = c - self.lo;
+            let at = ((r.y * SKY_REGION.z + r.z) * SKY_REGION.x + r.x) as usize;
+            self.cells[i] = if blocks::is_opaque(self.ids[at]) { -1.0 } else { self.trace(at) };
+        }
+        let v = self.cells[i];
+        (v >= 0.0).then_some(v)
+    }
+
+    /// The share of sky seen from the cell at `at` in the copied blocks.
+    fn trace(&self, at: usize) -> f32 {
+        let pass = sky_through_all();
+        let mut seen = 0.0;
+        for (ray, steps) in self.rays.iter().zip(&self.steps) {
+            let mut through = 1.0;
+            for &d in steps {
+                let t = pass[self.ids[at.wrapping_add(d)] as usize];
+                if t < 1.0 {
+                    through *= t;
+                    if through < 0.03 {
+                        through = 0.0;
+                        break;
+                    }
+                }
+            }
+            seen += through * ray.weight;
+        }
+        seen
+    }
+
+    /// The sky seen at a vertex: the open cells round the point half a block
+    /// out along its normal, blended by how near each is.
+    fn at(&mut self, p: Vec3, n: Vec3) -> f32 {
+        let q = p + n * 0.5 - Vec3::splat(0.5);
+        let base = q.floor();
+        let f = q - base;
+        let b = base.as_ivec3();
+        let (wx, wy, wz) = ([1.0 - f.x, f.x], [1.0 - f.y, f.y], [1.0 - f.z, f.z]);
+        let (mut sum, mut weights) = (0.0, 0.0);
+        for dz in 0..2 {
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let wgt = wx[dx] * wy[dy] * wz[dz];
+                    if wgt < 1e-4 {
+                        continue;
+                    }
+                    if let Some(s) = self.cell(b + IVec3::new(dx as i32, dy as i32, dz as i32)) {
+                        sum += wgt * s;
+                        weights += wgt;
+                    }
+                }
+            }
+        }
+        if weights > 0.0 { sum / weights } else { 1.0 }
+    }
+
+    /// Works out every vertex's sky in a chunk's layers (water reflects the
+    /// sky rather than taking light from it).
+    fn shade(&mut self, layers: &mut [MeshData; LAYERS]) {
+        for (i, l) in layers.iter_mut().enumerate() {
+            if i == 2 {
+                continue;
+            }
+            for v in 0..l.pos.len() {
+                l.sky[v] = self.at(Vec3::from(l.pos[v]), Vec3::from(l.nrm[v]));
+            }
+        }
+    }
+}
 
 /// How much of red, green and blue each block of water soaks up, on the way
 /// down to what's under it and back up.
@@ -395,6 +613,8 @@ fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32
         w.get(x + s[0], y + s[1], z + s[2])
     };
     let o = Vec3::new(x as f32, y as f32, z as f32);
+    // standing on the ground, darker toward it (stacked, one model's light runs on into the next)
+    let floor = blocks::is_opaque(w.get(x, y - 1, z));
     for b in def.model {
         if !b.when.holds(id, next) {
             continue;
@@ -425,10 +645,38 @@ fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32
             });
             let down = if f.n[1] < 0 { 0.6 } else { 1.0 };
             let tint = local.map(|p| {
-                let l = if b.glow { 1.0 } else { down * (0.62 + 0.38 * p.y) };
+                let l = if b.glow { 1.0 } else if floor { down * (0.62 + 0.38 * p.y) } else { down };
                 [l, l, l, 1.0]
             });
             layers[layer].quad_uv(local.map(|p| (o + p).into()), f.n.map(|v| v as f32), uvs, tint, false);
+        }
+    }
+}
+
+/// Surf where water meets the land: a strip of foam on the water along each
+/// side of the block that has the shore beside it, its foamy edge to the
+/// land. Near the player it laps in and out with the wind's wave. It goes
+/// with the plants (cut out, and kept out of ray tracing).
+fn shore_foam(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, detail: Detail) {
+    let [u0, v0, u1, v1] = BlockAtlas::uv(atlas.tile("foam"));
+    let yy = y as f32 + 0.9;
+    let c = Vec3::new(x as f32 + 0.5, yy, z as f32 + 0.5);
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        if !blocks::is_opaque(w.get(x + dx, y, z + dz)) {
+            continue;
+        }
+        let d = Vec3::new(dx as f32, 0.0, dz as f32);
+        // along the shore, turning left from facing it
+        let along = Vec3::new(dz as f32, 0.0, -dx as f32);
+        let e0 = c + d * 0.5 - along * 0.5;
+        let e1 = c + d * 0.5 + along * 0.5;
+        let q = [e0, e1, e1 - d, e0 - d].map(|p| p.into());
+        m.quad_uv(q, [0.0, 1.0, 0.0], [[u0, v0], [u1, v0], [u1, v1], [u0, v1]], [[1.0; 4]; 4], false);
+        if detail == Detail::Near {
+            let n = m.sway.len();
+            for s in &mut m.sway[n - 4..] {
+                *s = d * 0.07;
+            }
         }
     }
 }
@@ -461,7 +709,8 @@ fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 
 /// its plants move in the wind.
 pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail: Detail) -> ChunkMesh {
     let detail = if cover.off.lod { Detail::Near } else { detail };
-    let fins = detail != Detail::Distant && !cover.off.fins;
+    // past the middle distance a fin is a few pixels
+    let fins = matches!(detail, Detail::Near | Detail::Mid) && !cover.off.fins;
     let mut varies = false;
     let mut layers: [MeshData; LAYERS] = Default::default();
     let o = c * CHUNK;
@@ -506,6 +755,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             [corner(0, 1), corner(1, 1), corner(1, 0), corner(0, 0)],
                             false,
                         );
+                        shore_foam(&mut layers[3], w, atlas, x, y, z, detail);
                     }
                     Shape::Model => model(&mut layers, w, atlas, x, y, z, id),
                     Shape::Cross => {
@@ -616,6 +866,9 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
             l.sway.fill(Vec3::ZERO);
         }
     }
+    if !cover.off.sky && layers.iter().enumerate().any(|(i, l)| i != 2 && !l.is_empty()) {
+        Sky::new(w, o, detail).shade(&mut layers);
+    }
     ChunkMesh { layers, varies }
 }
 
@@ -657,10 +910,24 @@ pub fn remesh(
     // chunks the player has come near or left behind change their detail
     let changed: Vec<IVec3> = chunks.detail.iter().filter(|(c, d)| Detail::of(**c, focus.0, Some(**d)) != **d).map(|(c, _)| *c).collect();
     voxels.dirty.extend(changed);
+    let f = (focus.0 / CHUNK as f32).floor().as_ivec3();
+    if voxels.dirty.is_empty() {
+        // then a few of those a change opened to the sky or roofed over,
+        // nearest first, so placing a block never meshes a dozen at once
+        let near = |c: &IVec3| {
+            let d = *c - f;
+            d.x * d.x + d.y * d.y * 2 + d.z * d.z
+        };
+        let mut shade: Vec<IVec3> = voxels.shade.iter().copied().collect();
+        shade.sort_by_key(near);
+        for c in shade.into_iter().take(3) {
+            voxels.shade.remove(&c);
+            voxels.dirty.insert(c);
+        }
+    }
     if voxels.dirty.is_empty() {
         return;
     }
-    let f = (focus.0 / CHUNK as f32).floor().as_ivec3();
     let mut list: Vec<IVec3> = voxels.dirty.iter().copied().collect();
     list.sort_by_key(|c| {
         let d = *c - f;

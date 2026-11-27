@@ -595,3 +595,45 @@ fn a_remix_of_a_remix_is_suggested_and_merged_from_the_game() {
     assert!(url.starts_with(&format!("{market}/signin/")), "{url}");
     assert!(crate::ui::qr_image(&url).is_some());
 }
+
+#[test]
+fn rooms_under_a_roof_see_less_sky() {
+    use crate::mesh::Detail;
+    use bevy::mesh::VertexAttributeValues;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    // the share of sky a floor's corner sees, as its chunk's mesh carries it
+    let sky = |x: i32, y: i32, z: i32| -> f32 {
+        let c = IVec3::new(x, y - 1, z).div_euclid(IVec3::splat(world::CHUNK));
+        let m = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), Detail::Near);
+        let mesh = m.layers.into_iter().next().unwrap().into_mesh(false);
+        let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+        let Some(VertexAttributeValues::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1) else { panic!("no sky in the mesh") };
+        let i = pos.iter().position(|p| *p == [x as f32, y as f32, z as f32]).expect("a floor corner there");
+        let steps = crate::mesh::SKY_STEPS as f32;
+        (uv[i][0] * steps - 0.5) / (steps - 1.0)
+    };
+    // the villa's library floor, off the skylight, and its terrace outside
+    let (inside, under_glass, open) = (sky(48, 26, 202), sky(54, 26, 206), sky(39, 26, 196));
+    eprintln!("sky: library {inside:.2}, under the skylight {under_glass:.2}, terrace {open:.2}");
+    assert!(inside < 0.2, "the library sees little sky ({inside})");
+    assert!(under_glass > inside + 0.05, "more under the skylight ({under_glass} against {inside})");
+    assert!(open > 0.75, "the open terrace sees most of it ({open})");
+}
+
+#[test]
+fn shores_get_foam() {
+    use crate::mesh::Detail;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    // the beach below the villa: water at x 34 against sand at x 35
+    assert_eq!((w.get(34, world::SEA, 207), w.get(35, world::SEA, 207)), (crate::blocks::WATER, crate::blocks::SAND));
+    let c = IVec3::new(34, world::SEA, 207).div_euclid(IVec3::splat(world::CHUNK));
+    let m = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), Detail::Near);
+    let plants = m.layers.into_iter().nth(3).unwrap().into_mesh(false);
+    let pos = plants.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+    let foam = pos.iter().filter(|p| (p[1] - (world::SEA as f32 + 0.9)).abs() < 1e-3 && p[0] == 35.0 && p[2] >= 207.0 && p[2] <= 208.0).count();
+    assert!(foam >= 2, "a strip of foam on the water along the sand ({foam} corners)");
+}

@@ -665,6 +665,37 @@ fn bedrock() -> Tex {
     a.finish(3.0, 1.4)
 }
 
+/// Surf along a shore, for the strips laid on the water beside the land
+/// (`mesh::shore_foam`): a scalloped band of foam at the top edge, which
+/// faces the shore, broken by bubbles, and specks drifting out from it.
+/// It repeats across, so neighbouring strips run on into each other.
+fn foam() -> Tex {
+    const FOAM: &[u32] = &[0x4f7480, 0x6f939d, 0x96b6bd, 0xbdd5d8, 0xdcecec, 0xf3fafa, 0xffffff];
+    let s = seed_of("foam");
+    let mut a = Art::new("foam", &[FOAM]);
+    a.fill(|x, y, _| {
+        let wave = 3.5 * (x * std::f32::consts::TAU / 32.0 + 1.3 * vn(x, 0.0, 4, 1, s)).sin() + 4.0 * vn(x, y, 8, 8, s ^ 1);
+        let band = 11.0 + wave;
+        let bubble = vn(x, y, 16, 16, s ^ 2);
+        if y < band {
+            // the band: whiter toward the shore, holes where bubbles burst
+            if bubble > 0.74 && y > 3.0 {
+                return Px { pal: 0, t: 0.0, h: 0.0, rough: 1.0, alpha: 0.0 };
+            }
+            let t = 0.62 + 0.38 * (1.0 - y / band) - 0.18 * smooth(0.6, 0.74, bubble);
+            return px(0, t, 0.5 + 0.5 * (1.0 - y / band), 0.55);
+        }
+        // past it, specks of foam thinning out to open water
+        let out = (y - band) / (40.0 - band).max(1.0);
+        let speck = hash(x as i32, y as i32, s ^ 3);
+        if out < 1.0 && speck > 0.9 + 0.09 * out && bubble > 0.45 {
+            return px(0, 0.55 + 0.3 * speck, 0.4, 0.6);
+        }
+        Px { pal: 0, t: 0.0, h: 0.0, rough: 1.0, alpha: 0.0 }
+    });
+    a.finish(1.5, 0.4)
+}
+
 /// Every block texture in the new look, by tile name.
 pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     vec![
@@ -689,6 +720,7 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
         ("wool_blue", wool("wool_blue", WOOL_BLUE)),
         ("wool_yellow", wool("wool_yellow", WOOL_YELLOW)),
         ("bedrock", bedrock()),
+        ("foam", foam()),
     ]
     .into_iter()
     .chain(props::tiles())

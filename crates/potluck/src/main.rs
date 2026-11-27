@@ -63,7 +63,7 @@ fn main() {
         .init_resource::<mesh::Cover>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<ui::Labels>()
-        .add_systems(Startup, (ui::fonts, setup, ui::spawn_hud).chain())
+        .add_systems(Startup, ((ui::fonts, setup, ui::spawn_hud).chain(), render::motes::setup))
         .add_systems(
             Update,
             (
@@ -78,7 +78,7 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
-                (render::sky, render::lanterns, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::lanterns, render::flicker, render::motes::motes, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),

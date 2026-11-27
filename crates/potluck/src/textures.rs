@@ -59,6 +59,10 @@ pub struct BlockAtlas {
     /// Roughness in green, as `StandardMaterial` reads it.
     pub rough: Handle<Image>,
     pub glow: Handle<Image>,
+    /// How much ambient light a face gets for the sky it sees
+    /// (`mesh::sky_ambient`), read by the chunk materials as their
+    /// occlusion texture through the second UVs.
+    pub sky: Handle<Image>,
     tiles: HashMap<&'static str, u16>,
     /// Each tile's colour at full size, for item icons in the UI.
     pub icons: HashMap<&'static str, Handle<Image>>,
@@ -765,9 +769,30 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         normal: images.add(atlas_image(&normals, full, false)),
         rough: images.add(atlas_image(&roughs, full, false)),
         glow: images.add(atlas_image(&glows, full, true)),
+        sky: images.add(sky_image()),
         tiles,
         icons,
     }
+}
+
+/// The ambient light curve as a strip of texels, blended between.
+fn sky_image() -> Image {
+    let n = crate::mesh::SKY_STEPS;
+    let data: Vec<u8> = (0..n)
+        .flat_map(|i| {
+            let v = (crate::mesh::sky_ambient(i as f32 / (n - 1) as f32) * 255.0).round() as u8;
+            [v, v, v, 255]
+        })
+        .collect();
+    let mut image = Image::new(
+        Extent3d { width: n as u32, height: 1, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    image
 }
 
 /// Writes every drawn tile to `dir` as PPM pictures at its own size:
