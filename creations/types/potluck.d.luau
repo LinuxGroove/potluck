@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.7, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1
+-- @potluck/world 0.9, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1
 
 export type Position = vector | { number }
 
@@ -29,6 +29,7 @@ export type CreatureDef = {
 	home: (string | Position)?,
 	rideable: boolean?,
 	seat: number?,
+	flies: boolean?,
 }
 
 export type Creature = {
@@ -45,6 +46,9 @@ export type Creature = {
 	distance_to: (self: Creature, pos: Position) -> number,
 	throw_rider: (self: Creature, force: number?) -> boolean,
 	remove: (self: Creature) -> (),
+	on_ground: (self: Creature) -> boolean,
+	climb: (self: Creature, speed: number) -> boolean,
+	become: (self: Creature, kind: any) -> (),
 	[string]: any,
 }
 
@@ -81,6 +85,10 @@ export type World = {
 	heal: (player: Player | number, amount: number) -> boolean,
 	-- 0.6
 	healing: (player: Player | number, rate: number) -> boolean,
+	-- 0.8
+	held: (player: Player | number) -> string?,
+	kind: (block: string) -> "soft" | "hard" | "wood" | "plant" | "glass" | "water" | "air",
+	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number? }?) -> (),
 }
 
 export type Score = { name: string, value: number }

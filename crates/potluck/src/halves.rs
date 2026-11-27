@@ -26,7 +26,7 @@ const LOAD_BUDGET: Duration = Duration::from_millis(300);
 /// What `@potluck/world` does only on the host, where the world is.
 const HOST_ONLY: &[&str] = &[
     "creature", "block", "set_block", "top", "find_block", "find_light", "players", "nearest_player", "spawn", "creatures", "say", "on", "pockets", "has", "take",
-    "give", "hurt", "heal", "healing",
+    "give", "hurt", "heal", "healing", "held", "digging", "kind",
 ];
 
 /// What a half asked for since it was last looked at.

@@ -52,6 +52,10 @@ pub const SANDSTONE_BRICKS: BlockId = 43;
 pub const COLUMN: BlockId = 44;
 pub const BRAZIER: BlockId = 45;
 pub const FENCE: BlockId = 46;
+// 47 to 63 are kept for the looks; 64 and up are for the creations' work.
+pub const WOODEN_PICKAXE: BlockId = 64;
+pub const STONE_SWORD: BlockId = 71;
+pub const BALLOON_BASKET: BlockId = 72;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
@@ -80,6 +84,8 @@ pub struct Block {
     pub model: &'static [Cuboid],
     /// Whether bodies bump into a model (a table, but not a candle).
     pub solid: bool,
+    /// Something to carry and hold (a tool, a sword) that's never placed.
+    pub item: bool,
 }
 
 /// Which way a side faces: east, west, up, down, south, north.
@@ -148,12 +154,17 @@ impl Cuboid {
 }
 
 const fn b(name: &'static str, faces: [&'static str; 3], shape: Shape, hardness: f32) -> Block {
-    Block { name, faces, shape, light: false, hardness, model: &[], solid: false }
+    Block { name, faces, shape, light: false, hardness, model: &[], solid: false, item: false }
 }
 
 /// A block made of boxes.
 const fn m(name: &'static str, faces: [&'static str; 3], model: &'static [Cuboid], solid: bool, hardness: f32) -> Block {
-    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid }
+    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid, item: false }
+}
+
+/// Something to hold, never placed: its tile is its icon.
+const fn item(name: &'static str, tile: &'static str) -> Block {
+    Block { name, faces: [tile, tile, tile], shape: Shape::Air, light: false, hardness: 0.0, model: &[], solid: false, item: true }
 }
 
 const fn lit(mut b: Block) -> Block {
@@ -209,6 +220,7 @@ const BRAZIER_BOXES: &[Cuboid] = &[
     bx([3, 0, 11], [5, 6, 13]),
     bx([11, 0, 11], [13, 6, 13]),
 ];
+const BASKET_BOXES: &[Cuboid] = &[bx([2, 0, 2], [14, 10, 14]), bx([1, 10, 1], [15, 12, 15])];
 const FENCE_BOXES: &[Cuboid] = &[
     bx([6, 0, 6], [10, 16, 10]).tex(["log_top", "", "log_top"]),
     bx([10, 6, 7], [16, 9, 9]).when(When::Joins(0)),
@@ -269,10 +281,44 @@ pub static BLOCKS: &[Block] = &[
     m("Column", ["column_top", "column", "column_top"], COLUMN_BOXES, true, 1.3),
     lit(m("Brazier", ["brazier_top", "brazier", "brazier_top"], BRAZIER_BOXES, true, 0.8)),
     m("Fence", ["planks", "fence", "planks"], FENCE_BOXES, true, 0.6),
+    // 47 to 63: kept for the looks
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    // 64 on: tools and swords (the tools and gloomlings creations say what they do)
+    item("Wooden pickaxe", "pickaxe_wood"),
+    item("Stone pickaxe", "pickaxe_stone"),
+    item("Wooden axe", "axe_wood"),
+    item("Stone axe", "axe_stone"),
+    item("Wooden shovel", "shovel_wood"),
+    item("Stone shovel", "shovel_stone"),
+    item("Wooden sword", "sword_wood"),
+    item("Stone sword", "sword_stone"),
+    // 72: put down, it becomes a hot air balloon (the balloon creation)
+    m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
 ];
 
 pub fn block(id: BlockId) -> &'static Block {
     BLOCKS.get(id as usize).unwrap_or(&BLOCKS[0])
+}
+
+/// Something to hold (a tool), never placed.
+pub fn is_item(id: BlockId) -> bool {
+    block(id).item
 }
 
 pub fn shape(id: BlockId) -> Shape {

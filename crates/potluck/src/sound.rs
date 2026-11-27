@@ -122,7 +122,7 @@ pub fn material(id: BlockId) -> Material {
         Material::Glass
     } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet"]) {
         Material::Plant
-    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door"]) {
+    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
         Material::Wood
     } else if has(&["stone", "brick", "cobble", "bedrock", "column", "brazier", "pot", "lantern", "slate", "tile", "ore", "iron"]) {
         Material::Hard
@@ -131,7 +131,29 @@ pub fn material(id: BlockId) -> Material {
     }
 }
 
+/// The kinds of block a tool can dig faster (`world.digging`), in the order
+/// of a tool's speeds.
+pub const DIG_KINDS: [&str; 5] = ["soft", "hard", "wood", "plant", "glass"];
+
 impl Material {
+    /// Its name for creations (`world.kind`): one of `DIG_KINDS`, or water or air.
+    pub fn name(self) -> &'static str {
+        match self {
+            Material::Soft => "soft",
+            Material::Hard => "hard",
+            Material::Wood => "wood",
+            Material::Plant => "plant",
+            Material::Glass => "glass",
+            Material::Water => "water",
+            Material::Air => "air",
+        }
+    }
+
+    /// Where it is in a tool's speeds, for the kinds that can be dug.
+    pub fn dig(self) -> Option<usize> {
+        DIG_KINDS.iter().position(|k| *k == self.name())
+    }
+
     pub fn step(self) -> Option<&'static str> {
         match self {
             Material::Soft => Some("step"),

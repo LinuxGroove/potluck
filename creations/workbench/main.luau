@@ -20,9 +20,11 @@ local BENCH = "Table" -- the block you craft at
 -- A recipe: what it takes, what it makes and how many.
 type Recipe = { want: { [string]: number }, give: string, n: number }
 
--- Up to four kinds of thing, each with up to four recipes (a question has
--- four choices at most).
-local KINDS = { "Building", "Furniture", "Lights", "Garden and farm" }
+-- Up to eight kinds of thing, each with up to eight recipes (a question has
+-- eight choices at most). Tools and swords do their work through the Tools
+-- creation, and a basket fills up into a balloon through the Hot air
+-- balloon creation.
+local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel" }
 local RECIPES: { [string]: { Recipe } } = {
 	Building = {
 		{ want = { ["Oak log"] = 1 }, give = "Planks", n = 4 },
@@ -46,6 +48,22 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Dirt = 3 }, give = "Clay pot", n = 1 },
 		{ want = { Wheat = 4 }, give = "Hay", n = 1 },
 		{ want = { Dirt = 4 }, give = "Farmland", n = 4 },
+	},
+	Tools = {
+		{ want = { Planks = 3 }, give = "Wooden pickaxe", n = 1 },
+		{ want = { Planks = 3 }, give = "Wooden axe", n = 1 },
+		{ want = { Planks = 2 }, give = "Wooden shovel", n = 1 },
+		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone pickaxe", n = 1 },
+		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone axe", n = 1 },
+		{ want = { Cobblestone = 1, Planks = 2 }, give = "Stone shovel", n = 1 },
+	},
+	Weapons = {
+		{ want = { Planks = 2 }, give = "Wooden sword", n = 1 },
+		{ want = { Cobblestone = 2, Planks = 1 }, give = "Stone sword", n = 1 },
+	},
+	-- put down, a basket fills up into a hot air balloon (the balloon creation)
+	Travel = {
+		{ want = { ["Cream wool"] = 6, Planks = 4, Lantern = 1 }, give = "Balloon basket", n = 1 },
 	},
 }
 

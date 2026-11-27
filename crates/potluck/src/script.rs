@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 7), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 9), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -48,7 +48,9 @@ pub const MAX_METERS: usize = 3;
 /// The fastest `world.healing` makes a player heal by themselves.
 pub const MAX_HEALING: f64 = 4.0;
 /// Choices a panel can offer.
-pub const MAX_CHOICES: usize = 4;
+pub const MAX_CHOICES: usize = 8;
+/// The most `world.digging` speeds a kind of block up by.
+pub const MAX_DIGGING: f64 = 10.0;
 /// Panels waiting on one player's screen, from every creation together.
 pub const MAX_PANELS: usize = 8;
 /// Questions one creation may have waiting for answers, over every player.
@@ -90,6 +92,8 @@ pub struct KindDef {
     pub speed: f32,
     pub rideable: bool,
     pub seat: f32,
+    /// Floats with no gravity, as `creature:climb` says (world 0.9).
+    pub flies: bool,
     pub count: u32,
     pub home: Vec3,
 }
@@ -141,6 +145,14 @@ pub struct GameShared {
     pub healing: BTreeMap<(u32, String), f32>,
     /// Players whose healing changed since the host last looked.
     pub healing_changed: BTreeSet<u32>,
+    /// What each player has in hand, as their game last said (`world.held`).
+    pub held: HashMap<u32, blocks::BlockId>,
+    /// How much faster holding something digs each kind of block
+    /// (`world.digging`): (what's held, creation) to speeds in the order of
+    /// `sound::DIG_KINDS`.
+    pub digging: BTreeMap<(blocks::BlockId, String), [f32; 5]>,
+    /// Whether `digging` changed since the host last sent it.
+    pub digging_changed: bool,
 }
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
@@ -796,6 +808,66 @@ pub(crate) fn player_table(lua: &Lua, p: &PlayerInfo) -> mlua::Result<Table> {
     Ok(t)
 }
 
+/// A Luau value as Luau would write it, kept short: for the dev bridge.
+pub(crate) fn show(v: &Value) -> String {
+    fn go(v: &Value, depth: u32, out: &mut String) {
+        if out.len() > 2000 {
+            return;
+        }
+        match v {
+            Value::Nil => out.push_str("nil"),
+            Value::Boolean(b) => out.push_str(&b.to_string()),
+            Value::Integer(i) => out.push_str(&i.to_string()),
+            Value::Number(n) => out.push_str(&n.to_string()),
+            Value::String(s) => out.push_str(&format!("{:?}", s.to_string_lossy())),
+            Value::Vector(v) => out.push_str(&format!("vector({}, {}, {})", v.x(), v.y(), v.z())),
+            Value::Table(t) if depth < 4 => {
+                out.push('{');
+                let mut first = true;
+                let n = t.raw_len();
+                for i in 1..=n {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    go(&t.raw_get::<Value>(i).unwrap_or(Value::Nil), depth + 1, out);
+                }
+                for (k, val) in t.pairs::<Value, Value>().flatten() {
+                    if matches!(k, Value::Integer(i) if i >= 1 && i as usize <= n) {
+                        continue;
+                    }
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    match &k {
+                        Value::String(s) => out.push_str(&s.to_string_lossy()),
+                        other => {
+                            out.push('[');
+                            go(other, depth + 1, out);
+                            out.push(']');
+                        }
+                    }
+                    out.push_str(" = ");
+                    go(&val, depth + 1, out);
+                }
+                out.push('}');
+            }
+            Value::Table(_) => out.push_str("{...}"),
+            Value::Function(_) => out.push_str("function"),
+            other => out.push_str(other.type_name()),
+        }
+    }
+    let mut out = String::new();
+    go(v, 0, &mut out);
+    if out.len() > 2000 {
+        let cut = (0..=2000).rev().find(|&i| out.is_char_boundary(i)).unwrap_or(0);
+        out.truncate(cut);
+        out.push_str(" ...");
+    }
+    out
+}
+
 /// Copies a creature's own fields out of the sandbox, to keep across a reload.
 pub(crate) fn to_json(v: &Value, depth: u32) -> Option<serde_json::Value> {
     use serde_json::Value as J;
@@ -910,6 +982,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
         speed: def.get::<Option<f32>>("speed")?.unwrap_or(2.0).clamp(0.0, 20.0),
         rideable: def.get::<Option<bool>>("rideable")?.unwrap_or(false),
         seat: def.get::<Option<f32>>("seat")?.unwrap_or(half.y).clamp(0.2, 5.0),
+        flies: def.get::<Option<bool>>("flies")?.unwrap_or(false),
         count: def.get::<Option<u32>>("count")?.unwrap_or(1).min(32),
         home,
         parts,
@@ -1119,6 +1192,56 @@ impl Vm {
                             sh.healing_changed.insert(pid);
                         }
                         Ok(true)
+                    })?,
+                )?;
+            }
+            // world 0.8: what players hold, and tools that dig faster
+            {
+                let sh = shared.clone();
+                world.set(
+                    "held",
+                    lua.create_function(move |_, player: Value| {
+                        let pid = pid_of(&player)?;
+                        let b = sh.lock().unwrap().held.get(&pid).copied().unwrap_or(blocks::AIR);
+                        Ok((b != blocks::AIR).then(|| blocks::block(b).name))
+                    })?,
+                )?;
+                world.set(
+                    "kind",
+                    lua.create_function(move |_, name: String| {
+                        let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+                        Ok(crate::sound::material(id).name())
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "digging",
+                    lua.create_function(move |_, (name, speeds): (String, Option<Table>)| {
+                        let id = carried_block(&name)?;
+                        let mut by_kind = [1.0f32; 5];
+                        if let Some(t) = &speeds {
+                            for pair in t.pairs::<String, f64>() {
+                                let (kind, n) = pair.map_err(|_| bad("digging takes speeds by kind, like { hard = 4 }"))?;
+                                let Some(k) = crate::sound::DIG_KINDS.iter().position(|d| *d == kind) else {
+                                    return Err(bad(format!("digging knows {}, not \"{kind}\"", crate::sound::DIG_KINDS.join(", "))));
+                                };
+                                if !n.is_finite() || !(0.0..=MAX_DIGGING).contains(&n) {
+                                    return Err(bad(format!("a digging speed is a number from 0 to {MAX_DIGGING} (1 is as usual)")));
+                                }
+                                by_kind[k] = n as f32;
+                            }
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        let key = (id, me.clone());
+                        let now = speeds.is_some().then_some(by_kind).filter(|s| *s != [1.0; 5]);
+                        if sh.digging.get(&key).copied() != now {
+                            match now {
+                                Some(s) => sh.digging.insert(key, s),
+                                None => sh.digging.remove(&key),
+                            };
+                            sh.digging_changed = true;
+                        }
+                        Ok(())
                     })?,
                 )?;
             }
@@ -1531,6 +1654,9 @@ impl Vm {
             world.set("set_block", s.create_function(move |_, (p, name): (Value, String)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?;
                 let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+                if blocks::is_item(id) {
+                    return Err(bad(format!("{name} is something to hold, not a block to put down")));
+                }
                 Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
@@ -1655,6 +1781,42 @@ impl Vm {
                     if b.on_ground {
                         b.vel.y = 7.0 * power.unwrap_or(1.0).clamp(0.0, 3.0);
                     }
+                }
+                Ok(())
+            })?)?;
+            // world 0.9: fliers, and changing into another kind
+            base.set("climb", s.create_function(move |_, (me, speed): (Table, f32)| {
+                let id = id_of(&me)?;
+                if !speed.is_finite() {
+                    return Err(bad("climb takes a speed in blocks a second"));
+                }
+                let mut ctx = c.borrow_mut();
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(false) };
+                if !b.flies {
+                    return Ok(false);
+                }
+                b.climb = speed.clamp(-crate::creatures::MAX_CLIMB, crate::creatures::MAX_CLIMB);
+                Ok(true)
+            })?)?;
+            base.set("on_ground", s.create_function(move |_, me: Table| {
+                let id = id_of(&me)?;
+                Ok(c.borrow().herd.bodies.get(&id).is_some_and(|b| b.on_ground))
+            })?)?;
+            base.set("become", s.create_function(move |lua, (me, kind): (Table, Table)| {
+                let id = id_of(&me)?;
+                let name: String = kind.get::<Option<String>>("name")?.ok_or_else(|| bad("become needs a creature made with world.creature"))?;
+                let mut ctx = c.borrow_mut();
+                let def = ctx.kinds.iter().find(|k| k.name == name).cloned().ok_or_else(|| bad("become needs a creature made with world.creature in this creation"))?;
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(()) };
+                if b.kind != def.name {
+                    b.kind = def.name.clone();
+                    b.restyle(&def);
+                    b.rev += 1;
+                    // its handlers are the new kind's from now on
+                    let mt = lua.create_table()?;
+                    mt.set("__index", kind)?;
+                    me.set_metatable(Some(mt))?;
+                    me.raw_set("kind", def.name.as_str())?;
                 }
                 Ok(())
             })?)?;
@@ -1814,6 +1976,11 @@ impl Vm {
         }
     }
 
+    /// The memory its sandbox uses, in bytes.
+    pub fn memory(&self) -> usize {
+        self.lua.used_memory()
+    }
+
     /// The creatures' own fields, to carry over a reload.
     pub fn memories(&self) -> HashMap<u64, serde_json::Value> {
         let mut m = HashMap::new();
@@ -1889,6 +2056,12 @@ impl Scripts {
         let slowed: Vec<u32> = sh.healing.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
         sh.healing.retain(|k, _| k.1 != id);
         sh.healing_changed.extend(slowed);
+        // and its tools dig as usual
+        let before = sh.digging.len();
+        sh.digging.retain(|k, _| k.1 != id);
+        if sh.digging.len() != before {
+            sh.digging_changed = true;
+        }
         drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
     }
@@ -2078,6 +2251,32 @@ impl Scripts {
         changed.into_iter().map(|pid| (pid, sh.healing.iter().filter(|(k, _)| k.0 == pid).map(|(_, r)| *r).product::<f32>().clamp(0.0, MAX_HEALING as f32))).collect()
     }
 
+    /// What a player has in hand now, as their game says (`world.held`).
+    pub fn set_held(&mut self, player: u32, b: blocks::BlockId) {
+        self.shared.lock().unwrap().held.insert(player, b);
+    }
+
+    /// How much faster each thing held digs each kind of block, every
+    /// creation's `world.digging` multiplied together: what every game is
+    /// told, in order of what's held.
+    pub fn digging(&self) -> Vec<(blocks::BlockId, [f32; 5])> {
+        let sh = self.shared.lock().unwrap();
+        let mut out: BTreeMap<blocks::BlockId, [f32; 5]> = BTreeMap::new();
+        for ((b, _), s) in &sh.digging {
+            let e = out.entry(*b).or_insert([1.0; 5]);
+            for k in 0..5 {
+                e[k] = (e[k] * s[k]).clamp(0.0, MAX_DIGGING as f32);
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// `digging()`, when it changed since the last time this was asked.
+    pub fn digging_changes(&mut self) -> Option<Vec<(blocks::BlockId, [f32; 5])>> {
+        let changed = std::mem::take(&mut self.shared.lock().unwrap().digging_changed);
+        changed.then(|| self.digging())
+    }
+
     /// The time of day creations see (`world.daytime`).
     pub fn set_day(&mut self, time: f32) {
         self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
@@ -2142,6 +2341,31 @@ impl Scripts {
         }
     }
 
+    /// Runs a few lines of Luau in a running creation's sandbox, as if they
+    /// were part of its code, with one tick's time: what they printed and
+    /// returned (the dev bridge's `run`). An error here is the caller's, so
+    /// it doesn't count toward pausing the creation.
+    pub fn run(&mut self, voxels: &mut Voxels, herd: &mut Herd, id: &str, code: &str) -> Result<(Vec<String>, String), String> {
+        let players = self.players.clone();
+        let time = self.time.max(0.001);
+        let vm = self.vms.get_mut(id).ok_or_else(|| format!("{id} isn't running in this world"))?;
+        // what it prints goes to its log as usual, and back to the caller
+        let kept = std::mem::take(&mut vm.log);
+        let mut log = Vec::new();
+        let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
+            let vals: mlua::MultiValue = lua.load(code).set_name("=run").eval()?;
+            Ok(vals.iter().map(show).collect::<Vec<_>>().join(", "))
+        });
+        let mut printed = std::mem::replace(&mut vm.log, kept);
+        printed.extend(log);
+        vm.log.extend(printed.iter().cloned());
+        if vm.log.len() > 200 {
+            let n = vm.log.len() - 200;
+            vm.log.drain(..n);
+        }
+        r.map(|v| (printed, v))
+    }
+
     /// Ticks every creation's creatures, ten times a second.
     pub fn tick(&mut self, voxels: &mut Voxels, herd: &mut Herd, dt: f32) {
         self.time += dt as f64;
@@ -2166,6 +2390,7 @@ impl Scripts {
                 sh.ui.forget_player(p.id);
                 sh.healing.retain(|k, _| k.0 != p.id);
                 sh.healing_changed.remove(&p.id);
+                sh.held.remove(&p.id);
             }
             sh.ui.joined.extend(joined.iter().map(|p| p.id));
             sh.ui.time = time;

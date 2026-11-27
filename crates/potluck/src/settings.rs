@@ -43,6 +43,9 @@ pub struct Settings {
     pub subtitles: bool,
     /// Fill the screen, or play in a window (F11 switches).
     pub fullscreen: bool,
+    /// The dev bridge: coding helpers on this computer can reload, test and
+    /// look at creations (`bridge.rs`). Off unless turned on.
+    pub dev_bridge: bool,
 }
 
 /// A creation's action on buttons the player chose.
@@ -75,6 +78,7 @@ impl Default for Settings {
             volume: 0.8,
             subtitles: false,
             fullscreen: true,
+            dev_bridge: false,
         }
     }
 }

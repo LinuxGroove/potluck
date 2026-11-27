@@ -230,7 +230,7 @@ macro_rules! base {
     };
 }
 
-const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger"];
+const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon"];
 
 pub const AGENTS_MD: &str = include_str!("../../../creations/AGENTS.md");
 pub const TYPES: &str = include_str!("../../../creations/types/potluck.d.luau");
@@ -252,6 +252,11 @@ pub struct Library {
 
 fn mine_dir() -> PathBuf {
     data_dir().join("creations")
+}
+
+/// The folder the player's own creations are in, one folder each.
+pub fn my_folder() -> PathBuf {
+    mine_dir()
 }
 
 fn tweaks_path() -> PathBuf {
@@ -420,6 +425,42 @@ impl Library {
                 }
             }
         }
+    }
+
+    /// Reads one of the player's creations from its folder again, or finds
+    /// a new one there, without waiting for the watcher (the dev bridge
+    /// asks). A new folder gets AGENTS.md and the types, as a remix does.
+    /// True when its files changed.
+    pub fn read_mine(&mut self, id: &str) -> Result<bool, String> {
+        if !safe_name(id) || id.contains('/') {
+            return Err(format!("\"{id}\" isn't a creation's folder name"));
+        }
+        let dir = mine_dir().join(id);
+        let toml_text = std::fs::read_to_string(dir.join("potluck.toml")).map_err(|_| format!("there's no {} with a potluck.toml", dir.display()))?;
+        toml::from_str::<Manifest>(&toml_text).map_err(|e| format!("potluck.toml: {}", e.message()))?;
+        if let Some(old) = self.list.get(id).filter(|c| !matches!(c.origin, Origin::Mine | Origin::Base)) {
+            return Err(format!("{} from another world has that id: give the folder another name", old.manifest.name));
+        }
+        for (name, text) in [("AGENTS.md", AGENTS_MD), ("types/potluck.d.luau", TYPES)] {
+            let p = dir.join(name);
+            if !p.exists() {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&p, text);
+            }
+        }
+        let mut c = load_dir(id, &dir).ok_or_else(|| format!("couldn't read {}", dir.display()))?;
+        let changed = match self.list.get(id) {
+            Some(old) => {
+                c.knobs = old.knobs.clone();
+                c.code = old.code.clone();
+                old.files != c.files || old.origin != Origin::Mine
+            }
+            None => true,
+        };
+        self.list.insert(id.to_string(), c);
+        Ok(changed)
     }
 
     /// Copies a creation into the player's folder to change as their own.

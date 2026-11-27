@@ -5355,6 +5355,7 @@ dependencies = [
  "bevy",
  "ctrlc",
  "ed25519-dalek",
+ "image",
  "mlua",
  "potluck-share",
  "qrcode",

@@ -1,13 +1,13 @@
 name = "Gloomlings"
 by = "Potluck"
 kind = "creature"
-about = "Little shadows that come out after dark and nip at anyone out in survival. They can't bear light, so a lantern by the door keeps them off, and they're gone by morning."
+about = "Little shadows that come out after dark and nip at anyone out in survival. They can't bear light, so a lantern by the door keeps them off, and they're gone by morning. Bop one twice to pop it, or once with a sword."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.4"
+world = "0.8"
 tweak = "0.1"
 ui = "0.1"
 sound = "0.1"

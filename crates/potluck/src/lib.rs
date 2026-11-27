@@ -3,6 +3,7 @@
 //! everything here; only the game draws.
 
 pub mod blocks;
+pub mod bridge;
 pub mod creations;
 pub mod creatures;
 pub mod demo;
@@ -67,6 +68,10 @@ pub fn sim(app: &mut App, seed: u32) {
     // sounds, where there's a speaker: the game, not the server
     if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
         sound::add(app);
+    }
+    // the dev bridge, for coding helpers: where there's a screen and a player
+    if app.is_plugin_added::<bevy::window::WindowPlugin>() {
+        bridge::add(app);
     }
 }
 
