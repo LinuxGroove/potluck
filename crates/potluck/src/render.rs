@@ -129,7 +129,7 @@ pub struct Haze;
 #[derive(Component)]
 pub struct LanternLight;
 
-pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -> BlockMaterials {
+pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, rt: Raytraced) -> BlockMaterials {
     let solid = StandardMaterial {
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
@@ -140,8 +140,15 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
         reflectance: 0.3,
         ..default()
     };
-    // only glowing blocks get a glowing material (see `mesh::ChunkMesh`)
-    let glow = StandardMaterial { emissive_texture: Some(atlas.glow.clone()), emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * 600.0, ..solid.clone() };
+    // only glowing blocks get a glowing material (see `mesh::ChunkMesh`).
+    // Drawn normally, glow skips the eye's exposure; ray traced, it's real
+    // light that goes through it like everything else, and it's all the
+    // light lanterns give there, so it's brighter
+    let glow = StandardMaterial {
+        emissive_texture: Some(atlas.glow.clone()),
+        emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * if rt.0 { 2400.0 } else { 600.0 },
+        ..solid.clone()
+    };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
     // water reflects about 2% straight on (reflectance 0.35) and sends back
     // little light from inside, so its colour is deep and the sky's

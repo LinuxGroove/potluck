@@ -27,8 +27,9 @@ fn main() {
         primary_window: Some(Window {
             title: "Potluck".into(),
             resolution: WindowResolution::new(window.x, window.y),
-            // --no-vsync to see how fast a card really draws
-            present_mode: if args.iter().any(|a| a == "--no-vsync") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
+            // --no-vsync to see how fast a card really draws; the tools draw
+            // offscreen at their own pace, so they never wait for the screen
+            present_mode: if offscreen || args.iter().any(|a| a == "--no-vsync") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
             ..default()
         }),
         ..default()
@@ -174,9 +175,9 @@ fn setup(
     offscreen: Option<Res<OffscreenSize>>,
 ) {
     let atlas = textures::build(&mut images);
-    commands.insert_resource(render::make_materials(&atlas, &mut mats));
-    commands.insert_resource(atlas);
     let rt = render::Raytraced::new(&settings, device.as_deref());
+    commands.insert_resource(render::make_materials(&atlas, &mut mats, rt));
+    commands.insert_resource(atlas);
     commands.insert_resource(rt);
     let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
     render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
