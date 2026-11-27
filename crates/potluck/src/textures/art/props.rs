@@ -10,7 +10,7 @@ const IRON: &[u32] = &[0x16171a, 0x222428, 0x30333a, 0x40444b, 0x53585f, 0x6a6f7
 const BRASS: &[u32] = &[0x3d2a0f, 0x5a3f16, 0x7c5a1f, 0x9f772b, 0xc0953b, 0xd9b257, 0xeccd7d];
 // red enough that the glow map (red plus green over 300) leaves it out
 const WAX: &[u32] = &[0x3e1010, 0x581715, 0x721d1a, 0x8a241f, 0xa02d25, 0xb43a2d, 0xc24a37];
-const FLAME: &[u32] = &[0x9c2a0c, 0xd44a12, 0xf3781e, 0xffa232, 0xffc95a, 0xffe7a0, 0xfff8e0];
+pub(super) const FLAME: &[u32] = &[0x9c2a0c, 0xd44a12, 0xf3781e, 0xffa232, 0xffc95a, 0xffe7a0, 0xfff8e0];
 const COALS: &[u32] = &[0x150b09, 0x2a120c, 0x4d1a0e, 0x8a2a10, 0xc94a16, 0xf07d22, 0xffb244, 0xffe08a];
 const CLAY: &[u32] = &[0x4a2416, 0x64301c, 0x7e3d24, 0x974c2d, 0xae5e39, 0xc27449, 0xd38c5f];
 const CLAY_PAINT: &[u32] = &[0x2b2a33, 0x3b3b47, 0xd9cbb0];
@@ -215,7 +215,7 @@ fn candle() -> Tex {
 
 /// A flame in the box 7 to 9 across and 7 to 11 up (pixels 28 to 36 and
 /// rows 20 to 36): a wick, a white core and orange round it.
-fn flame_px(x: f32, y: f32) -> Option<Px> {
+pub(super) fn flame_px(x: f32, y: f32) -> Option<Px> {
     let (cx, top, bottom) = (31.5, 20.0, 35.5);
     if !(top..=bottom).contains(&y) {
         return None;

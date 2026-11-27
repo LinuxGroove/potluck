@@ -2968,13 +2968,14 @@ fn a_table_is_a_workbench_for_survival_players() {
     assert!(asked(&scripts, 7).is_some(), "using the table again asks again");
     // a choice too long to fit says what it takes in the question
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
-    assert_eq!(panel.choices[1], "1 Lantern", "{:?}", panel.choices);
+    assert!(panel.choices[0].contains("Torch"), "torches come first: {:?}", panel.choices);
+    assert_eq!(panel.choices[2], "1 Lantern", "{:?}", panel.choices);
     assert!(panel.text.contains("1 Lantern takes 1 Glass and 2 Cobblestone."), "{}", panel.text);
-    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(1)).unwrap();
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
     assert!(panel.text.starts_with("Made 1 Lantern."), "{}", panel.text);
     assert_eq!((scripts.carried(7, b("Lantern")), scripts.carried(7, glass), scripts.carried(7, cobble)), (1, 0, 0));
     // one she can't pay for takes nothing
-    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(3)).unwrap();
     assert!(panel.text.starts_with("You'll need 1 Oak log and 4 Cobblestone for that."), "{}", panel.text);
     assert_eq!(scripts.carried(7, oak), 1);
     answer(&mut scripts, &mut voxels, &mut herd, None);
@@ -2989,7 +2990,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     let inputs = [
         vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone"],
         vec!["Planks"],
-        vec!["Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
+        vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat"],
         vec!["Planks", "Cobblestone"],
         vec!["Planks", "Cobblestone"],
@@ -2997,7 +2998,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
-        let carry: Vec<_> = want.iter().map(|n| (b(n), 64)).collect();
+        let carry: Vec<_> = want.iter().map(|n| (crate::items::by_name(n).unwrap(), 64)).collect();
         scripts.carry(7, true, &carry, 1000);
         scripts.use_block(7, at, table);
         run(&mut scripts, &mut voxels, &mut herd, 0.2);
@@ -3208,7 +3209,7 @@ print(pcall(ui.meter, 7, "", 0.5) and "blank ok" or "no blank")
 /// hungry, an empty belly stops healing and a full one speeds it up.
 #[test]
 fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
-    use crate::blocks::by_name;
+    use crate::blocks::{by_name, GLASS, STONE};
     home();
     let mut hunger = Library::load().list.remove("hunger").expect("the base game has hunger");
     hunger.knobs.insert("minutes".into(), KnobValue::Number(5.0));
@@ -3289,13 +3290,13 @@ fn tools_dig_faster_wear_out_and_break() {
     let digging = scripts.digging_changes().expect("the tools say how they dig");
     assert_eq!(digging.len(), 6, "{digging:?}");
     let speeds = |b| digging.iter().find(|d| d.0 == b).map(|d| d.1).unwrap();
-    assert_eq!(speeds(pick), [1.0, 2.5, 1.0, 1.0, 1.0], "a wooden pickaxe digs stone faster");
-    assert_eq!(speeds(axe)[2], 4.0, "a stone axe chops faster");
+    assert_eq!(speeds(pick), crate::items::Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 }, "a wooden pickaxe digs stone faster");
+    assert_eq!((speeds(axe).speeds[2], speeds(axe).level), (4.0, 2), "a stone axe chops faster, and reaches further");
     assert!(scripts.digging_changes().is_none(), "only told again when it changes");
 
     // on the player's game: faster with the right tool, as usual by hand or with the wrong one
     let mut me = Me::default();
-    me.digging = digging.iter().copied().collect();
+    me.rules.digging = digging.iter().copied().collect();
     me.pockets.0[0] = crate::items::Slot { thing: pick, count: 1 };
     let (oak, dirt) = (by_name("Oak log").unwrap(), by_name("Dirt").unwrap());
     assert_eq!((me.dig_speed(STONE), me.dig_speed(oak), me.dig_speed(dirt)), (2.5, 1.0, 1.0));
@@ -3367,14 +3368,112 @@ end)
     for want in ["kinds hard wood soft plant glass water air", "held nil", "no mud", "no air", "no kind", "no fast", "no slow"] {
         assert!(log.contains(want), "{want}: {log}");
     }
-    assert_eq!(scripts.digging_changes(), Some(vec![(STONE.into(), [1.0, 3.0, 1.0, 1.0, 1.0])]), "said twice the same, told once");
+    assert_eq!(scripts.digging_changes(), Some(vec![(STONE.into(), crate::items::Digging { speeds: [1.0, 3.0, 1.0, 1.0, 1.0], level: 0 })]), "said twice the same, told once");
     scripts.set_held(7, sword);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let log = scripts.vms["test"].log.join("\n");
     assert!(log.contains("held now Wooden sword") && log.contains("no set"), "{log}");
     assert_eq!(scripts.digging_changes(), Some(vec![]), "nil takes it away");
     // what goes between devices
-    let m = Msg::Digging(vec![(pick, [1.0, 2.5, 1.0, 1.0, 1.0])]);
+    let m = Msg::Digging(vec![(pick, crate::items::Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 })]);
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+}
+
+#[test]
+fn ores_need_a_good_enough_pickaxe_and_break_into_what_they_hold() {
+    use crate::blocks::{by_name, GLASS, STONE};
+    use crate::items::{self, Digging, Drop, Rules};
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::Me;
+    let (coal, iron, chest) = (crate::blocks::COAL_ORE, crate::blocks::IRON_ORE, crate::blocks::OLD_CHEST);
+    assert_eq!((by_name("Coal ore"), by_name("Moonsilver ore"), by_name("Old chest"), by_name("Glowcap")), (Some(coal), Some(crate::blocks::MOONSILVER_ORE), Some(chest), Some(crate::blocks::GLOWCAP)));
+    assert_eq!((crate::sound::material(iron).name(), crate::sound::material(chest).name(), crate::sound::material(crate::blocks::GLOWCAP).name()), ("hard", "wood", "plant"));
+    assert_eq!((items::by_name("Raw iron"), items::stack(items::RAW_IRON), items::name(items::CRYSTAL)), (Some(items::RAW_IRON), 99, "Crystal"), "what ores give stacks as blocks do");
+
+    // the rules on their own: a level for the kinds a tool digs faster
+    let mut rules = Rules::default();
+    let (wood, stone) = (items::WOODEN_PICKAXE, items::STONE_PICKAXE);
+    rules.digging.insert(wood, Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 });
+    rules.digging.insert(stone, Digging { speeds: [1.0, 4.0, 1.0, 1.0, 1.0], level: 2 });
+    rules.digging.insert(items::STONE_AXE, Digging { speeds: [1.0, 1.0, 4.0, 1.0, 1.0], level: 2 });
+    rules.drops.insert(iron, Drop { gives: items::RAW_IRON, least: 1, most: 1, level: 2 });
+    rules.drops.insert(coal, Drop { gives: items::COAL, least: 1, most: 3, level: 1 });
+    rules.drops.insert(GLASS, Drop { gives: 0, least: 0, most: 0, level: 0 });
+    assert!(!rules.can_break(0, iron) && !rules.can_break(wood, iron) && rules.can_break(stone, iron));
+    assert!(!rules.can_break(items::STONE_AXE, iron), "an axe's level is for wood");
+    assert!(rules.can_break(0, STONE) && rules.can_break(0, GLASS), "blocks with no level break by hand");
+    assert_eq!(rules.tool_for(iron), Some(stone));
+    assert_eq!(crate::player::needs(&rules, iron), "Iron ore needs a stone pickaxe or better");
+    rules.digging.clear();
+    assert_eq!(crate::player::needs(&rules, iron), "Iron ore needs a better tool");
+    assert_eq!((rules.gives(coal, 0.0), rules.gives(coal, 0.5), rules.gives(coal, 1.0)), (Some((items::COAL, 1)), Some((items::COAL, 2)), Some((items::COAL, 3))));
+    assert_eq!((rules.gives(GLASS, 0.5), rules.gives(STONE, 0.5)), (None, Some((items::of_block(STONE), 1))), "nothing, or the block itself");
+
+    // the API, from creations
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.13")
+print(pcall(world.drops, "Mud", { gives = "Coal" }) and "mud ok" or "no mud")
+print(pcall(world.drops, "Raw iron", { gives = "Coal" }) and "item ok" or "no item")
+print(pcall(world.drops, "Air", {}) and "air ok" or "no air")
+print(pcall(world.drops, "Iron ore", { gives = "Water" }) and "water ok" or "no water")
+print(pcall(world.drops, "Iron ore", { gives = "Mud" }) and "gives ok" or "no gives")
+print(pcall(world.drops, "Iron ore", { count = 65 }) and "many ok" or "no many")
+print(pcall(world.drops, "Iron ore", { count = { 3, 1 } }) and "back ok" or "no back")
+print(pcall(world.drops, "Iron ore", { level = 10 }) and "level ok" or "no level")
+print(pcall(world.drops, "Iron ore", { colour = "red" }) and "colour ok" or "no colour")
+print(pcall(world.digging, "Stone pickaxe", { hard = 4, level = 1.5 }) and "half ok" or "no half")
+world.digging("Stone pickaxe", { hard = 4, level = 2 })
+world.drops("Iron ore", { gives = "Raw iron", level = 2 })
+world.drops("Coal ore", { gives = "Coal", count = { 1, 2 } })
+world.drops("Glass", { gives = false })
+world.drops("Gold ore", { level = 3 })
+"#;
+    scripts.start(&creation(code), &mut herd).unwrap();
+    let log = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{log}");
+    for want in ["no mud", "no item", "no air", "no water", "no gives", "no many", "no back", "no level", "no colour", "no half"] {
+        assert!(log.contains(want), "{want}: {log}");
+    }
+    let drops = scripts.drops_changes().expect("told what blocks give");
+    let gold = crate::blocks::GOLD_ORE;
+    assert_eq!(
+        drops,
+        vec![
+            (GLASS, Drop { gives: 0, least: 1, most: 1, level: 0 }),
+            (coal, Drop { gives: items::COAL, least: 1, most: 2, level: 0 }),
+            (iron, Drop { gives: items::RAW_IRON, least: 1, most: 1, level: 2 }),
+            (gold, Drop { gives: items::of_block(gold), least: 1, most: 1, level: 3 }),
+        ]
+    );
+    assert_eq!(scripts.digging_changes().map(|d| d[0].1.level), Some(2));
+    assert!(scripts.drops_changes().is_none(), "only told again when it changes");
+    // another creation that says it later has the last word, until it stops
+    let mut other = creation("local world = require(\"@potluck/world@0.13\")\nworld.drops(\"Iron ore\", { gives = \"Coal\" })");
+    other.id = "other".into();
+    scripts.start(&other, &mut herd).unwrap();
+    let rules = scripts.rules();
+    assert_eq!(rules.drops[&iron], Drop { gives: items::COAL, least: 1, most: 1, level: 0 });
+    scripts.stop("other", &mut herd);
+    assert_eq!(scripts.rules().drops[&iron].gives, items::RAW_IRON, "the first one's again");
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.drops_changes(), Some(vec![]), "and none once both stop");
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+
+    // on the player's game: the block doesn't give until the hand can break it
+    let mut me = Me::default();
+    me.rules = rules;
+    me.pockets.0[0] = crate::items::Slot { thing: wood, count: 1 };
+    me.rules.drops.insert(iron, Drop { gives: items::RAW_IRON, least: 1, most: 1, level: 2 });
+    assert_eq!(me.dig_speed(iron), 0.0, "a wooden pickaxe makes no headway on iron");
+    me.pockets.0[0] = crate::items::Slot { thing: stone, count: 1 };
+    assert_eq!(me.dig_speed(iron), 4.0);
+
+    // what goes between devices
+    let m = Msg::Drops(drops);
     let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
     assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
@@ -3605,7 +3704,7 @@ fn a_basket_fills_into_a_balloon_that_rises_lands_and_packs_away() {
 /// Woollies in survival: patting one shears it for wool, and it grows back.
 #[test]
 fn survival_players_shear_woollies_for_wool() {
-    use crate::blocks::by_name;
+    use crate::blocks::{by_name, GLASS, STONE};
     home();
     let mut woolly = Library::load().list.remove("woolly").expect("the base game has woollies");
     woolly.knobs.insert("regrow".into(), KnobValue::Number(0.5));
@@ -4579,7 +4678,7 @@ end)
 /// say what's wrong.
 #[test]
 fn behaviours_make_a_creature_with_no_code() {
-    use crate::blocks::by_name;
+    use crate::blocks::{by_name, GLASS, STONE};
     let mut voxels = world();
     let (mid, _) = pad(&mut voxels);
     let code = |extra: &str| {
@@ -5419,4 +5518,102 @@ fn lands_to_look_at() {
         }
         println!("LAND {:?} {:?}", b, found);
     }
+}
+
+#[test]
+fn underground_is_the_same_wherever_and_whenever_it_is_worked_out() {
+    use crate::blocks::*;
+    use crate::underground::carve;
+    // a column worked out bottom up, then top down, then again later on its own
+    let seed = 1234;
+    let up: Vec<BlockId> = (-127..=60).map(|y| carve(seed, 400, y, -77, 60, STONE)).collect();
+    let mut down: Vec<BlockId> = (-127..=60).rev().map(|y| carve(seed, 400, y, -77, 60, STONE)).collect();
+    down.reverse();
+    assert_eq!(up, down);
+    let _ = carve(seed, 9, 9, 9, 40, STONE);
+    assert_eq!(up, (-127..=60).map(|y| carve(seed, 400, y, -77, 60, STONE)).collect::<Vec<_>>());
+    assert_ne!(up, (-127..=60).map(|y| carve(seed + 1, 400, y, -77, 60, STONE)).collect::<Vec<_>>(), "another seed, another underground");
+    // only the ground changes, and nothing at the very bottom
+    for b in [WATER, SAND, LOG, BEDROCK, AIR] {
+        assert!((-127..=60).all(|y| carve(seed, 400, y, -77, 60, b) == b));
+    }
+    assert!((-127..=-120).all(|y| (0..64).all(|x| carve(seed, x, y, 5, 60, STONE) == STONE)), "a floor at the bottom");
+}
+
+#[test]
+fn caves_ores_hollows_and_old_workings_are_found_at_their_depths() {
+    use crate::blocks::*;
+    use crate::underground::carve;
+    let seed = 77;
+    let mut found: std::collections::HashMap<BlockId, Vec<i32>> = Default::default();
+    let (mut air, mut all) = (0, 0);
+    let ground = 64;
+    let started = std::time::Instant::now();
+    // a 160 x 160 stretch, every block from the bottom to the ground
+    for z in (0..160).step_by(1) {
+        for x in 0..160 {
+            for y in -127..=ground {
+                let b = carve(seed, x, y, z, ground, STONE);
+                all += 1;
+                if b == AIR {
+                    air += 1;
+                }
+                if b != STONE && b != AIR {
+                    found.entry(b).or_default().push(y);
+                }
+            }
+        }
+    }
+    let took = started.elapsed();
+    println!("{all} blocks in {took:?}: {:.0} ns a block", took.as_nanos() as f64 / all as f64);
+    let open = air as f32 / all as f32;
+    assert!((0.02..0.14).contains(&open), "caves open {:.1}% of the ground", open * 100.0);
+    for (b, from, to) in [(COAL_ORE, -16, 96), (COPPER_ORE, -48, 64), (IRON_ORE, -80, 32), (GOLD_ORE, -112, -24), (MOONSILVER_ORE, -124, -88)] {
+        let at = found.get(&b).cloned().unwrap_or_default();
+        assert!(at.len() > 20, "{}: {}", block(b).name, at.len());
+        assert!(at.iter().all(|y| (from..=to).contains(y)), "{} outside {from} to {to}", block(b).name);
+    }
+    let count = |b| found.get(&b).map_or(0, |v| v.len());
+    assert!(count(COAL_ORE) > 3 * count(MOONSILVER_ORE), "coal is common and moonsilver rare");
+    assert!(count(CRYSTAL_ORE) > 0, "crystal in veins and hollows");
+    assert!(count(LOG) > 0 && count(PLANKS) > 0, "old workings' posts and beams");
+    assert!(count(OLD_CHEST) > 0, "old chests");
+    assert!(count(GLOWCAP) > 0, "glowcaps on cave floors");
+    // chests stand on something, and the workings' corridors are open
+    for z in 0..160 {
+        for x in 0..160 {
+            for y in -127..ground {
+                if carve(seed, x, y, z, ground, STONE) == OLD_CHEST {
+                    let under = carve(seed, x, y - 1, z, ground, STONE);
+                    assert!(is_solid(under), "a chest at {x} {y} {z} over {under}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn caves_keep_away_from_the_sea_and_mostly_from_the_surface() {
+    use crate::blocks::*;
+    use crate::underground::carve;
+    let seed = 5;
+    // a sea floor: nothing opens within a few blocks of it
+    for z in 0..96 {
+        for x in 0..96 {
+            for y in 6..=12 {
+                let b = carve(seed, x, y, z, 12, STONE);
+                assert!(is_solid(b), "{x} {y} {z} under the sea: {b}");
+            }
+        }
+    }
+    // inland, caves come up to the grass only now and then (cave mouths)
+    let mut mouths = 0;
+    for z in 0..256 {
+        for x in 0..256 {
+            if carve(seed, x, 70, z, 70, GRASS) == AIR {
+                mouths += 1;
+            }
+        }
+    }
+    assert!(mouths > 0 && mouths < 256 * 256 / 50, "{mouths} holes in the grass");
 }

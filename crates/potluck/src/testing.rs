@@ -71,7 +71,7 @@ function test.wait(seconds) ask("wait", seconds) end
 function test.player(name, opts) return ask("player", name, opts) end
 function test.move(player, at) return ask("move", player, at) end
 function test.place(player, at, block) ask("place", player, at, block) end
-function test.dig(player, at) ask("dig", player, at) end
+function test.dig(player, at) return ask("dig", player, at) end
 function test.use_block(player, at) ask("use_block", player, at) end
 function test.use(player, creature) ask("event", "used", player, creature) end
 function test.hit(player, creature) ask("event", "hit", player, creature) end
@@ -460,6 +460,7 @@ impl Harness {
             let _ = self.scripts.focus_changes();
             let _ = self.scripts.healing_changes();
             let _ = self.scripts.digging_changes();
+            let _ = self.scripts.drops_changes();
             self.scripts.out = Default::default();
             self.played += STEP;
         }
@@ -574,14 +575,27 @@ impl Harness {
                     }
                     "dig" => {
                         if old != blocks::AIR {
+                            // a survival player breaks it with what's in hand, as
+                            // the game does: not at all if it needs better, and
+                            // getting what creations say it gives
+                            let rules = self.scripts.rules();
                             let mut sh = self.scripts.shared.lock().unwrap();
+                            let held = sh.held.get(&p.id).copied().unwrap_or(0);
                             let pockets = sh.pockets.entry(p.id).or_default();
                             if pockets.survival {
-                                pockets.slots.give(crate::items::of_block(old), 1);
+                                if !rules.can_break(held, old) {
+                                    return one(Value::Boolean(false));
+                                }
+                                let roll = crate::noise::hash2(at.x ^ at.y.wrapping_mul(7919), at.z, self.played as i32);
+                                if let Some((t, n)) = rules.gives(old, roll) {
+                                    pockets.slots.give(t, n);
+                                }
                             }
                         }
                         self.voxels.set(at, blocks::AIR);
                         self.scripts.player_block(p.id, at, old, blocks::AIR);
+                        self.pass(0.1);
+                        return one(Value::Boolean(true));
                     }
                     _ => self.scripts.use_block(p.id, at, old),
                 }

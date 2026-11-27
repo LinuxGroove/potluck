@@ -1,13 +1,13 @@
 name = "Tools"
 by = "Potluck"
 kind = "mod"
-about = "Pickaxes, axes and shovels for survival, in wood and stone. Hold one and its kind of block breaks faster: stone and brick, wood, or earth and sand. They wear as they work, and a worn out one breaks. Make them at a workbench."
+about = "Pickaxes, axes and shovels for survival, in wood and stone. Hold one and its kind of block breaks faster: stone and brick, wood, or earth and sand. Stone tools reach harder ores than wooden ones. They wear as they work, and a worn out one breaks. Make them at a workbench."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.8"
+world = "0.13"
 tweak = "0.1"
 ui = "0.2"
 sound = "0.1"

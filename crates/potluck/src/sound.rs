@@ -136,9 +136,9 @@ pub fn named(name: &str) -> Material {
         Material::Water
     } else if has(&["glass"]) {
         Material::Glass
-    } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet"]) {
+    } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet", "glowcap", "mushroom"]) {
         Material::Plant
-    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
+    } else if has(&["log", "plank", "barrel", "crate", "chest", "torch", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
         Material::Wood
     } else if has(&["stone", "brick", "cobble", "bedrock", "column", "brazier", "pot", "lantern", "slate", "tile", "ore", "iron"]) {
         Material::Hard

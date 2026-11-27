@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 3)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 13), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 4)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -200,12 +200,19 @@ pub struct GameShared {
     pub healing_changed: BTreeSet<u32>,
     /// What each player has in hand, as their game last said (`world.held`).
     pub held: HashMap<u32, Thing>,
-    /// How much faster holding something digs each kind of block
-    /// (`world.digging`): (what's held, creation) to speeds in the order of
-    /// `sound::DIG_KINDS`.
-    pub digging: BTreeMap<(Thing, String), [f32; 5]>,
+    /// How much faster holding something digs each kind of block, and how
+    /// hard a block it reaches (`world.digging`): (what's held, creation)
+    /// to what it does.
+    pub digging: BTreeMap<(Thing, String), items::Digging>,
     /// Whether `digging` changed since the host last sent it.
     pub digging_changed: bool,
+    /// What breaking a block gives (`world.drops`): (block, creation) to
+    /// when it was said, so the last one said counts, and the rule.
+    pub drops: BTreeMap<(blocks::BlockId, String), (u64, items::Drop)>,
+    /// Counts `world.drops` calls, for `drops`'s order.
+    pub drops_said: u64,
+    /// Whether `drops` changed since the host last sent it.
+    pub drops_changed: bool,
 }
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
@@ -877,6 +884,62 @@ pub(crate) fn kind_of(name: &str) -> mlua::Result<&'static str> {
     Ok(crate::sound::named(items::name(t)).name())
 }
 
+/// `world.drops`'s rule for `block`: `{ gives, count, level }`.
+fn drop_rule(t: &Table, block: &str) -> mlua::Result<items::Drop> {
+    for pair in t.pairs::<Value, Value>() {
+        let (k, _) = pair?;
+        let k = k.as_string().map(|s| s.to_string_lossy()).unwrap_or_default();
+        if !["gives", "count", "level"].contains(&k.as_str()) {
+            return Err(bad(format!("a drop has gives, count and level, not \"{k}\"")));
+        }
+    }
+    let gives = match t.get::<Value>("gives")? {
+        Value::Nil => blocks::by_name(block).map(items::of_block).unwrap_or(0),
+        Value::Boolean(false) => 0,
+        Value::String(s) => {
+            let name = s.to_string_lossy();
+            let t = carried_thing(&name)?;
+            if !items::carriable(t) {
+                return Err(bad(format!("players can't carry {name}")));
+            }
+            t
+        }
+        _ => return Err(bad("a drop's gives is the name of what breaking it gives, or false for nothing")),
+    };
+    let count = |v: Value| -> mlua::Result<u32> {
+        let n = match v {
+            Value::Integer(n) => n as f64,
+            Value::Number(n) => n,
+            _ => f64::NAN,
+        };
+        if n.fract() != 0.0 || !(0.0..=MAX_GIVE as f64).contains(&n) {
+            return Err(bad(format!("a drop's count is a whole number from 0 to {MAX_GIVE}, or {{ least, most }}")));
+        }
+        Ok(n as u32)
+    };
+    let (least, most) = match t.get::<Value>("count")? {
+        Value::Nil => (1, 1),
+        Value::Table(r) => {
+            let (a, b) = (count(r.get(1)?)?, count(r.get(2)?)?);
+            if a > b {
+                return Err(bad("a drop's count { least, most } needs least no more than most"));
+            }
+            (a, b)
+        }
+        v => {
+            let n = count(v)?;
+            (n, n)
+        }
+    };
+    let level = match t.get::<Value>("level")? {
+        Value::Nil => 0,
+        Value::Integer(n) if (0..=items::MAX_LEVEL as i64).contains(&n) => n as u8,
+        Value::Number(n) if n.fract() == 0.0 && (0.0..=items::MAX_LEVEL as f64).contains(&n) => n as u8,
+        _ => return Err(bad(format!("a drop's level is a whole number from 0 to {}", items::MAX_LEVEL))),
+    };
+    Ok(items::Drop { gives: if most == 0 { 0 } else { gives }, least, most, level })
+}
+
 /// `world.find_block`: the middle of the nearest block of that name within
 /// `radius` (up to 16) of `p`, or nil. Client halves share it.
 pub(crate) fn find_block(voxels: &Voxels, p: &Value, radius: f32, name: &str) -> mlua::Result<Option<Value>> {
@@ -1412,28 +1475,66 @@ impl Vm {
                     "digging",
                     lua.create_function(move |_, (name, speeds): (String, Option<Table>)| {
                         let id = carried_thing(&name)?;
-                        let mut by_kind = [1.0f32; 5];
+                        let mut d = items::Digging::default();
                         if let Some(t) = &speeds {
                             for pair in t.pairs::<String, f64>() {
-                                let (kind, n) = pair.map_err(|_| bad("digging takes speeds by kind, like { hard = 4 }"))?;
+                                let (kind, n) = pair.map_err(|_| bad("digging takes speeds by kind, like { hard = 4 }, and a level"))?;
+                                if kind == "level" {
+                                    if n.fract() != 0.0 || !(0.0..=items::MAX_LEVEL as f64).contains(&n) {
+                                        return Err(bad(format!("a digging level is a whole number from 0 to {}", items::MAX_LEVEL)));
+                                    }
+                                    d.level = n as u8;
+                                    continue;
+                                }
                                 let Some(k) = crate::sound::DIG_KINDS.iter().position(|d| *d == kind) else {
-                                    return Err(bad(format!("digging knows {}, not \"{kind}\"", crate::sound::DIG_KINDS.join(", "))));
+                                    return Err(bad(format!("digging knows {} and level, not \"{kind}\"", crate::sound::DIG_KINDS.join(", "))));
                                 };
                                 if !n.is_finite() || !(0.0..=MAX_DIGGING).contains(&n) {
                                     return Err(bad(format!("a digging speed is a number from 0 to {MAX_DIGGING} (1 is as usual)")));
                                 }
-                                by_kind[k] = n as f32;
+                                d.speeds[k] = n as f32;
                             }
                         }
                         let mut sh = sh.lock().unwrap();
                         let key = (id, me.clone());
-                        let now = speeds.is_some().then_some(by_kind).filter(|s| *s != [1.0; 5]);
+                        let now = speeds.is_some().then_some(d).filter(|d| *d != items::Digging::default());
                         if sh.digging.get(&key).copied() != now {
                             match now {
-                                Some(s) => sh.digging.insert(key, s),
+                                Some(d) => sh.digging.insert(key, d),
                                 None => sh.digging.remove(&key),
                             };
                             sh.digging_changed = true;
+                        }
+                        Ok(())
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "drops",
+                    lua.create_function(move |_, (name, rule): (String, Option<Table>)| {
+                        let b = blocks::by_name(&name).filter(|&b| b != blocks::AIR).ok_or_else(|| {
+                            if items::by_name(&name).is_some() {
+                                bad(format!("{name} is something to hold, not a block to break"))
+                            } else {
+                                bad(format!("there's no block called \"{name}\""))
+                            }
+                        })?;
+                        let now = match &rule {
+                            None => None,
+                            Some(t) => Some(drop_rule(t, &name)?),
+                        };
+                        let mut sh = sh.lock().unwrap();
+                        let key = (b, me.clone());
+                        if sh.drops.get(&key).map(|e| e.1) != now || now.is_some() {
+                            match now {
+                                Some(d) => {
+                                    sh.drops_said += 1;
+                                    let n = sh.drops_said;
+                                    sh.drops.insert(key, (n, d))
+                                }
+                                None => sh.drops.remove(&key),
+                            };
+                            sh.drops_changed = true;
                         }
                         Ok(())
                     })?,
@@ -2284,11 +2385,16 @@ impl Scripts {
         let slowed: Vec<u32> = sh.healing.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
         sh.healing.retain(|k, _| k.1 != id);
         sh.healing_changed.extend(slowed);
-        // and its tools dig as usual
+        // and its tools dig as usual, and its blocks give themselves
         let before = sh.digging.len();
         sh.digging.retain(|k, _| k.1 != id);
         if sh.digging.len() != before {
             sh.digging_changed = true;
+        }
+        let before = sh.drops.len();
+        sh.drops.retain(|k, _| k.1 != id);
+        if sh.drops.len() != before {
+            sh.drops_changed = true;
         }
         drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
@@ -2484,25 +2590,51 @@ impl Scripts {
         self.shared.lock().unwrap().held.insert(player, b);
     }
 
-    /// How much faster each thing held digs each kind of block, every
-    /// creation's `world.digging` multiplied together: what every game is
-    /// told, in order of what's held.
-    pub fn digging(&self) -> Vec<(Thing, [f32; 5])> {
+    /// What each thing held does to blocks, from every creation's
+    /// `world.digging`: their speeds multiplied together and the highest
+    /// level. It's what every game is told, in order of what's held.
+    pub fn digging(&self) -> Vec<(Thing, items::Digging)> {
         let sh = self.shared.lock().unwrap();
-        let mut out: BTreeMap<Thing, [f32; 5]> = BTreeMap::new();
-        for ((b, _), s) in &sh.digging {
-            let e = out.entry(*b).or_insert([1.0; 5]);
+        let mut out: BTreeMap<Thing, items::Digging> = BTreeMap::new();
+        for ((t, _), d) in &sh.digging {
+            let e = out.entry(*t).or_default();
             for k in 0..5 {
-                e[k] = (e[k] * s[k]).clamp(0.0, MAX_DIGGING as f32);
+                e.speeds[k] = (e.speeds[k] * d.speeds[k]).clamp(0.0, MAX_DIGGING as f32);
             }
+            e.level = e.level.max(d.level);
         }
         out.into_iter().collect()
     }
 
     /// `digging()`, when it changed since the last time this was asked.
-    pub fn digging_changes(&mut self) -> Option<Vec<(Thing, [f32; 5])>> {
+    pub fn digging_changes(&mut self) -> Option<Vec<(Thing, items::Digging)>> {
         let changed = std::mem::take(&mut self.shared.lock().unwrap().digging_changed);
         changed.then(|| self.digging())
+    }
+
+    /// What breaking each block gives, by block: for each, the rule a
+    /// creation said last (`world.drops`).
+    pub fn drops(&self) -> Vec<(blocks::BlockId, items::Drop)> {
+        let sh = self.shared.lock().unwrap();
+        let mut out: BTreeMap<blocks::BlockId, (u64, items::Drop)> = BTreeMap::new();
+        for ((b, _), &(n, d)) in &sh.drops {
+            if out.get(b).is_none_or(|e| e.0 < n) {
+                out.insert(*b, (n, d));
+            }
+        }
+        out.into_iter().map(|(b, (_, d))| (b, d)).collect()
+    }
+
+    /// `drops()`, when it changed since the last time this was asked.
+    pub fn drops_changes(&mut self) -> Option<Vec<(blocks::BlockId, items::Drop)>> {
+        let changed = std::mem::take(&mut self.shared.lock().unwrap().drops_changed);
+        changed.then(|| self.drops())
+    }
+
+    /// Everything every game knows about breaking blocks, as `digging()`
+    /// and `drops()` say it.
+    pub fn rules(&self) -> items::Rules {
+        items::Rules { digging: self.digging().into_iter().collect(), drops: self.drops().into_iter().collect() }
     }
 
     /// The time of day creations see (`world.daytime`).

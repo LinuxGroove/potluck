@@ -35,6 +35,7 @@ pub mod testing;
 pub mod textures;
 pub mod transport;
 pub mod ui;
+pub mod underground;
 pub mod waypoints;
 pub mod world;
 pub mod worlds;

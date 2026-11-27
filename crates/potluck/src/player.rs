@@ -98,8 +98,9 @@ pub struct Me {
     /// (`world.healing`): 1 as usual, 0 not at all.
     pub healing: f32,
     /// How much faster what's in hand digs each kind of block
-    /// (`world.digging`, in the order of `sound::DIG_KINDS`), by what it is.
-    pub digging: std::collections::HashMap<Thing, [f32; 5]>,
+    /// and how hard a block it reaches (`world.digging`), and what breaking
+    /// each block gives (`world.drops`), as the host last said.
+    pub rules: items::Rules,
     /// Blocks this player placed and broke since the host last looked:
     /// (where, what it was, what it is now), for creations' block events.
     pub built: Vec<(IVec3, BlockId, BlockId)>,
@@ -147,7 +148,7 @@ impl Default for Me {
             health_due: 0.0,
             hurts: vec![],
             healing: 1.0,
-            digging: Default::default(),
+            rules: Default::default(),
             built: vec![],
             stride: 0.0,
             regen: 0.0,
@@ -242,9 +243,14 @@ impl Me {
     }
 
     /// How much faster than by hand the thing in hand breaks a block in
-    /// survival, as creations' `world.digging` said.
+    /// survival, as creations' `world.digging` said: 0 when it needs
+    /// something better in hand (`world.drops`).
     pub fn dig_speed(&self, block: BlockId) -> f32 {
-        crate::sound::material(block).dig().and_then(|k| self.digging.get(&self.held(true)).map(|s| s[k])).unwrap_or(1.0)
+        let held = self.held(true);
+        if !self.rules.can_break(held, block) {
+            return 0.0;
+        }
+        self.rules.speed(held, block)
     }
 
     pub fn hurt(&mut self, amount: f32) {
@@ -594,6 +600,15 @@ pub fn walk(
     }
 }
 
+/// What to tell a player whose hand can't break a block yet.
+pub fn needs(rules: &items::Rules, b: BlockId) -> String {
+    let name = blocks::block(b).name;
+    match rules.tool_for(b) {
+        Some(t) => format!("{name} needs a {} or better", items::name(t).to_lowercase()),
+        None => format!("{name} needs a better tool"),
+    }
+}
+
 /// Breaking and placing blocks, and choosing what's in hand.
 pub fn build(
     c: Res<Controls>,
@@ -633,7 +648,14 @@ pub fn build(
     if c.break_held {
         let hardness = blocks::block(hit.id).hardness;
         if hardness >= 0.0 {
-            if settings.survival {
+            if settings.survival && !me.rules.can_break(me.held(true), hit.id) {
+                // some blocks need a better tool in hand first: say so once
+                // for each block tried
+                if me.breaking.is_none_or(|(b, _)| b != hit.block) {
+                    toasts.push(needs(&me.rules, hit.id));
+                    me.breaking = Some((hit.block, 0.0));
+                }
+            } else if settings.survival {
                 // a tool in hand digs its kind of block faster
                 let step = dt * me.dig_speed(hit.id) / hardness.max(0.05);
                 let progress = match me.breaking {
@@ -644,8 +666,12 @@ pub fn build(
                     if voxels.set(hit.block, AIR) {
                         me.note_built(hit.block, hit.id, AIR);
                     }
-                    if !me.give(items::of_block(hit.id)) {
-                        toasts.push("Your pockets are full");
+                    // what it gives: itself, or what creations say
+                    let roll = crate::noise::hash2(hit.block.x ^ hit.block.y.wrapping_mul(7919), hit.block.z, (time.elapsed_secs() * 1000.0) as i32);
+                    if let Some((t, n)) = me.rules.gives(hit.id, roll) {
+                        if me.pockets.give(t, n) < n {
+                            toasts.push("Your pockets are full");
+                        }
                     }
                     me.breaking = None;
                     if let Some(n) = stuff.breaks() {

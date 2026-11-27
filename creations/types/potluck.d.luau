@@ -105,7 +105,8 @@ export type World = {
 	-- 0.8
 	held: (player: Player | number) -> string?,
 	kind: (block: string) -> "soft" | "hard" | "wood" | "plant" | "glass" | "water" | "air",
-	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number? }?) -> (),
+	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number?, level: number? }?) -> (),
+	drops: (block: string, rule: { gives: (string | false)?, count: (number | { number })?, level: number? }?) -> (),
 }
 
 export type Score = { name: string, value: number }
@@ -196,7 +197,7 @@ export type Test = {
 	player: (name: string?, opts: TestPlayerOptions?) -> Player,
 	move: (player: Player, at: Position) -> Player,
 	place: (player: Player, at: Position, block: string) -> (),
-	dig: (player: Player, at: Position) -> (),
+	dig: (player: Player, at: Position) -> boolean,
 	use_block: (player: Player, at: Position) -> (),
 	use: (player: Player, creature: Creature | number) -> (),
 	hit: (player: Player, creature: Creature | number) -> (),

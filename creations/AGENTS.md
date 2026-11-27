@@ -17,7 +17,7 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.12")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.12. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.12
+### `@potluck/world` 0.13
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -82,7 +82,7 @@ print(world.daytime())                    -- 0.5 is noon
 
 - `world.daytime()` is the time of day, 0 to 1: 0 is midnight, 0.25 sunrise, 0.5 noon and 0.75 sunset. A day is 20 minutes.
 - `world.daylight()` is how light it is, 0 in the dead of night to 1 in full day. It's 1 through most of the day and 0 through most of the night, and moves between them in the minute or so around sunrise and sunset.
-- `world.find_light(pos, radius)` is the middle of the nearest block that gives light (a lantern, brazier or candle) within `radius` (up to 16), or nil.
+- `world.find_light(pos, radius)` is the middle of the nearest block that gives light (a lantern, brazier, candle or torch) within `radius` (up to 16), or nil.
 - `world.hurt(player, amount)` takes `amount` from a player's health and `world.heal(player, amount)` gives it back. Health is 0 to 20; at 0 the player goes back to the hill. Only players in survival have health, so both return false, and do nothing, for anyone in creative. `amount` is 0 to 20.
 
 What players do to blocks (new in 0.5), for crafting tables, farms and anything a player builds:
@@ -130,11 +130,25 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Items are things to hold, not blocks: the pickaxes, axes, shovels and swords. They're carried, given and taken by name like blocks, one to a slot, but never put down, and `world.set_block` with one is an error.
+- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords (one to a slot), and what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
 - Nothing wears out by itself: count `block_broken` while `world.held` is your tool, and `world.take` it when it's done.
+
+What breaking a block gives, and tools' levels (new in 0.13), for ores, prizes and blocks that need the right tool:
+
+```luau
+world.digging("Stone pickaxe", { hard = 4, level = 2 })         -- reaches hard blocks of level 2
+world.drops("Iron ore", { gives = "Raw iron", level = 2 })      -- needs a stone pickaxe or better
+world.drops("Coal ore", { gives = "Coal", count = { 1, 2 }, level = 1 })
+world.drops("Glass", { gives = false })                        -- breaks into nothing
+world.drops("Iron ore", nil)                                    -- gives itself again, and breaks by hand
+```
+
+- `world.drops(block, rule)` says what a survival player gets for breaking `block`: `gives` (a block or item's name, false for nothing, or left out for the block itself), `count` (a number from 0 to 64, or `{ least, most }` for somewhere between, 1 if left out) and `level`, the level of tool it needs (0 to 9, 0 if left out). nil puts it back to giving itself. When several creations say what a block gives, the one that said it last counts; a creation's rules go when it stops.
+- `level` in `world.digging` is how hard a block a thing reaches, 0 to 9, among the kinds it digs faster than a hand (speed above 1). A block whose drop has a level doesn't break at all until the player holds something of that level or more, and the game tells them which tool would. Empty hands are level 0. When several creations give the same thing a level, the highest counts.
+- The base game's levels: wooden tools 1 and stone 2. The mining creation's coal ore needs level 1 and its other ores 2, for now.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 
@@ -458,7 +472,7 @@ end)
 - `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
-- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
 - Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.

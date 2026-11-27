@@ -401,7 +401,7 @@ fn shot(
                 // a survival player's pockets, partly full, the second slot in hand
                 use potluck::items::{self, Slots};
                 let mut p = Slots::default();
-                for (name, n) in [("Planks", 64), ("Stone pickaxe", 1), ("Cobblestone", 99), ("Oak log", 23), ("Lantern", 4), ("Wooden axe", 1), ("Wheat", 12), ("Carrots", 7), ("Glass", 16), ("Sand", 99), ("Dirt", 40), ("Stone sword", 1), ("Hay", 3), ("Red wool", 9), ("Birch log", 31), ("Gravel", 17), ("Candle", 6), ("Fence", 12)] {
+                for (name, n) in [("Planks", 64), ("Stone pickaxe", 1), ("Cobblestone", 99), ("Oak log", 23), ("Lantern", 4), ("Wooden axe", 1), ("Coal", 17), ("Raw iron", 6), ("Raw copper", 11), ("Wheat", 12), ("Carrots", 7), ("Crystal", 3), ("Raw gold", 2), ("Raw moonsilver", 1), ("Dirt", 40), ("Stone sword", 1), ("Iron ore", 4), ("Glowcap", 5), ("Old chest", 1), ("Candle", 6), ("Glass", 16)] {
                     if let Some(t) = items::by_name(name) {
                         p.give(t, n);
                     }
