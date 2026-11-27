@@ -45,6 +45,11 @@ impl MeshData {
     }
 
     fn quad(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], light: [f32; 4], flip: bool) {
+        self.quad_tinted(corners, n, rect, light.map(|l| [l, l, l, 1.0]), flip);
+    }
+
+    /// A quad with a colour at each corner.
+    fn quad_tinted(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], tint: [[f32; 4]; 4], flip: bool) {
         let base = self.pos.len() as u32;
         let [u0, v0, u1, v1] = rect;
         let uvs = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
@@ -57,8 +62,7 @@ impl MeshData {
             self.pos.push(corners[k]);
             self.nrm.push(n);
             self.uv.push(uvs[k]);
-            let l = light[k];
-            self.col.push([l, l, l, 1.0]);
+            self.col.push(tint[k]);
             self.tan.push([t.x, t.y, t.z, w]);
         }
         if flip {
@@ -113,6 +117,19 @@ const FACES: [Face; 6] = [
 
 const AO: [f32; 4] = [1.0, 0.78, 0.6, 0.45];
 
+/// How much of red, green and blue each block of water soaks up, on the way
+/// down to what's under it and back up.
+const UNDERWATER: [f32; 3] = [0.25, 0.06, 0.045];
+
+/// Water's colour and how much it lets through, by how many blocks deep it
+/// is: the shallows over sand are pale and clear, the deep is dark blue. The
+/// open sea past the island (`render::spawn_sea`) is the deepest of these.
+pub fn water_tint(depth: f32) -> [f32; 4] {
+    let t = crate::noise::smooth(0.5, 6.0, depth);
+    let c = Vec3::new(0.16, 0.62, 0.6).lerp(Vec3::new(0.008, 0.05, 0.09), t);
+    [c.x, c.y, c.z, 0.38 + 0.57 * t]
+}
+
 pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
     let mut layers: [MeshData; 5] = Default::default();
     let o = c * CHUNK;
@@ -135,11 +152,26 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
                         }
                         let yy = fy + 0.88;
                         let rect = BlockAtlas::uv(atlas.tile("water"));
-                        layers[2].quad(
+                        // each corner takes the depth of the four columns round it
+                        // (past the world's edge is the open sea)
+                        let depth = |cx: i32, cz: i32| {
+                            if !Voxels::inside(cx, y, cz) {
+                                return 8.0;
+                            }
+                            (0..8).take_while(|d| w.get(cx, y - d, cz) == WATER).count() as f32
+                        };
+                        let mut around = [[0.0f32; 3]; 3];
+                        for (j, row) in around.iter_mut().enumerate() {
+                            for (i, d) in row.iter_mut().enumerate() {
+                                *d = depth(x + i as i32 - 1, z + j as i32 - 1);
+                            }
+                        }
+                        let corner = |i: usize, j: usize| water_tint((around[j][i] + around[j][i + 1] + around[j + 1][i] + around[j + 1][i + 1]) / 4.0);
+                        layers[2].quad_tinted(
                             [[fx, yy, fz + 1.0], [fx + 1.0, yy, fz + 1.0], [fx + 1.0, yy, fz], [fx, yy, fz]],
                             [0.0, 1.0, 0.0],
                             rect,
-                            [1.0; 4],
+                            [corner(0, 1), corner(1, 1), corner(1, 0), corner(0, 0)],
                             false,
                         );
                     }
@@ -194,7 +226,14 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
                             let corners = f.c.map(|cc| [fx + cc[0] as f32, fy + cc[1] as f32, fz + cc[2] as f32]);
                             let n = f.n.map(|v| v as f32);
                             let flip = occ[0] + occ[2] > occ[1] + occ[3];
-                            layers[layer].quad(corners, n, rect, light, flip);
+                            if nb == WATER {
+                                // under water: the water above takes the red out first, then the green
+                                let deep = (0..8).take_while(|d| w.get(nx, ny + d, nz) == WATER).count() as f32;
+                                let t = UNDERWATER.map(|k| (-k * 2.0 * deep).exp());
+                                layers[layer].quad_tinted(corners, n, rect, light.map(|l| [l * t[0], l * t[1], l * t[2], 1.0]), flip);
+                            } else {
+                                layers[layer].quad(corners, n, rect, light, flip);
+                            }
                         }
                     }
                 }
@@ -271,7 +310,8 @@ pub fn remesh(
                 data.face_normals();
             }
             let mut e = commands.spawn((
-                Mesh3d(meshes.add(data.into_mesh(rt.0))),
+                // water stays out of the ray traced scene, so it keeps its colours
+                Mesh3d(meshes.add(data.into_mesh(rt.0 && i != 2))),
                 MeshMaterial3d(mats.layers[LAYER_MATERIAL[i]].clone()),
                 Transform::IDENTITY,
                 ChunkPart,

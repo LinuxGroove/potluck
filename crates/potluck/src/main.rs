@@ -167,6 +167,7 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut media: ResMut<Assets<ScatteringMedium>>,
     settings: Res<settings::Settings>,
     voxels: Res<world::Voxels>,
@@ -181,6 +182,7 @@ fn setup(
     commands.insert_resource(rt);
     let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
     render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
+    render::spawn_sea(&mut commands, &mut meshes, &mut mats);
     if let Some(off) = off {
         commands.insert_resource(off);
     }
