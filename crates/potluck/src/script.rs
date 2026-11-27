@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 3), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 4), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -119,6 +119,24 @@ pub struct GameShared {
     pub notes: Vec<(Option<u32>, Note)>,
     /// The blocks each player carries, as their game last said.
     pub pockets: HashMap<u32, Pockets>,
+    /// The time of day (`render::Clock::time`), set by the host each frame;
+    /// none yet is the clock's own start.
+    pub day: Option<f32>,
+    /// Hurts (less than 0) and heals creations gave players since the host
+    /// last looked.
+    pub health: Vec<(u32, f32)>,
+}
+
+/// The most `world.hurt` or `world.heal` does at once: a whole bar.
+pub const MAX_HURT: f64 = crate::player::MAX_HEALTH as f64;
+
+/// How much `world.hurt` or `world.heal` does, from what the creation
+/// passed.
+fn health_amount(n: f64) -> mlua::Result<f32> {
+    if !n.is_finite() || n < 0.0 {
+        return Err(bad("hurt and heal take a number from 0 to 20"));
+    }
+    Ok(n.min(MAX_HURT) as f32)
 }
 
 /// The most blocks `world.give` or `world.take` moves at once.
@@ -988,6 +1006,41 @@ impl Vm {
                     })?,
                 )?;
             }
+            // world 0.4: the time of day, and hurting and healing players
+            {
+                let sh = shared.clone();
+                world.set(
+                    "daytime",
+                    lua.create_function(move |_, ()| Ok(sh.lock().unwrap().day.unwrap_or(crate::render::Clock::default().time)))?,
+                )?;
+                let sh = shared.clone();
+                world.set(
+                    "daylight",
+                    lua.create_function(move |_, ()| {
+                        let time = sh.lock().unwrap().day.unwrap_or(crate::render::Clock::default().time);
+                        Ok(crate::render::Clock { time, running: true }.daylight())
+                    })?,
+                )?;
+                for (name, sign) in [("hurt", -1.0f32), ("heal", 1.0)] {
+                    let sh = shared.clone();
+                    world.set(
+                        name,
+                        lua.create_function(move |_, (player, n): (Value, f64)| {
+                            let pid = pid_of(&player)?;
+                            let n = health_amount(n)?;
+                            let mut sh = sh.lock().unwrap();
+                            // only survival players have health to lose
+                            if !sh.pockets.get(&pid).is_some_and(|p| p.survival) {
+                                return Ok(false);
+                            }
+                            if n > 0.0 && sh.health.len() < 1024 {
+                                sh.health.push((pid, sign * n));
+                            }
+                            Ok(true)
+                        })?,
+                    )?;
+                }
+            }
             // world 0.2: timers and world events, kept between ticks
             {
                 let w = waiting.clone();
@@ -1409,6 +1462,16 @@ impl Vm {
                         }
                     }
                 }
+                Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
+            })?)?;
+            world.set("find_light", s.create_function(move |_, (p, radius): (Value, f32)| {
+                let p = vec_of(&p).ok_or_else(|| bad("world.find_light needs a position"))?.floor().as_ivec3();
+                let r = radius.clamp(0.0, 16.0) as i32;
+                let ctx = c.borrow();
+                let best = ctx.voxels.lanterns.iter()
+                    .map(|q| ((*q - p).length_squared(), *q))
+                    .filter(|(d, q)| *d <= r * r && (*q - p).abs().max_element() <= r)
+                    .min_by_key(|(d, q)| (*d, q.x, q.y, q.z));
                 Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
             })?)?;
             world.set("players", s.create_function(move |lua, ()| {
@@ -1888,6 +1951,22 @@ impl Scripts {
         }
         out.sort_by_key(|c| c.0);
         out
+    }
+
+    /// The time of day creations see (`world.daytime`).
+    pub fn set_day(&mut self, time: f32) {
+        self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
+    }
+
+    /// How creations hurt or healed players: (player, the change to their
+    /// health), one each, in order of player.
+    pub fn health_changes(&mut self) -> Vec<(u32, f32)> {
+        let list = std::mem::take(&mut self.shared.lock().unwrap().health);
+        let mut out: BTreeMap<u32, f32> = BTreeMap::new();
+        for (p, d) in list {
+            *out.entry(p).or_default() += d;
+        }
+        out.into_iter().filter(|(_, d)| *d != 0.0).collect()
     }
 
     /// Messages creations sent their client halves, and who each is for:

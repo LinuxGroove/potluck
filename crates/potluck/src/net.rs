@@ -18,7 +18,7 @@ use crate::creations::{Creation, Library, Origin, Payload};
 use crate::creatures::{Body, Herd, Part};
 use crate::game::{throw, Action, Actions};
 use crate::mesh::ChunkEntities;
-use crate::player::Me;
+use crate::player::{Me, MAX_HEALTH};
 use crate::render::Clock;
 use crate::script::Scripts;
 use crate::settings::Settings;
@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 8;
+pub const PROTOCOL: u32 = 9;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -114,6 +114,8 @@ pub enum Msg {
     /// Blocks creations gave you or took (`world.give`, `world.take`): the
     /// host's count of these so far, and (block, more or fewer).
     Pockets { seq: u32, changes: Vec<(crate::blocks::BlockId, i32)> },
+    /// A creation hurt (less than 0) or healed (more) you.
+    Health(f32),
 }
 
 pub enum Event {
@@ -686,6 +688,14 @@ impl Net {
         }
     }
 
+    pub fn send_health(&self, pid: u32, change: f32) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Health(change)));
+            }
+        }
+    }
+
     pub fn send_note(&self, pid: u32, note: crate::script::Note) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
@@ -998,6 +1008,7 @@ pub fn client_net(
                     me.change_pockets(&changes);
                     me.pockets_seen = seq;
                 }
+                Msg::Health(change) if change.is_finite() => me.health_due += change.clamp(-MAX_HEALTH, MAX_HEALTH),
                 _ => {}
             },
         }

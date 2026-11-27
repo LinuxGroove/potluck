@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.3, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1, @potluck/sound 0.1, @potluck/net 0.1
+-- @potluck/world 0.4, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1, @potluck/sound 0.1, @potluck/net 0.1
 
 export type Position = vector | { number }
 
@@ -72,6 +72,12 @@ export type World = {
 	has: (player: Player | number, block: string) -> number,
 	take: (player: Player | number, block: string, n: number?) -> boolean,
 	give: (player: Player | number, block: string, n: number?) -> number,
+	-- 0.4
+	daytime: () -> number,
+	daylight: () -> number,
+	find_light: (pos: Position, radius: number) -> vector?,
+	hurt: (player: Player | number, amount: number) -> boolean,
+	heal: (player: Player | number, amount: number) -> boolean,
 }
 
 export type Score = { name: string, value: number }

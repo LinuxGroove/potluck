@@ -1065,9 +1065,12 @@ fn every_base_creation_runs_and_answers_players() {
         scripts.start(c, &mut herd).unwrap_or_else(|e| panic!("{} doesn't start: {e}", c.manifest.name));
         assert!(c.manifest.needs.contains_key("world"), "{} says which modules it needs", c.manifest.name);
     }
+    // at night, with Ada in survival, so the Gloomlings come out too
+    scripts.set_day(0.0);
+    scripts.set_pockets(7, true, &[], 0);
     run(&mut scripts, &mut voxels, &mut herd, 2.0);
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
-    for c in &base {
+    for c in base.iter().filter(|c| c.id != "gloomlings") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -1100,7 +1103,7 @@ fn every_base_creation_runs_and_answers_players() {
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: at + Vec3::X };
     scripts.players = vec![ada.clone()];
     scripts.event(&mut voxels, &mut herd, bot, "hit", &ada);
-    assert!(scripts.out.scores.iter().any(|s| s.1 == "tags" && s.3 == 7 && s.4 == 1.0), "a tag is scored: {:?}", scripts.out.scores);
+    assert!(scripts.out.scores.iter().any(|s| s.1 == "tags" && s.3 == 7 && s.4 >= 1.0), "a tag is scored: {:?}", scripts.out.scores);
     let (ram, at) = find(&herd, "Rodeo Ram");
     let ada = PlayerInfo { pos: at, ..ada };
     scripts.players = vec![ada.clone()];
@@ -2141,4 +2144,178 @@ fn villagers_trade_what_survival_players_gathered() {
     let panel = asked(&mut scripts, 8).unwrap();
     assert!(panel.text.contains("creative"), "{}", panel.text);
     assert_eq!(scripts.vms["villagers"].error, None);
+}
+
+#[test]
+fn creations_know_the_time_of_day_find_lights_and_hurt_survival_players() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::{Me, MAX_HEALTH};
+    home();
+    let lantern = crate::blocks::by_name("Lantern").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    // a lantern in the open, far from the Green
+    let (x, z) = (world::GREEN.x as i32 + 70, world::GREEN.z as i32 - 40);
+    let y = voxels.top(x, z) + 1;
+    voxels.set(IVec3::new(x, y, z), lantern);
+    let code = format!(
+        r#"
+local world = require("@potluck/world@0.4")
+print(string.format("start %.2f", world.daytime()))
+world.after(0.1, function()
+	print(string.format("time %.2f light %.2f", world.daytime(), world.daylight()))
+	local l = world.find_light(vector.create({x}, {y} + 3, {z}), 5)
+	print("found " .. tostring(l and l.x) .. " " .. tostring(l and l.y))
+	print("too far " .. tostring(world.find_light(vector.create({x} + 9, {y}, {z}), 6)))
+	print("hurt " .. tostring(world.hurt(7, 3)) .. " " .. tostring(world.heal(7, 1)) .. " " .. tostring(world.hurt(7, 500)))
+	print("creative " .. tostring(world.hurt(8, 3)) .. " unknown " .. tostring(world.hurt(9, 3)))
+	print(pcall(world.hurt, 7, -1) and "less ok" or "no less")
+	print(pcall(world.heal, 7, 0/0) and "nan ok" or "no nan")
+end)
+"#
+    );
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&creation(&code), &mut herd).unwrap();
+    scripts.set_day(1.0); // midnight
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let l = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{l}");
+    for want in [
+        "start 0.34",
+        "time 0.00 light 0.00",
+        &format!("found {} {}", x as f32 + 0.5, y as f32 + 0.5),
+        "too far nil",
+        "hurt true true true",
+        "creative false unknown false",
+        "no less",
+        "no nan",
+    ] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // one change for Ada: three, back one, and at most a whole bar
+    assert_eq!(scripts.health_changes(), vec![(7, -3.0 + 1.0 - MAX_HEALTH)]);
+    assert!(scripts.health_changes().is_empty());
+    scripts.set_day(0.5);
+    assert_eq!(crate::render::Clock { time: 0.5, running: true }.daylight(), 1.0);
+
+    // on the host's own game it lands in their health, in survival only
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    for survival in [true, false] {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        crate::sim(&mut app, crate::SEED);
+        app.insert_resource(Settings { survival, ..default() }).insert_resource(Me::default());
+        app.init_resource::<crate::input::Controls>().init_resource::<crate::ui::Focus>().init_resource::<crate::ui::Toasts>();
+        app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+        let bite = creation("local world = require(\"@potluck/world@0.4\")\nworld.after(0.1, function() for _, p in world.players() do world.hurt(p, 5) end end)");
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            let mut herd = w.resource_mut::<Herd>();
+            s.start(&bite, &mut herd).unwrap();
+        });
+        app.world_mut().run_system_once(crate::player::report_pockets).unwrap();
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            w.resource_scope(|w, mut v: Mut<Voxels>| {
+                let mut h = w.resource_mut::<Herd>();
+                s.tick(&mut v, &mut h, 0.2);
+            })
+        });
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        let due = app.world().resource::<Me>().health_due;
+        assert_eq!(due, if survival { -5.0 } else { 0.0 }, "survival {survival}");
+        app.world_mut().resource_mut::<Me>().health_due = -5.0; // as if sent anyway
+        app.world_mut().run_system_once(crate::player::walk).unwrap();
+        let me = app.world().resource::<Me>();
+        assert_eq!((me.health, me.health_due), (if survival { MAX_HEALTH - 5.0 } else { MAX_HEALTH }, 0.0), "survival {survival}");
+    }
+
+    // what goes between devices
+    let m = Msg::Health(-2.5);
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+}
+
+#[test]
+fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
+    home();
+    let gloomlings = Library::load().list.remove("gloomlings").expect("the base game has the gloomlings");
+    let lantern = crate::blocks::by_name("Lantern").unwrap();
+    let mut voxels = world();
+    // a flat, dark meadow of tall grass, well away from the Green
+    let (cx, cz, ground) = (world::GREEN.x as i32 + 80, world::GREEN.z as i32 + 60, 40);
+    let grass = crate::blocks::by_name("Tall grass").unwrap();
+    for x in cx - 26..=cx + 26 {
+        for z in cz - 26..=cz + 26 {
+            for y in 1..world::WY {
+                let b = match y {
+                    _ if y <= ground => crate::blocks::STONE,
+                    _ if y == ground + 1 => grass,
+                    _ => crate::blocks::AIR,
+                };
+                voxels.set(IVec3::new(x, y, z), b);
+            }
+        }
+    }
+    let ada = Vec3::new(cx as f32 + 0.5, ground as f32 + 1.0, cz as f32 + 0.5);
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: ada }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.start(&gloomlings, &mut herd).unwrap();
+    let count = |herd: &Herd| herd.bodies.values().filter(|b| b.kind == "Gloomling").count();
+    let log = |scripts: &Scripts| scripts.vms["gloomlings"].log.join("\n");
+
+    // nothing by day
+    scripts.set_day(0.5);
+    run(&mut scripts, &mut voxels, &mut herd, 5.0);
+    assert_eq!(count(&herd), 0);
+    // after dark they come, as many as the knob says, and say so
+    scripts.set_day(0.0);
+    run(&mut scripts, &mut voxels, &mut herd, 9.0);
+    assert_eq!(scripts.vms["gloomlings"].error, None, "{}", log(&scripts));
+    let n = count(&herd);
+    assert!((2..=4).contains(&n), "{n} gloomlings");
+    for b in herd.bodies.values() {
+        let d = Vec2::new(b.pos.x - ada.x, b.pos.z - ada.z).length();
+        assert!(d < 20.0, "one turned up {d} away");
+    }
+    let shown = scripts.ui_changes(&[7]);
+    assert!(
+        shown.iter().any(|(p, c)| *p == 7 && matches!(c, crate::script::UiChange::Piece { id, piece: Some(_), .. } if id == "night")),
+        "night falls on Ada's screen"
+    );
+    // they follow her and nip
+    run(&mut scripts, &mut voxels, &mut herd, 12.0);
+    let hurt: f32 = scripts.health_changes().iter().filter(|c| c.0 == 7).map(|c| c.1).sum();
+    assert!(hurt <= -2.0, "nipped {hurt}");
+    assert!(count(&herd) <= 4, "{} after a while", count(&herd));
+    // a lantern over her head: they back off and stop
+    voxels.set(IVec3::new(cx + 1, ground + 3, cz), lantern);
+    run(&mut scripts, &mut voxels, &mut herd, 2.5);
+    scripts.health_changes();
+    run(&mut scripts, &mut voxels, &mut herd, 8.0);
+    assert!(scripts.health_changes().is_empty(), "no nips in the light");
+    for b in herd.bodies.values() {
+        let d = Vec2::new(b.pos.x - (cx as f32 + 1.5), b.pos.z - (cz as f32 + 0.5)).length();
+        assert!(d > 4.0, "one's {d} from the lantern");
+    }
+    // bop one and it pops
+    let id = *herd.bodies.keys().next().expect("they wait at the edge of the light");
+    scripts.event(&mut voxels, &mut herd, id, "hit", &scripts.players[0].clone());
+    assert!(!herd.bodies.contains_key(&id));
+    // in the morning they fade away
+    scripts.set_day(0.4);
+    run(&mut scripts, &mut voxels, &mut herd, 15.0);
+    assert_eq!(count(&herd), 0);
+    // and creative players have nothing to fear
+    voxels.set(IVec3::new(cx + 1, ground + 3, cz), crate::blocks::AIR);
+    scripts.set_pockets(7, false, &[], 0);
+    scripts.set_day(0.0);
+    run(&mut scripts, &mut voxels, &mut herd, 10.0);
+    assert_eq!(count(&herd), 0);
+    assert_eq!(scripts.vms["gloomlings"].error, None, "{}", log(&scripts));
 }

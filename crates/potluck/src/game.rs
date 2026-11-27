@@ -188,11 +188,13 @@ pub fn host_step(
     mut rng: ResMut<HerdRng>,
     settings: Res<Settings>,
     mut heard: ResMut<crate::sound::Heard>,
+    clock: Res<crate::render::Clock>,
 ) {
     if matches!(net.role, Role::Client(_)) {
         return;
     }
     let dt = time.delta_secs().min(0.05);
+    scripts.set_day(clock.time);
     let my_id = net.my_id;
     let mut players = vec![];
     if let Some(me) = &me {
@@ -271,6 +273,14 @@ pub fn host_step(
             me.pockets_seen = seq;
         } else {
             net.send_pockets(pid, seq, changes);
+        }
+    }
+    // creations that hurt or healed players
+    for (pid, change) in scripts.health_changes() {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().health_due += change;
+        } else {
+            net.send_health(pid, change);
         }
     }
     // messages creations sent their client halves
