@@ -169,6 +169,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     conn.execute_batch(crate::servers::SCHEMA)?;
     conn.execute_batch(crate::devices::SCHEMA)?;
+    conn.execute_batch(crate::jams::SCHEMA)?;
     add_columns(&conn)?;
     Ok(conn)
 }
@@ -239,7 +240,7 @@ pub fn account_by_handle(db: &Connection, handle: &str) -> rusqlite::Result<Opti
 
 /// Names Forgejo or the market keep for themselves.
 const RESERVED: &[&str] = &[
-    "actions", "admin", "api", "assets", "avatar", "avatars", "forgejo", "ghost", "gitea", "profile", "root", "c", "explore", "git", "issues", "login", "market", "moderator", "new", "notifications", "org", "potluck", "pulls", "repo", "review", "search", "signin", "signout", "static", "user", "users", "f", "me", "help", "about",
+    "actions", "admin", "api", "assets", "avatar", "avatars", "forgejo", "ghost", "gitea", "profile", "root", "c", "explore", "git", "issues", "login", "market", "moderator", "new", "notifications", "org", "potluck", "pulls", "repo", "review", "search", "signin", "signout", "static", "user", "users", "f", "me", "help", "about", "servers", "jams",
 ];
 
 /// A handle for a new account from the name a player chose in game: letters,

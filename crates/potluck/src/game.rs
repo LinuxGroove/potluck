@@ -5,7 +5,8 @@ use bevy::prelude::*;
 
 use crate::creations::{open_folder, open_link, Creation, Library, Mark, Origin};
 use crate::creatures::{self, Herd};
-use crate::input::Controls;
+use crate::green::{self, Green, Shows};
+use crate::input::{glyph, Controls};
 use crate::net::{Net, Role};
 use crate::noise::Rng;
 use crate::player::Me;
@@ -32,8 +33,10 @@ pub struct Actions(pub Vec<(u32, Action)>);
 pub struct HerdRng(pub Rng);
 
 /// Aiming at creatures, getting on and off, and the pause button.
-pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut me: ResMut<Me>, net: Res<Net>, mut actions: ResMut<Actions>, mut acts: ResMut<Acts>) {
+#[allow(clippy::too_many_arguments)]
+pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut me: ResMut<Me>, net: Res<Net>, mut actions: ResMut<Actions>, mut acts: ResMut<Acts>, green: Res<Green>, lib: Res<Library>) {
     me.aim_body = None;
+    me.aim_arch = None;
     if !focus.playing() {
         // a menu open while riding: the creature stands and waits
         if me.riding.is_some() {
@@ -52,6 +55,16 @@ pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut
     let pick = herd.bodies.values().filter(|b| Some(b.id) != riding).filter_map(|b| b.ray(eye, dir).map(|t| (b.id, t))).filter(|(_, t)| *t < 4.5 && *t < block_t).min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((id, _)) = pick {
         me.aim_body = Some(id);
+    } else if riding.is_none() {
+        // one of the Green's arches
+        if let Some(i) = green::aimed(eye, dir, block_t) {
+            let text = match &green.arches(&lib)[i] {
+                Some(s @ Shows::Here(_)) => format!("{}\n{} Look inside", green::describe(s, &lib).1, glyph(c.pad, "interact")),
+                Some(s @ Shows::Pick(_)) => format!("{}\n{} Bring it into this world", green::describe(s, &lib).1, glyph(c.pad, "interact")),
+                None => "An arch for creations\nBring one into this world and it shows here".to_string(),
+            };
+            me.aim_arch = Some((i, text));
+        }
     }
     let pid = net.my_id;
     // Share: what you ride or aim at, straight to a code
@@ -85,6 +98,8 @@ pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut
                 focus.go(Screen::Inside(b.creation.clone()));
             }
         }
+    } else if let Some((i, _)) = me.aim_arch.as_ref().filter(|_| c.interact) {
+        acts.0.push(Act::Arch(*i));
     } else if c.look_inside {
         focus.go(Screen::Library);
     }
@@ -204,8 +219,13 @@ pub fn riding(herd: Res<Herd>, net: Res<Net>, mut me: ResMut<Me>) {
     me.riding = now;
 }
 
-pub fn labels(herd: Res<Herd>, net: Res<Net>, mut labels: ResMut<Labels>) {
+pub fn labels(herd: Res<Herd>, net: Res<Net>, green: Res<Green>, lib: Res<Library>, mut labels: ResMut<Labels>) {
     labels.0.clear();
+    for (i, s) in green.arches(&lib).iter().enumerate() {
+        if let Some(s) = s {
+            labels.0.push((green::arch_at(i) + Vec3::Y * 5.6, green::describe(s, &lib).0));
+        }
+    }
     for b in herd.bodies.values() {
         if let Some((text, _)) = &b.says {
             labels.0.push((b.pos + Vec3::Y * (b.half.y + 0.7), text.clone()));
@@ -309,8 +329,15 @@ pub fn do_acts(
     mut voxels: ResMut<Voxels>,
     mut info: ResMut<WorldInfo>,
     shares: Res<ShareJobs>,
+    mut green: ResMut<Green>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    // what the Green's arches can offer, asked for now and then while playing
+    if info.in_world && green.asked.is_none_or(|t| t.elapsed().as_secs_f32() > green::ASK_EVERY) {
+        green.asked = Some(std::time::Instant::now());
+        // until a player says how old they are, only what's for all ages
+        shares.green(&Who { young: settings.young || !settings.age_asked, ..Who::of(&settings) });
+    }
     let mut later = vec![];
     for act in std::mem::take(&mut acts.0) {
         // the first time anything goes online, ask who's playing
@@ -548,6 +575,35 @@ pub fn do_acts(
             Act::Run(id) => {
                 bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
             }
+            Act::Arch(i) => match green.arches(&lib).get(i).cloned().flatten() {
+                Some(Shows::Here(id)) => focus.go(Screen::Inside(id)),
+                Some(Shows::Pick(p)) => {
+                    let had = lib.list.values().find(|c| c.code.as_deref() == Some(p.code.as_str())).map(|c| c.id.clone());
+                    match had {
+                        Some(id) => {
+                            bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
+                            toasts.push(format!("{} is in your world", p.name));
+                        }
+                        None if green.fetching.is_none() => {
+                            green.fetching = Some(p.code.clone());
+                            toasts.push(format!("Fetching {}...", p.name));
+                            shares.load(&Who::of(&settings), &p.code, None);
+                        }
+                        None => {}
+                    }
+                }
+                None => {}
+            },
+            Act::EnterJam(id) => {
+                let code = lib.marks.get(&id).filter(|m| m.everyone && m.version > 0).map(|m| m.code.clone());
+                match (focus.jam.clone(), code) {
+                    (Some(jam), Some(code)) => {
+                        focus.status = format!("Entering it in the {} jam...", jam.theme);
+                        shares.enter_jam(&Who::of(&settings), &jam, &code);
+                    }
+                    _ => focus.status = "Share it to Everyone first: jam entries are on the market for anyone to try.".into(),
+                }
+            }
             Act::Stop(id) => {
                 if !matches!(net.role, Role::Client(_)) {
                     scripts.stop(&id, &mut herd);
@@ -596,7 +652,7 @@ pub fn do_acts(
 
 /// Acts that reach other people: the first one asks who's playing.
 fn goes_online(act: &Act) -> bool {
-    matches!(act, Act::Share(_) | Act::ShareTo(..) | Act::Suggest(_) | Act::OpenServers | Act::JoinAddress(_) | Act::Market(..) | Act::OpenDevices)
+    matches!(act, Act::Share(_) | Act::ShareTo(..) | Act::Suggest(_) | Act::OpenServers | Act::JoinAddress(_) | Act::Market(..) | Act::OpenDevices | Act::EnterJam(_))
 }
 
 /// The creations a fresh world starts with: the base game's.
@@ -621,6 +677,7 @@ pub fn share_results(
     mut net: ResMut<Net>,
     mut toasts: ResMut<Toasts>,
     info: Res<WorldInfo>,
+    mut green: ResMut<Green>,
 ) {
     for done in shares.poll() {
         match done {
@@ -646,9 +703,19 @@ pub fn share_results(
                         bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
                         toasts.push(format!("{name} is in your world"));
                     }
-                    focus.go(Screen::Inside(id));
+                    // from an arch: stay in the world with it
+                    if green.fetching.as_ref() == Some(&code) && info.in_world {
+                        green.fetching = None;
+                    } else {
+                        focus.go(Screen::Inside(id));
+                    }
                 }
-                Err(e) => focus.status = format!("Couldn't load it: {e}"),
+                Err(e) => {
+                    if green.fetching.take().is_some() {
+                        toasts.push(format!("Couldn't load it: {e}"));
+                    }
+                    focus.status = format!("Couldn't load it: {e}");
+                }
             },
             Done::Link { url, title } => {
                 focus.status.clear();
@@ -718,7 +785,19 @@ pub fn share_results(
                 focus.status = s.clone();
                 toasts.push(s);
             }
+            Done::Green { picks, jam } => {
+                green.picks = picks;
+                focus.jam = jam;
+            }
+            Done::Entered { theme } => {
+                focus.status = format!("Entered in the {theme} jam. Stars it gets until the jam ends count.");
+                toasts.push(format!("Entered in the {theme} jam"));
+            }
             Done::Failed(e) => {
+                // a code fetched for an arch: say so in the world
+                if green.fetching.take().is_some() && focus.screen == Screen::Playing {
+                    toasts.push(format!("Couldn't fetch it: {e}"));
+                }
                 focus.status = format!("Sorry: {e}.");
             }
         }

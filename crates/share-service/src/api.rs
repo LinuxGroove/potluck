@@ -49,6 +49,9 @@ pub fn routes() -> Router<Shared> {
         .route("/api/link/code", post(link_code))
         .route("/api/link/leave", post(leave))
         .route("/api/pass", post(pass))
+        .route("/api/jams", get(jams))
+        .route("/api/jams/{slug}/enter", post(enter_jam))
+        .route("/api/green", get(green))
         .route("/api/servers", get(servers))
         .route("/api/servers/heartbeat", post(heartbeat))
         .route("/api/servers/boards", post(boards_post))
@@ -374,4 +377,62 @@ pub fn count_diff(diff: &str) -> (usize, usize) {
         }
     }
     (add, del)
+}
+
+/// A creation as the game lists it: enough to show it and load it.
+fn listed(c: &db::Creation) -> Value {
+    json!({ "code": c.code, "name": c.name, "kind": c.kind, "by": c.maker, "about": c.about, "stars": c.stars, "all_ages": c.all_ages })
+}
+
+fn jam_json(j: &crate::jams::Jam) -> Value {
+    json!({ "slug": j.slug, "theme": j.theme, "about": j.about, "starts": j.starts, "ends": j.ends })
+}
+
+/// The jam running now and its entries, and the last one's favourites.
+async fn jams(State(app): State<Shared>) -> R<Json<Value>> {
+    let current = match app.current_jam()? {
+        Some(j) => {
+            let entries: Vec<Value> = app.jam_entries(&j)?.iter().map(|e| listed(&e.creation)).collect();
+            let mut v = jam_json(&j);
+            v["entries"] = json!(entries);
+            v
+        }
+        None => Value::Null,
+    };
+    let last = app.jams()?.into_iter().find(|j| j.over());
+    let last = match last {
+        Some(j) => {
+            let favourites: Vec<Value> = app.favourites(&j)?.iter().map(|e| listed(&e.creation)).collect();
+            let mut v = jam_json(&j);
+            v["favourites"] = json!(favourites);
+            v
+        }
+        None => Value::Null,
+    };
+    Ok(Json(json!({ "current": current, "last": last })))
+}
+
+#[derive(Deserialize)]
+struct EnterReq {
+    code: String,
+}
+
+async fn enter_jam(State(app): State<Shared>, h: HeaderMap, Path(slug): Path<String>, Json(req): Json<EnterReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let j = app.enter_jam(&a, &slug, &req.code)?;
+    Ok(Json(jam_json(&j)))
+}
+
+/// The four creations for the arches of a new world's Green.
+async fn green(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let arches: Vec<Value> = app
+        .green(young(&h).unwrap_or(false))?
+        .iter()
+        .map(|a| {
+            let mut v = listed(&a.creation);
+            v["why"] = json!(a.why);
+            v
+        })
+        .collect();
+    Ok(Json(json!({ "arches": arches })))
 }
