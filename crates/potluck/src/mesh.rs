@@ -1,5 +1,6 @@
 //! Turning chunks of blocks into meshes: one face per side that can be seen,
-//! with ambient occlusion at the corners.
+//! with ambient occlusion at the corners and, at each corner, how much of
+//! the sky it sees (`Sky`).
 
 use std::collections::HashMap;
 
@@ -9,35 +10,110 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::tasks::ComputeTaskPool;
 
-use std::f32::consts::{FRAC_PI_4, PI};
+use std::f32::consts::{FRAC_PI_4, PI, TAU};
 
-use crate::blocks::{self, Shape, AIR, BIRCH_LEAVES, BUSH, FERN, GRASS, LEAVES, PINE, WATER};
+use crate::blocks::{self, BlockId, Shape, AIR, BIRCH_LEAVES, BUSH, CARROTS, FERN, GLASS, GRASS, LEAVES, PINE, WATER, WHEAT};
 use crate::noise::{fbm, hash2, smooth, vnoise};
 use crate::textures::BlockAtlas;
 use crate::world::{Voxels, CHUNK};
 
 /// How thickly grass covers the ground: the share of grass blocks that get a
 /// tuft where it's lush (fewer on the Steam Deck), and whether ground cover
-/// casts shadows. Set from the lighting tier at start.
+/// near the player casts shadows. Set from the lighting tier at start.
 #[derive(Resource, Clone, Copy)]
 pub struct Cover {
     pub density: f32,
     pub shadows: bool,
+    /// What's left out, for measuring what each costs:
+    /// `POTLUCK_OFF=tufts,fins,lips,wind,lod,sky` (lod: every chunk in
+    /// full; sky: no darker rooms under roofs).
+    pub off: Off,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Off {
+    pub tufts: bool,
+    pub fins: bool,
+    pub lips: bool,
+    pub wind: bool,
+    pub lod: bool,
+    pub sky: bool,
+    /// Leaves out of the ray traced scene (the tracer counts them as solid)
+    pub rtleaves: bool,
+}
+
+impl Off {
+    fn from_env() -> Self {
+        let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
+        let has = |w: &str| v.split(',').any(|o| o.trim() == w);
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves") }
+    }
 }
 
 impl Default for Cover {
     fn default() -> Self {
-        Cover { density: 1.0, shadows: true }
+        Cover { density: 1.0, shadows: true, off: Off::default() }
     }
 }
 
 impl Cover {
     pub fn of(tier: crate::render::Tier) -> Self {
         use crate::render::Tier;
-        match tier {
-            Tier::Low => Cover { density: 0.45, shadows: false },
-            Tier::Medium => Cover { density: 0.8, shadows: false },
-            Tier::High | Tier::Ultra => Cover { density: 1.0, shadows: true },
+        let (density, shadows) = match tier {
+            Tier::Low => (0.45, false),
+            Tier::Medium => (0.8, false),
+            Tier::High | Tier::Ultra => (1.0, true),
+        };
+        Cover { density, shadows, off: Off::from_env() }
+    }
+}
+
+/// How much detail a chunk's meshes carry, by how far it is from the player.
+/// Near, everything, swaying in the wind; further out, fewer, wider tufts
+/// that keep still, and past the middle distance no leaf fins; furthest, no
+/// tufts either. Out there each would be a few pixels, and tiny triangles
+/// are what cards draw slowest.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Detail {
+    Near,
+    Mid,
+    Far,
+    Distant,
+}
+
+/// Where each level ends, in blocks across from the player.
+const DETAIL_RANGE: [f32; 3] = [52.0, 112.0, 176.0];
+/// How far past a boundary a chunk goes before it changes level, so walking
+/// along one doesn't remesh the same chunks back and forth.
+const DETAIL_MARGIN: f32 = 6.0;
+
+impl Detail {
+    const ALL: [Detail; 4] = [Detail::Near, Detail::Mid, Detail::Far, Detail::Distant];
+
+    /// The level a chunk should have, leaning toward the one it has now.
+    pub fn of(c: IVec3, focus: Vec3, now: Option<Detail>) -> Detail {
+        let mid = (c * CHUNK).as_vec3() + Vec3::splat(CHUNK as f32 / 2.0);
+        let across = Vec2::new(mid.x - focus.x, mid.z - focus.z).length();
+        // only chunks level with the player are near: the morph targets'
+        // buffer is small on some cards (see `WAVE`)
+        let near = across.max((mid.y - focus.y).abs() * DETAIL_RANGE[0] / (CHUNK as f32 * 1.5));
+        let at = now.map_or(usize::MAX, |d| d as usize);
+        for (i, &r) in DETAIL_RANGE.iter().enumerate() {
+            let r = if at == usize::MAX { r } else if at <= i { r + DETAIL_MARGIN } else { r - DETAIL_MARGIN };
+            if (if i == 0 { near } else { across }) < r {
+                return Detail::ALL[i];
+            }
+        }
+        Detail::Distant
+    }
+
+    /// The share of tufts kept.
+    fn tufts(self) -> f32 {
+        match self {
+            Detail::Near => 1.0,
+            Detail::Mid => 0.5,
+            Detail::Far => 0.2,
+            Detail::Distant => 0.0,
         }
     }
 }
@@ -63,6 +139,8 @@ pub struct MeshData {
     idx: Vec<u32>,
     /// How far each vertex moves in the wind (plant tips; zero elsewhere).
     sway: Vec<Vec3>,
+    /// How much of the sky each vertex sees (`Sky`), 1 until worked out.
+    sky: Vec<f32>,
 }
 
 /// Plants sway in a breeze. Each plant's tip has a sway (how far and which
@@ -70,18 +148,11 @@ pub struct MeshData {
 /// morph targets of its chunk's mesh; `wind` moves the wave along with time,
 /// so gusts roll over the fields without any mesh being rebuilt. All morph
 /// targets share one buffer that some cards bind 128 MiB of at most, so only
-/// chunks near the player sway (`SWAY_RANGE`).
+/// chunks near the player sway (`Detail::Near`).
 const WAVE: (Vec2, f32) = (Vec2::new(0.13, 0.06), 1.3);
 /// Which way the wind blows, mostly.
 const WIND: Vec3 = Vec3::new(0.91, 0.0, 0.41);
 const WIND_TARGETS: usize = 3;
-/// How near the player (in blocks, across) a chunk's middle is for its plants to sway.
-const SWAY_RANGE: f32 = 52.0;
-
-fn sways_near(c: IVec3, focus: Vec3) -> bool {
-    let mid = (c * CHUNK).as_vec3() + Vec3::splat(CHUNK as f32 / 2.0);
-    Vec2::new(mid.x - focus.x, mid.z - focus.z).length() < SWAY_RANGE && (mid.y - focus.y).abs() < CHUNK as f32 * 1.5
-}
 
 /// The entity whose morph weights every swaying mesh follows.
 #[derive(Resource)]
@@ -131,9 +202,13 @@ impl MeshData {
 
     /// A quad with a colour at each corner.
     fn quad_tinted(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], tint: [[f32; 4]; 4], flip: bool) {
-        let base = self.pos.len() as u32;
         let [u0, v0, u1, v1] = rect;
-        let uvs = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
+        self.quad_uv(corners, n, [[u0, v1], [u1, v1], [u1, v0], [u0, v0]], tint, flip);
+    }
+
+    /// A quad with its own UVs at each corner (corner 0 to 1 runs along u).
+    fn quad_uv(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], uvs: [[f32; 2]; 4], tint: [[f32; 4]; 4], flip: bool) {
+        let base = self.pos.len() as u32;
         let t = Vec3::from(corners[1]) - Vec3::from(corners[0]);
         let b = Vec3::from(corners[3]) - Vec3::from(corners[0]);
         let t = t.normalize_or_zero();
@@ -146,6 +221,7 @@ impl MeshData {
             self.col.push(tint[k]);
             self.tan.push([t.x, t.y, t.z, w]);
             self.sway.push(Vec3::ZERO);
+            self.sky.push(1.0);
         }
         if flip {
             self.idx.extend_from_slice(&[base + 1, base + 2, base + 3, base + 1, base + 3, base]);
@@ -181,8 +257,9 @@ impl MeshData {
         Some(out)
     }
 
-    /// The mesh, with corner shading in its vertex colours unless the world
-    /// is ray traced (which shades corners itself, and takes only position,
+    /// The mesh, with corner shading in its vertex colours and the sky each
+    /// corner sees in its second UVs, unless the world is ray traced (which
+    /// shades corners and finds the sky itself, and takes only position,
     /// normal, UV and tangent).
     pub fn into_mesh(self, raytraced: bool) -> Mesh {
         let targets = self.wind_targets();
@@ -192,6 +269,7 @@ impl MeshData {
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv);
         if !raytraced {
             m.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.col);
+            m.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.sky.iter().map(|&s| [sky_u(s), 0.5]).collect::<Vec<_>>());
         }
         if let Some(t) = targets {
             m.set_morph_targets(t);
@@ -211,6 +289,8 @@ impl MeshData {
 /// so there the material tints them).
 pub struct ChunkMesh {
     pub layers: [MeshData; LAYERS],
+    /// Whether anything in it changes with its `Detail` (grass, leaves, plants).
+    pub varies: bool,
 }
 
 pub const LAYERS: usize = 7;
@@ -240,6 +320,215 @@ const FACES: [Face; 6] = [
 
 const AO: [f32; 4] = [1.0, 0.78, 0.6, 0.45];
 
+/// How far sky light is looked for, up and across, in blocks.
+pub const SKY_REACH: i32 = 12;
+/// How many steps the ambient light curve's texture has (`sky_ambient`).
+pub const SKY_STEPS: usize = 64;
+
+/// How much of the ambient light (the sky's and the flat fill) a face gets
+/// for the share of the sky it sees: a little always, since light bounces in
+/// through doors and windows, and all of it in the open.
+pub fn sky_ambient(s: f32) -> f32 {
+    0.13 + 0.87 * s.clamp(0.0, 1.0)
+}
+
+/// Where a share of sky falls in the curve's texture.
+fn sky_u(s: f32) -> f32 {
+    (0.5 + s.clamp(0.0, 1.0) * (SKY_STEPS - 1) as f32) / SKY_STEPS as f32
+}
+
+/// How much light a block lets through on the way to the sky: solid blocks
+/// none, leaves, glass and water some.
+fn sky_through(b: BlockId) -> f32 {
+    match b {
+        AIR => 1.0,
+        LEAVES | BIRCH_LEAVES | PINE => 0.7,
+        GLASS => 0.85,
+        WATER => 0.8,
+        _ if blocks::is_opaque(b) => 0.0,
+        _ => 1.0,
+    }
+}
+
+/// How much of the sky the open cells round a chunk see, which is how much
+/// of the ambient light reaches the faces beside them. Rooms under a roof
+/// would otherwise be lit by the open sky as if they had none. Only ambient
+/// light is scaled (through the chunk materials' occlusion texture, read
+/// with the second UVs), so sun through a skylight still lands bright on a
+/// library floor whose walls are in shade. Rays go up from each cell:
+/// straight up, eight halfway to the horizon and four lower ones that find
+/// doors and windows; further out, where rooms can't be seen into, four
+/// halfway instead of eight.
+struct Sky {
+    /// The blocks round the chunk the rays can reach, copied out of the
+    /// world so tracing stays in the cache.
+    ids: Vec<BlockId>,
+    /// Each cell's share of sky (for cells in and just round the chunk),
+    /// NaN until it's worked out and -1 for solid blocks.
+    cells: Vec<f32>,
+    rays: &'static [SkyRay],
+    /// Where each ray's cells are in `ids`, from the cell it starts in.
+    steps: Vec<Vec<usize>>,
+    /// The corner of `ids`, and of `cells`.
+    lo: IVec3,
+    cells_lo: IVec3,
+}
+
+/// A ray to the sky: the cells it crosses from a cell's middle, in order,
+/// and how much of the sky it stands for.
+struct SkyRay {
+    cells: Vec<IVec3>,
+    weight: f32,
+}
+
+/// How far past the chunk's edges cells are worked out (vertices of fins,
+/// lips and models reach a little outside it).
+const SKY_PAD: i32 = 3;
+const SKY_SPAN: i32 = CHUNK + 2 * SKY_PAD;
+/// How far round the chunk the copy of blocks reaches: far enough for every
+/// ray from every cell worked out.
+const SKY_AROUND: IVec3 = IVec3::new(SKY_PAD + SKY_REACH, SKY_PAD, SKY_PAD + SKY_REACH);
+const SKY_REGION: IVec3 = IVec3::new(CHUNK + 2 * SKY_AROUND.x, CHUNK + 2 * SKY_PAD + SKY_REACH + 1, CHUNK + 2 * SKY_AROUND.z);
+
+/// How much sky light each block lets through (`sky_through`), by id.
+fn sky_through_all() -> &'static [f32; 256] {
+    static ALL: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| std::array::from_fn(|i| sky_through(i as BlockId)))
+}
+
+/// The rays near the player and further out (see `Sky`).
+fn sky_rays(full: bool) -> &'static [SkyRay] {
+    static RAYS: std::sync::OnceLock<[Vec<SkyRay>; 2]> = std::sync::OnceLock::new();
+    let make = |full: bool| {
+        let mut dirs = vec![(Vec3::Y, 2.0)];
+        let mut ring = |up: f32, n: usize, weight: f32| {
+            for k in 0..n {
+                let a = k as f32 * TAU / n as f32;
+                dirs.push((Vec3::new(a.cos() * up.cos(), up.sin(), a.sin() * up.cos()), weight));
+            }
+        };
+        if full {
+            ring(FRAC_PI_4, 8, 0.75);
+        } else {
+            ring(FRAC_PI_4, 4, 1.5);
+        }
+        ring(0.33, 4, 0.8);
+        let total: f32 = dirs.iter().map(|d| d.1).sum();
+        dirs.into_iter()
+            .map(|(d, weight)| {
+                // every cell the ray passes through, in small enough steps not
+                // to slip between two blocks meeting at an edge
+                let mut cells: Vec<IVec3> = Vec::new();
+                let mut s = 0.25;
+                while s <= SKY_REACH as f32 {
+                    let p = (Vec3::splat(0.5) + d * s).floor().as_ivec3();
+                    if p != IVec3::ZERO && cells.last() != Some(&p) {
+                        cells.push(p);
+                    }
+                    s += 0.25;
+                }
+                SkyRay { cells, weight: weight / total }
+            })
+            .collect::<Vec<_>>()
+    };
+    &RAYS.get_or_init(|| [make(true), make(false)])[if full { 0 } else { 1 }]
+}
+
+impl Sky {
+    fn new(w: &Voxels, o: IVec3, detail: Detail) -> Self {
+        let rays = sky_rays(matches!(detail, Detail::Near | Detail::Mid));
+        let lo = o - SKY_AROUND;
+        let n = SKY_REGION;
+        let mut ids = Vec::with_capacity((n.x * n.y * n.z) as usize);
+        for y in lo.y..lo.y + n.y {
+            for z in lo.z..lo.z + n.z {
+                for x in lo.x..lo.x + n.x {
+                    ids.push(w.get(x, y, z));
+                }
+            }
+        }
+        let steps = rays.iter().map(|r| r.cells.iter().map(|d| ((d.y * n.z + d.z) * n.x + d.x) as isize as usize).collect()).collect();
+        Sky { ids, cells: vec![f32::NAN; (SKY_SPAN * SKY_SPAN * SKY_SPAN) as usize], rays, steps, lo, cells_lo: o - IVec3::splat(SKY_PAD) }
+    }
+
+    /// The share of sky a cell sees, or None for a solid block (or a cell
+    /// too far out of the chunk to have been copied).
+    fn cell(&mut self, c: IVec3) -> Option<f32> {
+        let l = c - self.cells_lo;
+        if l.cmplt(IVec3::ZERO).any() || l.cmpge(IVec3::splat(SKY_SPAN)).any() {
+            return None;
+        }
+        let i = ((l.y * SKY_SPAN + l.z) * SKY_SPAN + l.x) as usize;
+        if self.cells[i].is_nan() {
+            let r = c - self.lo;
+            let at = ((r.y * SKY_REGION.z + r.z) * SKY_REGION.x + r.x) as usize;
+            self.cells[i] = if blocks::is_opaque(self.ids[at]) { -1.0 } else { self.trace(at) };
+        }
+        let v = self.cells[i];
+        (v >= 0.0).then_some(v)
+    }
+
+    /// The share of sky seen from the cell at `at` in the copied blocks.
+    fn trace(&self, at: usize) -> f32 {
+        let pass = sky_through_all();
+        let mut seen = 0.0;
+        for (ray, steps) in self.rays.iter().zip(&self.steps) {
+            let mut through = 1.0;
+            for &d in steps {
+                let t = pass[self.ids[at.wrapping_add(d)] as usize];
+                if t < 1.0 {
+                    through *= t;
+                    if through < 0.03 {
+                        through = 0.0;
+                        break;
+                    }
+                }
+            }
+            seen += through * ray.weight;
+        }
+        seen
+    }
+
+    /// The sky seen at a vertex: the open cells round the point half a block
+    /// out along its normal, blended by how near each is.
+    fn at(&mut self, p: Vec3, n: Vec3) -> f32 {
+        let q = p + n * 0.5 - Vec3::splat(0.5);
+        let base = q.floor();
+        let f = q - base;
+        let b = base.as_ivec3();
+        let (wx, wy, wz) = ([1.0 - f.x, f.x], [1.0 - f.y, f.y], [1.0 - f.z, f.z]);
+        let (mut sum, mut weights) = (0.0, 0.0);
+        for dz in 0..2 {
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let wgt = wx[dx] * wy[dy] * wz[dz];
+                    if wgt < 1e-4 {
+                        continue;
+                    }
+                    if let Some(s) = self.cell(b + IVec3::new(dx as i32, dy as i32, dz as i32)) {
+                        sum += wgt * s;
+                        weights += wgt;
+                    }
+                }
+            }
+        }
+        if weights > 0.0 { sum / weights } else { 1.0 }
+    }
+
+    /// Works out every vertex's sky in a chunk's layers (water reflects the
+    /// sky rather than taking light from it).
+    fn shade(&mut self, layers: &mut [MeshData; LAYERS]) {
+        for (i, l) in layers.iter_mut().enumerate() {
+            if i == 2 {
+                continue;
+            }
+            for v in 0..l.pos.len() {
+                l.sky[v] = self.at(Vec3::from(l.pos[v]), Vec3::from(l.nrm[v]));
+            }
+        }
+    }
+}
+
 /// How much of red, green and blue each block of water soaks up, on the way
 /// down to what's under it and back up.
 const UNDERWATER: [f32; 3] = [0.25, 0.06, 0.045];
@@ -256,7 +545,7 @@ pub fn water_tint(depth: f32) -> [f32; 4] {
 /// Grass over a grass block: a lip hanging over each open side, so terraces
 /// don't show a line of dirt, and a tuft on most tops, tinted lush or dry by
 /// where it grows.
-fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, cover: Cover) {
+fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, cover: Cover, detail: Detail) {
     let above = w.get(x, y + 1, z);
     if blocks::is_opaque(above) || above == WATER {
         return;
@@ -266,7 +555,7 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
     let up = [0.0, 1.0, 0.0];
     let lip = BlockAtlas::uv(atlas.tile("grass_lip"));
     for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-        if blocks::is_opaque(w.get(x + dx, y, z + dz)) {
+        if cover.off.lips || blocks::is_opaque(w.get(x + dx, y, z + dz)) {
             continue;
         }
         let out = Vec3::new(dx as f32, 0.0, dz as f32);
@@ -277,12 +566,13 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
         // lit as if it faced up, like the top it hangs from
         m.quad_tinted([(tl + down).into(), (tr + down).into(), tr.into(), tl.into()], up, lip, [rgba(tint * 0.72), rgba(tint * 0.72), rgba(tint), rgba(tint)], false);
     }
-    if above != AIR || cover.density <= 0.0 {
+    let keep = if cover.off.lod { 1.0 } else { detail.tufts() };
+    if above != AIR || cover.density <= 0.0 || keep <= 0.0 || cover.off.tufts {
         return;
     }
     let hh = |s: i32| hash2(x.wrapping_add(y.wrapping_mul(7919)), z, s);
     let lush = fbm(fx / 26.0, fz / 26.0, 311, 3);
-    if hh(81) > cover.density * (0.3 + 0.7 * smooth(0.28, 0.6, lush)) {
+    if hh(81) > cover.density * keep * (0.3 + 0.7 * smooth(0.28, 0.6, lush)) {
         return;
     }
     let field = fbm(fx / 15.0, fz / 15.0, 313, 3);
@@ -295,7 +585,8 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
     };
     let rect = BlockAtlas::uv(atlas.tile(kind));
     let tall = (0.45 + 0.35 * hh(84)) * (0.75 + 0.5 * lush) * scale;
-    let hw = 0.5 + 0.12 * hh(85);
+    // fewer tufts further out are wider, so the ground looks as covered
+    let hw = (0.5 + 0.12 * hh(85)) * (1.0 / keep).sqrt().min(1.5);
     let c = Vec3::new(fx + 0.5 + (hh(86) - 0.5) * 0.35, fy + 0.98, fz + 0.5 + (hh(87) - 0.5) * 0.35);
     let top = Vec3::Y * tall + Vec3::new(hh(88) - 0.5, 0.0, hh(89) - 0.5) * 0.25 * tall;
     let mut t = tint * (0.88 + 0.22 * hh(91));
@@ -310,6 +601,85 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
         let (a, b) = (c - d, c + d);
         m.quad_tinted([a.into(), b.into(), (b + top).into(), (a + top).into()], up, rect, [rgba(t * 0.55), rgba(t * 0.55), rgba(t), rgba(t)], false);
         m.sway_top(WIND * tall * (0.09 + 0.06 * hh(92 + i)));
+    }
+}
+
+/// A model's boxes (`blocks::Cuboid`). Each face shows the part of its
+/// texture it covers, as if the box were cut from a full block, so faces
+/// line up across boxes; faces against a full block are left out. Corners
+/// darken toward the floor, since models get no corner shading of their own.
+fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, id: BlockId) {
+    let def = blocks::block(id);
+    let next = |d: usize| {
+        let s = blocks::SIDES[d];
+        w.get(x + s[0], y + s[1], z + s[2])
+    };
+    let o = Vec3::new(x as f32, y as f32, z as f32);
+    // standing on the ground, darker toward it (stacked, one model's light runs on into the next)
+    let floor = blocks::is_opaque(w.get(x, y - 1, z));
+    for b in def.model {
+        if !b.when.holds(id, next) {
+            continue;
+        }
+        let lo = Vec3::from(b.from.map(|v| v as f32 / 16.0));
+        let hi = Vec3::from(b.to.map(|v| v as f32 / 16.0));
+        let layer = if b.glow { 4 } else { 0 };
+        for f in &FACES {
+            let axis = (0..3).find(|&i| f.n[i] != 0).unwrap();
+            let out = if f.n[axis] > 0 { hi[axis] >= 1.0 } else { lo[axis] <= 0.0 };
+            if out && blocks::is_opaque(w.get(x + f.n[0], y + f.n[1], z + f.n[2])) {
+                continue;
+            }
+            let name = if b.tex[f.s].is_empty() { def.faces[f.s] } else { b.tex[f.s] };
+            let [u0, v0, u1, v1] = BlockAtlas::uv(atlas.tile(name));
+            // where each corner is in the block, and the UV a full block's
+            // face would have there (corner k of a full face has these)
+            let unit = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+            let local = f.c.map(|c| Vec3::new([lo.x, hi.x][c[0] as usize], [lo.y, hi.y][c[1] as usize], [lo.z, hi.z][c[2] as usize]));
+            let uvs = local.map(|p| {
+                let mut uv = [0.0f32; 2];
+                for (k, c) in f.c.iter().enumerate() {
+                    let wgt: f32 = (0..3).filter(|&i| i != axis).map(|i| if c[i] == 1 { p[i] } else { 1.0 - p[i] }).product();
+                    uv[0] += wgt * unit[k][0];
+                    uv[1] += wgt * unit[k][1];
+                }
+                [u0 + (u1 - u0) * uv[0], v0 + (v1 - v0) * uv[1]]
+            });
+            let down = if f.n[1] < 0 { 0.6 } else { 1.0 };
+            let tint = local.map(|p| {
+                let l = if b.glow { 1.0 } else if floor { down * (0.62 + 0.38 * p.y) } else { down };
+                [l, l, l, 1.0]
+            });
+            layers[layer].quad_uv(local.map(|p| (o + p).into()), f.n.map(|v| v as f32), uvs, tint, false);
+        }
+    }
+}
+
+/// Surf where water meets the land: a strip of foam on the water along each
+/// side of the block that has the shore beside it, its foamy edge to the
+/// land. Near the player it laps in and out with the wind's wave. It goes
+/// with the plants (cut out, and kept out of ray tracing).
+fn shore_foam(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, detail: Detail) {
+    let [u0, v0, u1, v1] = BlockAtlas::uv(atlas.tile("foam"));
+    let yy = y as f32 + 0.9;
+    let c = Vec3::new(x as f32 + 0.5, yy, z as f32 + 0.5);
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        if !blocks::is_opaque(w.get(x + dx, y, z + dz)) {
+            continue;
+        }
+        let d = Vec3::new(dx as f32, 0.0, dz as f32);
+        // along the shore, turning left from facing it
+        let along = Vec3::new(dz as f32, 0.0, -dx as f32);
+        let e0 = c + d * 0.5 - along * 0.5;
+        let e1 = c + d * 0.5 + along * 0.5;
+        let q = [e0, e1, e1 - d, e0 - d].map(|p| p.into());
+        m.quad_uv(q, [0.0, 1.0, 0.0], [[u0, v0], [u1, v0], [u1, v1], [u0, v1]], [[1.0; 4]; 4], false);
+        if detail == Detail::Near {
+            let n = m.sway.len();
+            for s in &mut m.sway[n - 4..] {
+                *s = d * 0.07;
+            }
+        }
     }
 }
 
@@ -337,8 +707,13 @@ fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 
     }
 }
 
-/// A chunk's meshes; with `sway`, its plants move in the wind.
-pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, sway: bool) -> ChunkMesh {
+/// A chunk's meshes, with as much detail as `detail` says; near the player,
+/// its plants move in the wind.
+pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail: Detail) -> ChunkMesh {
+    let detail = if cover.off.lod { Detail::Near } else { detail };
+    // past the middle distance a fin is a few pixels
+    let fins = matches!(detail, Detail::Near | Detail::Mid) && !cover.off.fins;
+    let mut varies = false;
     let mut layers: [MeshData; LAYERS] = Default::default();
     let o = c * CHUNK;
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
@@ -382,8 +757,11 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, sway: 
                             [corner(0, 1), corner(1, 1), corner(1, 0), corner(0, 0)],
                             false,
                         );
+                        shore_foam(&mut layers[3], w, atlas, x, y, z, detail);
                     }
+                    Shape::Model => model(&mut layers, w, atlas, x, y, z, id),
                     Shape::Cross => {
+                        varies = true;
                         let rect = BlockAtlas::uv(atlas.tile(def.faces[1]));
                         // a little offset per block so a meadow isn't a grid
                         let h = hash2(x, z, 77);
@@ -397,6 +775,21 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, sway: 
                         let (cx, cz) = (fx + 0.5 + ox, fz + 0.5 + oz);
                         // darker where the stems meet the ground
                         let shade = [0.7, 0.7, 1.0, 1.0];
+                        if matches!(id, WHEAT | CARROTS) {
+                            // crops grow in rows: four sheets in a #, square to the field
+                            let tall = if id == WHEAT { 0.95 + h * 0.15 } else { 0.55 + h * 0.1 };
+                            let up = [0.0, 1.0, 0.0];
+                            for k in 0..4 {
+                                let at = if k % 2 == 0 { 0.25 } else { 0.75 };
+                                let (a, b) = if k < 2 { ([fx + at, fy, fz], [fx + at, fy, fz + 1.0]) } else { ([fx, fy, fz + at], [fx + 1.0, fy, fz + at]) };
+                                let q = [a, b, [b[0], fy + tall, b[2]], [a[0], fy + tall, a[2]]];
+                                layers[3].quad(q, up, rect, shade, false);
+                                layers[3].sway_top(WIND * tall * 0.05);
+                                layers[3].quad([q[1], q[0], q[3], q[2]], up, rect, shade, false);
+                                layers[3].sway_top(WIND * tall * 0.05);
+                            }
+                            continue;
+                        }
                         let sway = WIND * tall * if id == BUSH { 0.035 } else if id == FERN { 0.06 } else { 0.1 };
                         for k in 0..sheets {
                             let ang = a0 + k as f32 * PI / sheets as f32;
@@ -444,7 +837,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, sway: 
                             let corners = f.c.map(|cc| [fx + cc[0] as f32, fy + cc[1] as f32, fz + cc[2] as f32]);
                             let n = f.n.map(|v| v as f32);
                             let flip = occ[0] + occ[2] > occ[1] + occ[3];
-                            if matches!(id, LEAVES | BIRCH_LEAVES | PINE) && nb == AIR {
+                            if matches!(id, LEAVES | BIRCH_LEAVES | PINE) && nb == AIR && fins {
                                 leaf_fins(&mut layers[layer], corners, n, rect, light, hash2(x * 3 + f.n[0], y * 5 + f.n[1], z * 7 + f.n[2]));
                             }
                             if id == GRASS && f.s == 0 && nb != WATER {
@@ -462,19 +855,23 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, sway: 
                             }
                         }
                         if id == GRASS {
-                            ground_cover(&mut layers[COVER], w, atlas, x, y, z, cover);
+                            ground_cover(&mut layers[COVER], w, atlas, x, y, z, cover, detail);
                         }
+                        varies |= matches!(id, GRASS | LEAVES | BIRCH_LEAVES | PINE);
                     }
                 }
             }
         }
     }
-    if !sway {
+    if detail != Detail::Near || cover.off.wind {
         for l in &mut layers {
             l.sway.fill(Vec3::ZERO);
         }
     }
-    ChunkMesh { layers }
+    if !cover.off.sky && layers.iter().enumerate().any(|(i, l)| i != 2 && !l.is_empty()) {
+        Sky::new(w, o, detail).shade(&mut layers);
+    }
+    ChunkMesh { layers, varies }
 }
 
 #[derive(Resource)]
@@ -487,8 +884,8 @@ pub struct ChunkEntities {
     pub map: HashMap<IVec3, [Option<Entity>; LAYERS]>,
     /// How many chunks have been meshed since the world loaded.
     pub meshed: usize,
-    /// Chunks meshed with their plants swaying (near the player).
-    pub swaying: std::collections::HashSet<IVec3>,
+    /// The detail each chunk with grass, leaves or plants was meshed with.
+    pub detail: HashMap<IVec3, Detail>,
 }
 
 #[derive(Component)]
@@ -512,13 +909,27 @@ pub fn remesh(
     cover: Res<Cover>,
     wind: Option<Res<Wind>>,
 ) {
-    // chunks the player has come near or left behind change whether they sway
-    let changed: Vec<IVec3> = chunks.map.keys().filter(|c| sways_near(**c, focus.0) != chunks.swaying.contains(*c)).copied().collect();
+    // chunks the player has come near or left behind change their detail
+    let changed: Vec<IVec3> = chunks.detail.iter().filter(|(c, d)| Detail::of(**c, focus.0, Some(**d)) != **d).map(|(c, _)| *c).collect();
     voxels.dirty.extend(changed);
+    let f = (focus.0 / CHUNK as f32).floor().as_ivec3();
+    if voxels.dirty.is_empty() {
+        // then a few of those a change opened to the sky or roofed over,
+        // nearest first, so placing a block never meshes a dozen at once
+        let near = |c: &IVec3| {
+            let d = *c - f;
+            d.x * d.x + d.y * d.y * 2 + d.z * d.z
+        };
+        let mut shade: Vec<IVec3> = voxels.shade.iter().copied().collect();
+        shade.sort_by_key(near);
+        for c in shade.into_iter().take(3) {
+            voxels.shade.remove(&c);
+            voxels.dirty.insert(c);
+        }
+    }
     if voxels.dirty.is_empty() {
         return;
     }
-    let f = (focus.0 / CHUNK as f32).floor().as_ivec3();
     let mut list: Vec<IVec3> = voxels.dirty.iter().copied().collect();
     list.sort_by_key(|c| {
         let d = *c - f;
@@ -533,18 +944,18 @@ pub fn remesh(
     let w = &*voxels;
     let a = &*atlas;
     let cv = *cover;
-    let at = focus.0;
-    let done: Vec<(IVec3, ChunkMesh)> = ComputeTaskPool::get().scope(|s| {
-        for &c in &list {
-            s.spawn(async move { (c, mesh_chunk(w, a, c, cv, sways_near(c, at))) });
+    let jobs: Vec<(IVec3, Detail)> = list.iter().map(|&c| (c, Detail::of(c, focus.0, chunks.detail.get(&c).copied()))).collect();
+    let done: Vec<(IVec3, Detail, ChunkMesh)> = ComputeTaskPool::get().scope(|s| {
+        for &(c, d) in &jobs {
+            s.spawn(async move { (c, d, mesh_chunk(w, a, c, cv, d)) });
         }
     });
-    for (c, m) in done {
+    for (c, detail, m) in done {
         chunks.meshed += 1;
-        if sways_near(c, focus.0) {
-            chunks.swaying.insert(c);
+        if m.varies {
+            chunks.detail.insert(c, detail);
         } else {
-            chunks.swaying.remove(&c);
+            chunks.detail.remove(&c);
         }
         let slot = chunks.map.entry(c).or_insert([None; LAYERS]);
         for (i, mut data) in m.layers.into_iter().enumerate() {
@@ -574,12 +985,16 @@ pub fn remesh(
                 2 => {
                     e.insert((bevy::light::NotShadowCaster, crate::render::NotRaytraced));
                 }
+                1 if cover.off.rtleaves => {
+                    e.insert(crate::render::NotRaytraced);
+                }
                 3 => {
                     e.insert(crate::render::NotRaytraced);
                 }
                 COVER => {
                     e.insert(crate::render::NotRaytraced);
-                    if !cover.shadows {
+                    // further out, the shadow cascades are too coarse for tufts to show
+                    if !cover.shadows || detail != Detail::Near {
                         e.insert(bevy::light::NotShadowCaster);
                     }
                 }

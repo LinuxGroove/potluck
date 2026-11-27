@@ -49,7 +49,10 @@ fn main() {
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
         // checks the graphics card itself, and stays idle on one that can't ray trace
-        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, render::raytrace_meshes);
+        app.add_plugins((bevy::solari::SolariPlugins, bevy::post_process::auto_exposure::AutoExposurePlugin))
+            .add_systems(PostUpdate, render::raytrace_meshes)
+            .add_systems(PostStartup, render::adapt::setup)
+            .add_systems(Update, render::adapt::follow_day);
         // the ray tracer binds each vertex slab whole, and some cards bind at most 128 MiB
         use bevy::render::{mesh::allocator::MeshAllocatorSettings, slab_allocator::SlabAllocatorSettings};
         let slabs = SlabAllocatorSettings { max_slab_size: 64 << 20, large_threshold: 32 << 20, ..default() };
@@ -63,7 +66,7 @@ fn main() {
         .init_resource::<mesh::Cover>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<ui::Labels>()
-        .add_systems(Startup, (ui::fonts, setup, ui::spawn_hud).chain())
+        .add_systems(Startup, ((ui::fonts, setup, ui::spawn_hud).chain(), render::motes::setup))
         .add_systems(
             Update,
             (
@@ -78,7 +81,7 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
-                (render::sky, render::lanterns, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::lanterns, render::flicker, render::motes::motes, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),
@@ -99,6 +102,8 @@ fn main() {
         let screen = opt("screen");
         app.insert_resource(Shot { path, after, at, tod, screen, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
+        // no outline round the block in the crosshair
+        app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
     }
     app.run();
 }

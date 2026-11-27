@@ -318,6 +318,14 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
     assert_eq!(herd.len(), 3, "and so do its creatures: the three mossbacks");
 }
 
+/// With POTLUCK_DUMP_TEX=<dir>, writes every drawn texture there to look at.
+#[test]
+fn dump_textures_when_asked() {
+    if let Some(dir) = std::env::var_os("POTLUCK_DUMP_TEX") {
+        crate::textures::dump(std::path::Path::new(&dir)).unwrap();
+    }
+}
+
 #[test]
 fn every_baked_block_texture_is_read() {
     let (maps, size) = crate::textures::baked();
@@ -327,18 +335,95 @@ fn every_baked_block_texture_is_read() {
 
 #[test]
 fn grass_grows_tufts_that_sway_and_hangs_over_edges() {
+    use crate::mesh::Detail;
     let mut images = Assets::<Image>::default();
     let atlas = crate::textures::build(&mut images);
     let w = world();
     let (x, z) = (world::START.x as i32, world::START.z as i32);
     let c = IVec3::new(x, w.top(x, z), z) / world::CHUNK;
-    let thick = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), true);
-    let bare = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover { density: 0.0, shadows: false }, true);
+    let thick = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), Detail::Near);
+    let bare = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover { density: 0.0, shadows: false, ..default() }, Detail::Near);
+    assert!(thick.varies);
     let cover = thick.layers.into_iter().nth(crate::mesh::COVER).unwrap();
     let lips = bare.layers.into_iter().nth(crate::mesh::COVER).unwrap();
     assert!(!lips.is_empty(), "grass hangs over the edges of terraces even with no tufts");
     assert!(cover.into_mesh(false).has_morph_targets(), "tufts sway in the wind");
     assert!(!lips.into_mesh(false).has_morph_targets(), "grass lips don't");
+}
+
+#[test]
+fn far_chunks_keep_fewer_tufts_and_keep_still() {
+    use crate::mesh::Detail;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    let (x, z) = (world::START.x as i32, world::START.z as i32);
+    let c = IVec3::new(x, w.top(x, z), z) / world::CHUNK;
+    let quads = |d: Detail| {
+        let m = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), d);
+        let mut l = m.layers.into_iter();
+        let opaque = l.next().unwrap().into_mesh(false).count_vertices();
+        let cover = l.nth(crate::mesh::COVER - 1).unwrap().into_mesh(false);
+        (opaque, cover.count_vertices(), cover.has_morph_targets())
+    };
+    let (near, mid, far, distant) = (quads(Detail::Near), quads(Detail::Mid), quads(Detail::Far), quads(Detail::Distant));
+    assert!(near.0 == distant.0, "the blocks themselves are the same at every distance");
+    assert!(near.1 > mid.1 && mid.1 > far.1 && far.1 > distant.1, "{near:?} {mid:?} {far:?} {distant:?}");
+    assert!(near.2 && !mid.2 && !far.2, "only near chunks sway");
+    // a chunk at a boundary keeps its level until it's well past it
+    let mid_of = |c: IVec3| (c * world::CHUNK).as_vec3() + Vec3::splat(world::CHUNK as f32 / 2.0);
+    let at = mid_of(IVec3::new(2, 1, 2));
+    let edge = at + Vec3::new(52.0, 0.0, 0.0);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), edge, Some(Detail::Near)), Detail::Near);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), edge, Some(Detail::Mid)), Detail::Mid);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), at, None), Detail::Near);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), at + Vec3::new(300.0, 0.0, 0.0), Some(Detail::Near)), Detail::Distant);
+}
+
+#[test]
+fn every_block_has_its_textures() {
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    for b in crate::blocks::BLOCKS.iter().skip(1) {
+        for name in b.faces.iter().chain(b.model.iter().flat_map(|c| c.tex.iter())).filter(|n| !n.is_empty()) {
+            assert!(atlas.has(name), "{} has no {name} texture", b.name);
+        }
+    }
+}
+
+#[test]
+fn models_are_boxes_that_join_their_neighbours() {
+    use crate::blocks::*;
+    use crate::mesh::{Detail, COVER};
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let quads = |w: &Voxels, layer: usize| {
+        let m = crate::mesh::mesh_chunk(w, &atlas, IVec3::ZERO, crate::mesh::Cover::default(), Detail::Near);
+        m.layers.into_iter().nth(layer).unwrap().into_mesh(false).count_vertices() / 4
+    };
+    // two columns share a shaft: no capital and base where they meet, only
+    // at the foot and the top
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), COLUMN);
+    w.set(IVec3::new(4, 5, 4), COLUMN);
+    let m = crate::mesh::mesh_chunk(&w, &atlas, IVec3::ZERO, crate::mesh::Cover::default(), Detail::Near);
+    let mesh = m.layers.into_iter().next().unwrap().into_mesh(false);
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+    let wide: Vec<f32> = pos.iter().filter(|p| (p[0] - (4.0 + 1.0 / 16.0)).abs() < 1e-4).map(|p| p[1]).collect();
+    assert!(!wide.is_empty() && wide.iter().all(|y| *y <= 4.0 + 3.0 / 16.0 + 1e-4 || *y >= 5.0 + 13.0 / 16.0 - 1e-4), "{wide:?}");
+    // a candle's wax is solid, its flame glows on its own
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), CANDLE);
+    assert_eq!(quads(&w, 4), 6, "the flame is one box");
+    assert!(quads(&w, 0) > 0);
+    assert_eq!(quads(&w, COVER), 0);
+    assert!(!is_solid(CANDLE) && is_solid(TABLE) && !is_opaque(TABLE));
+    // a fence reaches for the fence beside it and not elsewhere
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), FENCE);
+    let post = quads(&w, 0);
+    w.set(IVec3::new(5, 4, 4), FENCE);
+    assert_eq!(quads(&w, 0), post * 2 + 4 * 6, "two posts, a pair of rails each toward the other");
 }
 
 // ---------- the market, from the game ----------
@@ -518,6 +603,48 @@ fn a_remix_of_a_remix_is_suggested_and_merged_from_the_game() {
     let Done::Link { url, .. } = done(&ada_jobs, "the profile link") else { panic!("not a link") };
     assert!(url.starts_with(&format!("{market}/signin/")), "{url}");
     assert!(crate::ui::qr_image(&url).is_some());
+}
+
+#[test]
+fn rooms_under_a_roof_see_less_sky() {
+    use crate::mesh::Detail;
+    use bevy::mesh::VertexAttributeValues;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    // the share of sky a floor's corner sees, as its chunk's mesh carries it
+    let sky = |x: i32, y: i32, z: i32| -> f32 {
+        let c = IVec3::new(x, y - 1, z).div_euclid(IVec3::splat(world::CHUNK));
+        let m = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), Detail::Near);
+        let mesh = m.layers.into_iter().next().unwrap().into_mesh(false);
+        let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+        let Some(VertexAttributeValues::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1) else { panic!("no sky in the mesh") };
+        let i = pos.iter().position(|p| *p == [x as f32, y as f32, z as f32]).expect("a floor corner there");
+        let steps = crate::mesh::SKY_STEPS as f32;
+        (uv[i][0] * steps - 0.5) / (steps - 1.0)
+    };
+    // the villa's library floor, off the skylight, and its terrace outside
+    let (inside, under_glass, open) = (sky(48, 26, 202), sky(54, 26, 206), sky(39, 26, 196));
+    eprintln!("sky: library {inside:.2}, under the skylight {under_glass:.2}, terrace {open:.2}");
+    assert!(inside < 0.2, "the library sees little sky ({inside})");
+    assert!(under_glass > inside + 0.05, "more under the skylight ({under_glass} against {inside})");
+    assert!(open > 0.75, "the open terrace sees most of it ({open})");
+}
+
+#[test]
+fn shores_get_foam() {
+    use crate::mesh::Detail;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    // the beach below the villa: water at x 34 against sand at x 35
+    assert_eq!((w.get(34, world::SEA, 207), w.get(35, world::SEA, 207)), (crate::blocks::WATER, crate::blocks::SAND));
+    let c = IVec3::new(34, world::SEA, 207).div_euclid(IVec3::splat(world::CHUNK));
+    let m = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), Detail::Near);
+    let plants = m.layers.into_iter().nth(3).unwrap().into_mesh(false);
+    let pos = plants.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap();
+    let foam = pos.iter().filter(|p| (p[1] - (world::SEA as f32 + 0.9)).abs() < 1e-3 && p[0] == 35.0 && p[2] >= 207.0 && p[2] <= 208.0).count();
+    assert!(foam >= 2, "a strip of foam on the water along the sand ({foam} corners)");
 }
 
 /// M3's server list from both ends: Ada lists her server, which lets in
