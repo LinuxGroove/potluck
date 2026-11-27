@@ -254,8 +254,26 @@ local function lintel(s: Site, g: Green)
 	end
 end
 
+-- A clearing round it: no trunk stands on the plaza, and no branches hang over it
+-- (a trunk just outside keeps its own side of the tree).
+local function clearing(s: Site)
+	for v = -7, 7 do
+		for u = -7, 7 do
+			local inside = math.abs(u) <= 4 and math.abs(v) <= 4
+			for h = 1, 24 do
+				local p = spot(s, u, h, v)
+				local b = world.block(p)
+				if (LEAVES[b] and not STANDING[b]) or (inside and STANDING[b]) then
+					world.set_block(p, "Air")
+				end
+			end
+		end
+	end
+end
+
 local function build(s: Site)
 	local g = BY_ID[s.id]
+	clearing(s)
 	for v = -4, 4 do
 		for u = -4, 4 do
 			local p = spot(s, u, 0, v)
