@@ -16,7 +16,7 @@ local store = require("@potluck/store")
 
 local knobs = tweak {
 	color = { "#c24b41", label = "Envelope", order = 1 },
-	band = { "#f2d466", label = "Bands", order = 2 },
+	band = { "#efe6d2", label = "Panels", order = 2 },
 	rise = { 1.5, min = 0.5, max = 3, label = "How fast the burner lifts it", order = 3 },
 	sink = { 0.6, min = 0.2, max = 1.5, label = "How fast it sinks", order = 4 },
 	drift = { 2, min = 0.5, max = 4, label = "How fast it drifts", order = 5 },
@@ -53,14 +53,14 @@ local function rigging(lit: boolean): { any }
 end
 
 -- the envelope, in tiers from its mouth up, each a cross of two boxes so
--- its corners look rounded; colours take turns
+-- its corners look rounded: one box in each colour, so from any side a band
+-- runs down the middle like a balloon's panels
 local function envelope(tiers: { { number } }): { any }
 	local parts = {}
-	for i, t in tiers do
+	for _, t in tiers do
 		local y, w, h = t[1], t[2], t[3]
-		local color = if i % 2 == 0 then knobs.band else knobs.color
-		table.insert(parts, { "cloth", size = { w, h, w * 0.72 }, at = { 0, y, 0 }, color = color })
-		table.insert(parts, { "cloth", size = { w * 0.72, h, w }, at = { 0, y, 0 }, color = color })
+		table.insert(parts, { "cloth", size = { w, h, w * 0.6 }, at = { 0, y, 0 }, color = knobs.color })
+		table.insert(parts, { "cloth", size = { w * 0.6, h, w }, at = { 0, y, 0 }, color = knobs.band })
 	end
 	return parts
 end
@@ -281,3 +281,4 @@ world.after(0.1, function()
 		end
 	end
 end)
+
