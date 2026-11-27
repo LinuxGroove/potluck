@@ -121,6 +121,10 @@ pub fn interact(
         focus.go(Screen::Pause);
         return;
     }
+    if c.blocks {
+        acts.0.push(Act::OpenBlocks);
+        return;
+    }
     let eye = me.eye();
     let dir = me.forward();
     let block_t = me.target.map(|h| (h.block.as_vec3() + Vec3::splat(0.5) - eye).length() - 0.5).unwrap_or(f32::MAX);
@@ -138,6 +142,10 @@ pub fn interact(
             };
             me.aim_arch = Some((i, text));
         }
+    }
+    // the middle button: the block you aim at, into your hand
+    if let Some(hit) = me.target.filter(|_| c.pick && !settings.survival && me.aim_body.is_none()) {
+        acts.0.push(Act::Hold(hit.id));
     }
     let pid = net.my_id;
     // Share: what you ride or aim at, straight to a code
@@ -629,6 +637,37 @@ pub fn do_acts(
                 shares.load(&Who::of(&settings), &code, None);
             }
             Act::OpenLibrary => focus.go(Screen::Library),
+            Act::OpenBlocks if settings.survival => {
+                toasts.push("In survival you gather blocks, and make more at a table");
+            }
+            Act::OpenBlocks => {
+                focus.go(Screen::Blocks);
+                // on the block in your hand, when it's on the page open
+                let page = crate::ui::pages(&focus, &info).map(|(list, n)| list[n]).unwrap_or("");
+                let held = me.hotbar[me.slot];
+                if !crate::ui::block_shelf(page).contains(&held) {
+                    if let Some(n) = crate::ui::BLOCK_PAGES.iter().position(|p| crate::ui::block_shelf(p).contains(&held)) {
+                        focus.blocks_page = n;
+                    }
+                }
+                let (_, items) = crate::ui::menu_items(&focus, &lib, &scripts, &settings, &info);
+                focus.sel = items.iter().position(|i| i.kind == crate::ui::Kind::Tile(held)).or_else(|| items.iter().position(|i| matches!(i.kind, crate::ui::Kind::Tile(_)))).unwrap_or(0);
+            }
+            Act::Hold(id) => {
+                // already in the hotbar: that slot; or in the one chosen
+                if !settings.survival && !crate::blocks::is_item(id) && crate::blocks::block(id).shape != crate::blocks::Shape::Air {
+                    match me.hotbar.iter().position(|&b| b == id) {
+                        Some(i) => me.slot = i,
+                        None => {
+                            let s = me.slot;
+                            me.hotbar[s] = id;
+                        }
+                    }
+                }
+                if focus.screen == Screen::Blocks {
+                    focus.go(Screen::Playing);
+                }
+            }
             Act::OpenSettings => {
                 focus.parents_open = false;
                 focus.fields.insert("name".into(), settings.name.clone());
