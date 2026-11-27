@@ -79,7 +79,7 @@ fn texture() -> Image {
 
 /// The disc: rings out from the middle, see-through toward the rim, with
 /// texture coordinates in tiles so the texture stays put in the world.
-fn disc() -> Mesh {
+pub(crate) fn disc() -> Mesh {
     let (rings, segs) = (14u32, 48u32);
     let mut pos = vec![[0.0, 0.0, 0.0]];
     let mut uv = vec![[0.0, 0.0]];
@@ -109,7 +109,8 @@ fn disc() -> Mesh {
         }
     }
     let n = pos.len();
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+    // kept in the main world too: `drift` recolours it as the sun moves
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, -1.0, 0.0]; n])
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
@@ -185,8 +186,9 @@ pub fn drift(
         look.glow_at = clock.time;
         let sun = Vec2::new(a.cos(), -0.35).normalize();
         if let Some(mut mesh) = meshes.get_mut(&look.mesh) {
-            let pos: Vec<[f32; 3]> = mesh.attribute(Mesh::ATTRIBUTE_POSITION).and_then(|p| p.as_float3()).map(|p| p.to_vec()).unwrap_or_default();
-            if let Some(bevy::mesh::VertexAttributeValues::Float32x4(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+            // (never `attribute`, which panics on a mesh whose data has gone to the GPU)
+            let pos: Vec<[f32; 3]> = mesh.try_attribute_option(Mesh::ATTRIBUTE_POSITION).ok().flatten().and_then(|p| p.as_float3()).map(|p| p.to_vec()).unwrap_or_default();
+            if let Ok(Some(bevy::mesh::VertexAttributeValues::Float32x4(col))) = mesh.try_attribute_mut_option(Mesh::ATTRIBUTE_COLOR) {
                 for (c, p) in col.iter_mut().zip(&pos) {
                     let g = glow(Vec2::new(p[0], p[2]), sun, low);
                     // warmer as well as brighter
