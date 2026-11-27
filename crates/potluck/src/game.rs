@@ -418,7 +418,7 @@ pub fn do_acts(
             Act::Survival => settings.survival = !settings.survival,
             Act::InvertY => settings.invert_y = !settings.invert_y,
             Act::Lighting => {
-                settings.lighting = if settings.lighting == "low" { "medium".into() } else { "low".into() };
+                settings.lighting = crate::render::Tier::next(&settings.lighting).into();
                 settings.save();
             }
         }

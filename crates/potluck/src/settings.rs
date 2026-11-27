@@ -14,7 +14,7 @@ pub struct Settings {
     pub stick_sensitivity: f32,
     pub invert_y: bool,
     pub fov: f32,
-    /// "low" or "medium".
+    /// "low", "medium", "high" or "ultra" (`render::Tier`).
     pub lighting: String,
     /// The game server for share codes.
     pub server: String,

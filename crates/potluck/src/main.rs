@@ -9,10 +9,14 @@ use bevy::window::{PresentMode, WindowResolution};
 use potluck::*;
 
 fn main() {
-    let settings = settings::Settings::load();
+    let mut settings = settings::Settings::load();
     share::launch_ping(&settings.server);
     let args: Vec<String> = std::env::args().collect();
     let opt = |k: &str| args.iter().find_map(|a| a.strip_prefix(&format!("--{k}=")).map(|s| s.to_string()));
+    // try a lighting tier without changing the setting: --lighting=high
+    if let Some(l) = opt("lighting") {
+        settings.lighting = render::Tier::NAMES[render::Tier::of(&l) as usize].into();
+    }
     let size = opt("size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some(UVec2::new(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(UVec2::new(1600, 900));
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {

@@ -10,7 +10,7 @@ cargo test                                 # world, creations, sandbox, a friend
 cargo run --bin potluck -- --play          # straight into the world
 cargo run --bin potluck-server -- --port=47126 [--tls-port=47443 --cert=fullchain.pem --key=privkey.pem]
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1280x720x24" target/debug/potluck --demo=/tmp/demo --size=1280x720   # scripted play-through, recorded (about 1.5 s a frame on 4 CPUs)
-VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1600x900x24" target/debug/potluck --shot=/tmp/a.png --after=8 [--at=x,y,z,yaw,pitch] [--time=0.8] [--screen=inside|tweak|pause|title]
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1600x900x24" target/debug/potluck --shot=/tmp/a.png --after=8 [--at=x,y,z,yaw,pitch] [--time=0.8] [--screen=play|inside|tweak|pause|title] [--lighting=low|medium|high|ultra]
 tools/server-snap.sh build/potluck-server && (cd build/potluck-server && snapcraft pack)   # the server snap
 ```
 
@@ -23,7 +23,7 @@ Run the tests before every commit. Set `POTLUCK_HOME` to a scratch folder for ru
 | `crates/potluck/src/lib.rs` | `sim()`: everything a world needs without drawing, shared by the game and the server |
 | `src/main.rs`, `src/server.rs` | The game (window, drawing, input, `--play`, `--shot`, `--demo`) and `potluck-server` (MinimalPlugins at 30 Hz, autosave, saving on stop) |
 | `src/world.rs`, `blocks.rs`, `noise.rs` | The 384 x 128 x 384 island from a seed, the Green, blocks, the save format (`encode`/`decode`) |
-| `src/mesh.rs`, `textures.rs`, `render.rs` | 32³ chunk meshing in three layers, the generated block atlas (glowing tiles kept apart), sky, sun, lanterns, Low and Medium lighting |
+| `src/mesh.rs`, `textures.rs`, `render.rs` | 32³ chunk meshing in three layers, the generated block atlas (glowing tiles kept apart), sky, sun, lanterns, the lighting tiers (`Tier`: Low, Medium, High, Ultra) |
 | `src/player.rs`, `input.rs` | Walking, flying, building, survival; controls read once a frame into `Controls` |
 | `src/script.rs` | Luau VMs (one per creation, sandboxed, memory and time limits), the API, knobs, events, hot reload keeping creatures' state |
 | `src/creatures.rs` | Bodies made of boxes, walking, riding, drawing |
