@@ -1135,6 +1135,14 @@ pub struct ToastBox;
 pub struct InfoText;
 #[derive(Component)]
 pub struct HealthBar;
+/// The health bar's share of the row above the hotbar.
+#[derive(Component)]
+pub struct HealthTrack;
+/// A creation's meter beside the health bar, and its fill.
+#[derive(Component)]
+pub struct MeterTrack(usize);
+#[derive(Component)]
+pub struct MeterFill(usize);
 #[derive(Component)]
 pub struct Crosshair;
 #[derive(Component)]
@@ -1190,12 +1198,19 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                 TextLayout::justify(Justify::Center),
                 Node { position_type: PositionType::Absolute, bottom: px(96), width: percent(100), justify_content: JustifyContent::Center, ..default() },
             ));
-            h.spawn((
-                Node { position_type: PositionType::Absolute, bottom: px(84), left: percent(50), margin: UiRect::left(px(-240)), width: px(480), height: px(6), border_radius: BorderRadius::all(px(3)), ..default() },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
-            ))
-            .with_children(|b| {
-                b.spawn((HealthBar, Node { width: percent(100), height: percent(100), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(RED)));
+            // health, and creations' meters beside it (`ui.meter`), sharing the row above the hotbar
+            let track = || (Node { flex_grow: 1.0, flex_basis: px(0), height: percent(100), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.3)));
+            h.spawn(Node { position_type: PositionType::Absolute, bottom: px(84), left: percent(50), margin: UiRect::left(px(-240)), width: px(480), height: px(6), column_gap: px(10), ..default() }).with_children(|row| {
+                row.spawn((HealthTrack, track())).with_children(|b| {
+                    b.spawn((HealthBar, Node { width: percent(100), height: percent(100), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(RED)));
+                });
+                for i in 0..crate::script::MAX_METERS {
+                    let (mut node, bg) = track();
+                    node.display = Display::None;
+                    row.spawn((MeterTrack(i), node, bg)).with_children(|b| {
+                        b.spawn((MeterFill(i), Node { width: percent(0), height: percent(100), border_radius: BorderRadius::all(px(3)), ..default() }, BackgroundColor(Color::WHITE)));
+                    });
+                }
             });
             h.spawn(Node { position_type: PositionType::Absolute, bottom: px(16), width: percent(100), justify_content: JustifyContent::Center, column_gap: px(6), ..default() }).with_children(|bar| {
                 for i in 0..9 {
@@ -1282,7 +1297,12 @@ pub fn update_hud(
         Query<(&PieceText, &mut Text, &mut Visibility), Without<Hud>>,
         Query<(&mut Text, &mut Visibility), (With<CaptionText>, Without<Hud>)>,
     )>,
-    mut health: Query<(&mut Node, &mut BackgroundColor), (With<HealthBar>, Without<LabelText>)>,
+    mut bars: ParamSet<(
+        Query<(&mut Node, &mut BackgroundColor), (With<HealthBar>, Without<LabelText>)>,
+        Query<&mut Node, (With<HealthTrack>, Without<LabelText>)>,
+        Query<(&MeterTrack, &mut Node), Without<LabelText>>,
+        Query<(&MeterFill, &mut Node, &mut BackgroundColor), Without<LabelText>>,
+    )>,
     cam: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
     let show = focus.screen != Screen::Title && info.in_world;
@@ -1355,10 +1375,24 @@ pub fn update_hud(
         t.0 = me.pieces.values().filter(|p| p.at == at).map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n");
         *v = if t.0.is_empty() { Visibility::Hidden } else { Visibility::Inherited };
     }
-    if let Ok((mut n, mut bg)) = health.single_mut() {
+    if let Ok((mut n, mut bg)) = bars.p0().single_mut() {
         n.width = percent((me.health / MAX_HEALTH * 100.0).max(0.0));
         let flash = (me.hurt < 0.4) as i32 as f32;
         bg.0 = if settings.survival { RED.mix(&INK, flash) } else { Color::NONE };
+    }
+    // creations' meters share the row with it (health only in survival)
+    let meters: Vec<(f32, [u8; 3])> = me.pieces.values().filter(|p| p.at == crate::script::METER).filter_map(|p| p.meter).take(crate::script::MAX_METERS).collect();
+    if let Ok(mut n) = bars.p1().single_mut() {
+        n.display = if settings.survival { Display::Flex } else { Display::None };
+    }
+    for (t, mut n) in &mut bars.p2() {
+        n.display = if t.0 < meters.len() { Display::Flex } else { Display::None };
+    }
+    for (f, mut n, mut bg) in &mut bars.p3() {
+        if let Some((v, c)) = meters.get(f.0) {
+            n.width = percent(v * 100.0);
+            bg.0 = Color::srgb_u8(c[0], c[1], c[2]);
+        }
     }
     // labels over creatures and players
     let Ok((camera, ct)) = cam.single() else { return };

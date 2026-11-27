@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 5), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 6), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -41,6 +41,12 @@ pub const STORE_QUOTA: usize = 64 << 10;
 pub const MAX_PIECES: usize = 8;
 /// Where a piece can go: top right, top left, or above the hotbar.
 pub const PLACES: &[&str] = &["right", "left", "bottom"];
+/// A meter's place: a bar beside the health bar (`ui.meter`).
+pub const METER: &str = "meter";
+/// Meters a player's screen shows, from every creation together.
+pub const MAX_METERS: usize = 3;
+/// The fastest `world.healing` makes a player heal by themselves.
+pub const MAX_HEALING: f64 = 4.0;
 /// Choices a panel can offer.
 pub const MAX_CHOICES: usize = 4;
 /// Panels waiting on one player's screen, from every creation together.
@@ -130,6 +136,11 @@ pub struct GameShared {
     /// Hurts (less than 0) and heals creations gave players since the host
     /// last looked.
     pub health: Vec<(u32, f32)>,
+    /// How fast each creation lets each player heal by themselves
+    /// (`world.healing`), where it isn't 1: (player, creation).
+    pub healing: BTreeMap<(u32, String), f32>,
+    /// Players whose healing changed since the host last looked.
+    pub healing_changed: BTreeSet<u32>,
 }
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
@@ -232,8 +243,11 @@ pub(crate) fn note_of(topic: &str, value: &Value) -> mlua::Result<serde_json::Va
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Piece {
     pub text: String,
-    /// One of `PLACES`.
+    /// One of `PLACES`, or `METER`.
     pub at: String,
+    /// A meter's fill (0 to 1) and colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter: Option<(f32, [u8; 3])>,
 }
 
 /// A question a creation asks one player, and the choices they have.
@@ -709,7 +723,23 @@ pub(crate) fn piece_of(id: &str, text: &str, opts: Option<Table>) -> mlua::Resul
         return Err(bad(format!("a piece can go at: {}", PLACES.join(", "))));
     }
     let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(60).collect();
-    Ok((!text.is_empty()).then_some(Piece { text, at }))
+    Ok((!text.is_empty()).then_some(Piece { text, at, meter: None }))
+}
+
+/// A meter for `ui.meter`: how full (0 to 1, nil takes it away) and its colour.
+pub(crate) fn meter_of(id: &str, value: Option<f64>, opts: Option<Table>) -> mlua::Result<Option<Piece>> {
+    if id.is_empty() || id.chars().count() > 32 {
+        return Err(bad("a meter's id is 1 to 32 letters"));
+    }
+    let Some(v) = value else { return Ok(None) };
+    if !v.is_finite() {
+        return Err(bad("a meter is a number from 0 to 1"));
+    }
+    let color = match opts.map(|o| o.get::<Option<String>>("color")).transpose()?.flatten() {
+        Some(c) => parse_color(&c).ok_or_else(|| bad("a meter's color is \"#rrggbb\""))?.to_srgba().to_u8_array_no_alpha(),
+        None => [224, 160, 64],
+    };
+    Ok(Some(Piece { text: String::new(), at: METER.into(), meter: Some((v.clamp(0.0, 1.0) as f32, color)) }))
 }
 
 /// (where, volume, pitch, caption) from `sound.play`'s options.
@@ -1049,6 +1079,35 @@ impl Vm {
                     )?;
                 }
             }
+            // world 0.6: how fast players heal by themselves
+            {
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "healing",
+                    lua.create_function(move |_, (player, rate): (Value, f64)| {
+                        let pid = pid_of(&player)?;
+                        if !rate.is_finite() || !(0.0..=MAX_HEALING).contains(&rate) {
+                            return Err(bad("healing takes a number from 0 to 4 (1 is as usual)"));
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        // anyone whose game has said hello; it matters only in survival
+                        if !sh.pockets.contains_key(&pid) {
+                            return Ok(false);
+                        }
+                        let key = (pid, me.clone());
+                        let before = sh.healing.get(&key).copied().unwrap_or(1.0);
+                        if before != rate as f32 {
+                            if rate == 1.0 {
+                                sh.healing.remove(&key);
+                            } else {
+                                sh.healing.insert(key, rate as f32);
+                            }
+                            sh.healing_changed.insert(pid);
+                        }
+                        Ok(true)
+                    })?,
+                )?;
+            }
             // world 0.2: timers and world events, kept between ticks
             {
                 let w = waiting.clone();
@@ -1149,6 +1208,16 @@ impl Vm {
                     lua.create_function(move |_, (player, id): (Value, String)| {
                         let who = who_of(&player)?;
                         sh.lock().unwrap().ui.set_piece(who, &me, &id, None).map_err(bad)
+                    })?,
+                )?;
+                // ui 0.2: meters beside the health bar
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                ui.set(
+                    "meter",
+                    lua.create_function(move |_, (player, id, value, opts): (Value, String, Option<f64>, Option<Table>)| {
+                        let who = who_of(&player)?;
+                        let piece = meter_of(&id, value, opts)?;
+                        sh.lock().unwrap().ui.set_piece(who, &me, &id, piece).map_err(bad)
                     })?,
                 )?;
                 let (sh, w, me, name) = (shared.clone(), waiting.clone(), creation.id.clone(), creation.manifest.name.clone());
@@ -1802,6 +1871,10 @@ impl Scripts {
         let mut sh = self.shared.lock().unwrap();
         sh.input.forget_creation(id);
         sh.ui.forget_creation(id);
+        // players heal as usual again
+        let slowed: Vec<u32> = sh.healing.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
+        sh.healing.retain(|k, _| k.1 != id);
+        sh.healing_changed.extend(slowed);
         drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
     }
@@ -1983,6 +2056,14 @@ impl Scripts {
         }
     }
 
+    /// How fast players heal by themselves now, for those it changed for:
+    /// every creation's `world.healing` multiplied together.
+    pub fn healing_changes(&mut self) -> Vec<(u32, f32)> {
+        let mut sh = self.shared.lock().unwrap();
+        let changed = std::mem::take(&mut sh.healing_changed);
+        changed.into_iter().map(|pid| (pid, sh.healing.iter().filter(|(k, _)| k.0 == pid).map(|(_, r)| *r).product::<f32>().clamp(0.0, MAX_HEALING as f32))).collect()
+    }
+
     /// The time of day creations see (`world.daytime`).
     pub fn set_day(&mut self, time: f32) {
         self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
@@ -2067,6 +2148,8 @@ impl Scripts {
                 sh.input.forget_player(p.id);
                 sh.pockets.remove(&p.id);
                 sh.ui.forget_player(p.id);
+                sh.healing.retain(|k, _| k.0 != p.id);
+                sh.healing_changed.remove(&p.id);
             }
             sh.ui.joined.extend(joined.iter().map(|p| p.id));
             sh.ui.time = time;

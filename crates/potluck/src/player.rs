@@ -77,6 +77,9 @@ pub struct Me {
     /// Hurts (less than 0) and heals creations sent, for `walk` to apply
     /// in survival.
     pub health_due: f32,
+    /// How fast creations let this player heal by themselves
+    /// (`world.healing`): 1 as usual, 0 not at all.
+    pub healing: f32,
     /// Blocks this player placed and broke since the host last looked:
     /// (where, what it was, what it is now), for creations' block events.
     pub built: Vec<(IVec3, BlockId, BlockId)>,
@@ -120,6 +123,7 @@ impl Default for Me {
             notes: vec![],
             pockets_seen: 0,
             health_due: 0.0,
+            healing: 1.0,
             built: vec![],
             stride: 0.0,
             regen: 0.0,
@@ -451,7 +455,7 @@ pub fn walk(
     }
     // health comes back slowly
     if me.health < MAX_HEALTH {
-        me.regen += dt;
+        me.regen += dt * me.healing;
         if me.regen > 4.0 {
             me.regen = 0.0;
             me.health = (me.health + 1.0).min(MAX_HEALTH);

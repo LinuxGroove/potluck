@@ -13,9 +13,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.5")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.5. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.6")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.6. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.5
+### `@potluck/world` 0.6
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -96,6 +96,17 @@ world.on("block_broken", function(player, at, block) end)
 - They're only for what players do: blocks creations change with `world.set_block`, and water flowing, aren't heard.
 - At most 64 are heard a tick; more wait their turn, and past a few hundred waiting the rest are dropped.
 
+How fast players heal (new in 0.6), for hunger, rest and healing springs:
+
+```luau
+world.healing(player, 0)                  -- an empty belly: no healing by themselves
+world.healing(player, 2)                  -- well fed: twice as fast
+world.healing(player, 1)                  -- as usual again
+```
+
+- Survival players heal by themselves, one health every 4 seconds. `world.healing(player, rate)` changes how fast for that player: 1 as usual, 0 not at all, up to 4. It stays until the creation changes it again, stops, or the player leaves, and returns false for a player whose game hasn't said hello yet.
+- When several creations set it, their rates multiply, so any creation's 0 means no healing.
+
 A creature's handlers, written as `function Kind:handler(...)`:
 
 - `spawned()` when it first appears
@@ -175,9 +186,9 @@ end)
 - `input.focus(player)` takes a player's controls, so its actions are live wherever they are; `input.focus(player, false)` gives them back. One creation has a player's controls at a time: the last to ask. `input.focused(player)` says whether this one has them.
 - Players can move any action to other buttons (Settings, Creations' buttons), so say what an action does by its name, never by a button. A creation has at most 8 actions. One with a pad button for every action is **pad friendly** on the market.
 
-### `@potluck/ui` 0.1
+### `@potluck/ui` 0.2
 
-Lines on a player's screen, and questions with choices.
+Lines on a player's screen, meters beside the health bar (new in 0.2), and questions with choices.
 
 ```luau
 local ui = require("@potluck/ui")
@@ -197,6 +208,7 @@ end)
 
 - `ui.show(player, id, text, { at = ... }?)` shows one line, or changes the one with that id. `at` is `"right"` (top right, the default), `"left"` (top left) or `"bottom"` (above the hotbar). `player` nil shows it to everyone in the world, now and when they arrive. A line is up to 60 letters, on one line; a creation shows at most 8 at once (different ids).
 - `ui.hide(player, id)` takes it off; `ui.hide(nil, id)` takes it off every screen, including lines shown to one player with that id.
+- `ui.meter(player, id, value, { color = "#rrggbb" }?)` shows a bar beside the health bar, `value` full from 0 to 1, amber if no colour is given (food, air, a mini game's clock). nil for `value` takes it away, as does `ui.hide`. They share the row above the hotbar with the health bar (which shows only in survival); a screen shows 3 at most, from every creation together. Meters count among a creation's 8 pieces. Give each a colour of its own and say once, with a line, what it means.
 - `ui.ask(player, { title?, text?, choices? }, fn)` asks one player a question. `title` is up to 40 letters (the creation's name if left out), `text` up to 300 (`"\n"` starts a new line), and up to 4 `choices` of 30 letters (`{ "OK" }` if left out). `fn(player, choice)` is called once, on a later tick, with the number of their choice, or nil if they closed it, the creation asked them something else first, or it couldn't be shown. It returns an id.
 - `ui.close(player)` takes this creation's question back off their screen, and `fn` isn't called.
 - The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it (using one of its creatures, or a block it hears `block_used` for, lets it ask at once).
