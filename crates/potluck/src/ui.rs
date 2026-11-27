@@ -837,6 +837,10 @@ pub fn update_hud(
             prompt = format!("{}  {:.0}%", b.name, p * 100.0);
         }
     }
+    if focus.screen != Screen::Playing {
+        // a menu is open: what pressing would do in the world doesn't apply
+        prompt.clear();
+    }
     if let Ok(mut t) = texts.p1().single_mut() {
         t.0 = prompt;
     }

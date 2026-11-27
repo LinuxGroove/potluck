@@ -449,14 +449,15 @@ fn script() -> Vec<Step> {
             false
         }),
         step("Remix it: make your own copy to change", 4.0, |x| {
-            if x.frame < 40 {
-                if menu_to(x, "Remix") && x.frame > 20 {
-                    x.c.accept = true;
-                }
-            }
             if let Screen::Inside(id) = &x.focus.screen {
                 if id != "mossback" {
                     x.mem.remix = Some(id.clone());
+                }
+            }
+            // once the copy is made its menu has no Remix, so stop looking
+            if x.frame < 40 && x.mem.remix.is_none() {
+                if menu_to(x, "Remix") && x.frame > 20 {
+                    x.c.accept = true;
                 }
             }
             if x.frame == 100 {
