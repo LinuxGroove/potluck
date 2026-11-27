@@ -278,6 +278,56 @@ impl Offscreen {
     }
 }
 
+/// The world behind a menu, softened and a little darker (`ui::draw::blurs`),
+/// eased in over a moment. Low skips it: the menu's shade is enough there.
+#[derive(Component, bevy::render::extract_component::ExtractComponent, Clone, Copy, bevy::render::render_resource::ShaderType, Default)]
+#[extract_app(bevy::render::RenderApp)]
+pub struct MenuBlur {
+    pub amount: f32,
+    _a: f32,
+    _b: f32,
+    _c: f32,
+}
+
+const MENU_BLUR: Handle<Shader> = bevy::asset::uuid_handle!("6f1d3c2a-8e47-4b9a-a5d2-3c7e91b04f68");
+
+impl bevy::core_pipeline::fullscreen_material::FullscreenMaterial for MenuBlur {
+    fn fragment_shader() -> bevy::shader::ShaderRef {
+        MENU_BLUR.into()
+    }
+}
+
+/// The menu blur's shader and pass, for the game (not the server).
+pub fn add_menu_blur(app: &mut App) {
+    bevy::asset::load_internal_asset!(app, MENU_BLUR, "render/menu_blur.wgsl", Shader::from_wgsl);
+    app.add_plugins(bevy::core_pipeline::fullscreen_material::FullscreenMaterialPlugin::<MenuBlur>::default());
+    app.add_systems(Update, menu_blur);
+}
+
+pub fn menu_blur(mut commands: Commands, focus: Res<crate::ui::Focus>, info: Res<crate::ui::WorldInfo>, settings: Res<Settings>, time: Res<Time>, mut cam: Query<(Entity, Option<&mut MenuBlur>), With<MainCamera>>, mut amount: Local<f32>) {
+    let want = info.in_world && crate::ui::draw::blurs(&focus.screen) && Tier::of(&settings.lighting) != Tier::Low;
+    let goal = if want { 1.0 } else { 0.0 };
+    *amount += (goal - *amount).clamp(-1.0, 1.0) * (time.delta_secs() * 7.0).min(1.0);
+    if (goal - *amount).abs() < 0.01 {
+        *amount = goal;
+    }
+    let Ok((e, blur)) = cam.single_mut() else { return };
+    match blur {
+        Some(mut b) if *amount > 0.0 => {
+            if b.amount != *amount {
+                b.amount = *amount;
+            }
+        }
+        Some(_) => {
+            commands.entity(e).remove::<MenuBlur>();
+        }
+        None if *amount > 0.0 => {
+            commands.entity(e).insert(MenuBlur { amount: *amount, ..default() });
+        }
+        None => {}
+    }
+}
+
 /// A screenshot of what the game draws: the offscreen image when there is one.
 pub fn screenshot(off: Option<&Offscreen>) -> bevy::render::view::screenshot::Screenshot {
     use bevy::render::view::screenshot::Screenshot;

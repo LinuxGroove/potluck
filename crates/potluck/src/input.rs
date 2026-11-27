@@ -125,6 +125,9 @@ pub struct Controls {
     pub pad: bool,
     /// Right stick held left or right, for sliders.
     pub slide: f32,
+    /// A menu's next page (1) or the one before (-1): RB and LB, or Tab and
+    /// Shift+Tab.
+    pub page: i32,
     stick_latch: bool,
     y_held: f32,
     /// Buttons a creation could ask for, held now and pressed this frame:
@@ -204,6 +207,9 @@ pub fn read(
     c.accept = kp(KeyCode::Enter) || kp(KeyCode::NumpadEnter);
     c.back = kp(KeyCode::Escape);
     c.backspace = kp(KeyCode::Backspace);
+    if kp(KeyCode::Tab) {
+        c.page += if c.crouch { -1 } else { 1 };
+    }
     if keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some() || motion.delta.length() > 2.0 {
         c.pad = false;
     }
@@ -253,8 +259,8 @@ pub fn read(
         c.break_held |= p(GamepadButton::RightTrigger2);
         c.break_pressed |= jp(GamepadButton::RightTrigger2);
         c.place_pressed |= jp(GamepadButton::LeftTrigger2);
-        if jp(GamepadButton::LeftTrigger) { c.hotbar_step -= 1 }
-        if jp(GamepadButton::RightTrigger) { c.hotbar_step += 1 }
+        if jp(GamepadButton::LeftTrigger) { c.hotbar_step -= 1; c.page -= 1 }
+        if jp(GamepadButton::RightTrigger) { c.hotbar_step += 1; c.page += 1 }
         c.interact |= jp(GamepadButton::West);
         c.pause |= jp(GamepadButton::Start);
         c.camera |= jp(GamepadButton::RightThumb);
