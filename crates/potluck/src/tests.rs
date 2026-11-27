@@ -2782,3 +2782,33 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     assert_eq!(bar(&scripts, 7), None);
     assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
 }
+
+/// The Gnome Gardeners tell survival players how to get by.
+#[test]
+fn gnomes_tell_survival_players_how_to_get_by() {
+    home();
+    let gnome = Library::load().list.remove("gnome").expect("the base game has the gnomes");
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO };
+    scripts.players = vec![ada.clone(), bo.clone()];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&gnome, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let id = herd.bodies.values().find(|b| b.creation == "gnome").map(|b| b.id).expect("a gardener");
+    let asked = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.panels.get(&pid).and_then(|q| q.front().cloned());
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    scripts.event(&mut voxels, &mut herd, id, "used", &bo);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let (a, b) = (asked(&scripts, 7).unwrap(), asked(&scripts, 8).unwrap());
+    assert_eq!(a.choices.last().map(String::as_str), Some("Getting by"), "{:?}", a.choices);
+    assert_eq!(b.choices.last().map(String::as_str), Some("Playing together"), "{:?}", b.choices);
+    scripts.answer(7, a.ask, Some(3));
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let topic = asked(&scripts, 7).unwrap();
+    assert!(topic.text.contains("workbench") && topic.text.ends_with("can't bear light."), "{}", topic.text);
+    assert_eq!(scripts.vms["gnome"].error, None);
+}
