@@ -36,6 +36,7 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Planks = 6 }, give = "Table", n = 1 },
 		{ want = { Planks = 2 }, give = "Stool", n = 1 },
 		{ want = { Planks = 6 }, give = "Barrel", n = 1 },
+		{ want = { Planks = 4 }, give = "Crate", n = 1 },
 		{ want = { Planks = 6 }, give = "Bookshelf", n = 1 },
 	},
 	Lights = {

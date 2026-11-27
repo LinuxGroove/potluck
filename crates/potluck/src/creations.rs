@@ -233,7 +233,7 @@ macro_rules! base {
     };
 }
 
-const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau"];
+const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau", "storage" + "test.luau"];
 
 pub const AGENTS_MD: &str = include_str!("../../../creations/AGENTS.md");
 pub const TYPES: &str = include_str!("../../../creations/types/potluck.d.luau");
