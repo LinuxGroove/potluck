@@ -1232,3 +1232,147 @@ fn the_greens_arches_and_this_weeks_jam() {
     green.picks.clear();
     assert!(green.arches(&lib)[1].is_none(), "with the market out of reach, only what players brought");
 }
+
+/// `@potluck/input`: a creation's actions are in its potluck.toml; while
+/// they're live (riding its creature, or it has the player's controls) its
+/// buttons do its actions instead of the game's, players can move them, and
+/// the host only takes presses for what's live for that player.
+#[test]
+fn creations_have_buttons_of_their_own() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::creations::ActionDef;
+    use crate::game::{Action, Actions};
+    use crate::input::{claim, Controls};
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::settings::{Binding, Settings};
+    use crate::transport::Wire;
+    use crate::ui::{menu_items, Act, Focus, Kind, Screen, WorldInfo};
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.2")
+local input = require("@potluck/input@0.1")
+local pats = 0
+input.on("pat", function(p)
+	pats += 1
+	print("pat from " .. p.name .. " " .. pats)
+	input.focus(p)
+end)
+world.every(0.1, function()
+	for _, p in world.players() do
+		if input.held("spin", p) then print("spinning " .. tostring(input.focused(p))) end
+	end
+end)
+print(pcall(input.on, "fly", function() end) and "fly ok" or "no fly")
+"#;
+    let mut c = creation(code);
+    c.manifest.actions.insert("pat".into(), ActionDef { name: "Pat".into(), pad: "X".into(), keys: "F".into() });
+    c.manifest.actions.insert("spin".into(), ActionDef { name: "Spin".into(), pad: "RB".into(), keys: "R".into() });
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) }];
+    scripts.start(&c, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    scripts.press(7, "test", "pat", true);
+    scripts.press(7, "test", "pat", true);
+    scripts.press(7, "test", "fly", true);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.focus_changes(), vec![(7, Some("test".to_string()))], "input.focus took Ada's controls");
+    assert!(scripts.focus_changes().is_empty(), "told once");
+    scripts.press(7, "test", "pat", false);
+    scripts.press(7, "test", "pat", true);
+    scripts.press(7, "test", "spin", true);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains("no fly"), "only actions it declared: {log}");
+    assert!(log.contains("pat from Ada 1") && log.contains("pat from Ada 2") && !log.contains("pat from Ada 3"), "a press, not a hold: {log}");
+    assert!(log.contains("spinning true"), "held while held: {log}");
+    // Ada goes, and nothing of hers is held
+    scripts.players.clear();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.focus_of(7), None);
+    assert!(scripts.shared.lock().unwrap().input.held.is_empty());
+    // a creation that stops gives controls back
+    scripts.shared.lock().unwrap().input.focus.insert(9, "test".into());
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.focus_changes(), vec![(9, None)]);
+
+    // on the device: its buttons do its actions, not the game's
+    let mut lib = Library::load();
+    lib.list.insert("test".into(), c.clone());
+    let mut settings = Settings::default();
+    let pressing = |held: &str| {
+        let mut c = Controls::default();
+        (c.interact, c.share, c.hotbar_step) = (true, true, 1);
+        c.held = vec![held.to_string()];
+        c
+    };
+    let mut ctl = pressing("pad:X");
+    claim(&mut ctl, Some("test".into()), &lib, &settings);
+    assert_eq!(ctl.actions, vec!["pat".to_string()]);
+    assert!(!ctl.interact && ctl.share, "X pats instead of getting off; sharing stays");
+    settings.bindings.insert("test/pat".into(), Binding { pad: "LB".into(), keys: "G".into() });
+    let mut ctl = pressing("pad:X");
+    claim(&mut ctl, Some("test".into()), &lib, &settings);
+    assert!(ctl.actions.is_empty() && ctl.interact, "moved to LB and G, so X and F are the game's again");
+    let mut ctl = pressing("pad:LB");
+    claim(&mut ctl, Some("test".into()), &lib, &settings);
+    assert_eq!((ctl.actions.clone(), ctl.hotbar_step), (vec!["pat".to_string()], 0));
+    let mut ctl = pressing("pad:X");
+    claim(&mut ctl, None, &lib, &settings);
+    assert!(ctl.actions.is_empty(), "nothing's live");
+
+    // what goes between devices
+    let press = Action::Press { creation: "test".into(), action: "pat".into(), down: true };
+    for m in [Msg::Act(press.clone()), Msg::Focus(Some("test".into()))] {
+        let bytes = frame_msg(&m);
+        let Some(Event::Msg(_, back)) = decode(Wire::Data(1, bytes)) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+
+    // the host takes a press only while it's live for that player
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    app.world_mut().resource_mut::<Library>().list.insert("test".into(), c.clone());
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&c, &mut herd).unwrap();
+    });
+    let me = app.world().resource::<crate::net::Net>().my_id;
+    let held = |app: &App| app.world().resource::<Scripts>().shared.lock().unwrap().input.held.contains(&(me, "test".to_string(), "pat".to_string()));
+    app.world_mut().resource_mut::<Actions>().0.push((me, press.clone()));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert!(!held(&app), "not riding it, and it doesn't have my controls");
+    {
+        let s = app.world().resource::<Scripts>();
+        let mut sh = s.shared.lock().unwrap();
+        sh.input.focus.insert(me, "test".into());
+        sh.input.changed.push(me);
+    }
+    app.world_mut().resource_mut::<Actions>().0.push((me, press.clone()));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert!(held(&app), "it has my controls");
+    assert_eq!(app.world().resource::<crate::player::Me>().focus.as_deref(), Some("test"), "and the host's own player hears so");
+
+    // moving a button: the screen lists it, and the next press takes it
+    let scripts = Scripts::default();
+    let info = WorldInfo::default();
+    let mut focus = Focus::default();
+    focus.go(Screen::Controls);
+    let buttons: Vec<Act> = menu_items(&focus, &lib, &scripts, &Settings::default(), &info).1.into_iter().filter_map(|i| if let Kind::Button(a) = i.kind { Some(a) } else { None }).collect();
+    assert!(buttons.contains(&Act::Rebind("test".into(), "spin".into())), "{buttons:?}");
+    app.world_mut().resource_mut::<Library>().list.insert("test".into(), c.clone());
+    app.world_mut().resource_mut::<Focus>().screen = Screen::Controls;
+    app.world_mut().resource_mut::<Focus>().rebinding = Some(("test".into(), "spin".into()));
+    let mut ctl = Controls::default();
+    ctl.just = vec!["pad:Y".into()];
+    app.insert_resource(ctl);
+    app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    let s = app.world().resource::<Settings>();
+    assert_eq!(s.bindings.get("test/spin"), Some(&Binding { pad: "Y".into(), keys: "R".into() }), "the pad moved, the key stayed");
+    assert!(app.world().resource::<Focus>().rebinding.is_none());
+}

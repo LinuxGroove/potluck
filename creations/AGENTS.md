@@ -6,7 +6,7 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 | File | What |
 |---|---|
-| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.2"`, `game = "0.1"` for boards, `store = "0.1"` to keep things) and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
+| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.2"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own), its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
 | `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder |
 | `types/potluck.d.luau` | The API's types, for editors and AI helpers. Don't edit it: the game writes it |
 
@@ -92,6 +92,39 @@ print(store.used() .. " bytes of 65536")
 - `store.get(key)` is the value kept under `key`, or nil. `store.set(key, value)` keeps it; nil forgets it. Keys are 1 to 64 letters. Values are numbers, strings, true or false, vectors and tables of those (six deep); functions and creatures aren't kept.
 - `store.keys()` lists the keys; `store.used()` is the bytes they take as JSON. Each creation has 64 KB in each world, and `store.set` fails with an error past it.
 - Each world keeps its own: a server saves it with the world (`store.json`), and a world you play in the game keeps it while it's open.
+
+### `@potluck/input` 0.1
+
+Buttons of a creation's own. Name them in `potluck.toml`, each with a pad button and a key:
+
+```toml
+[needs]
+input = "0.1"
+
+[actions.pat]
+name = "Pat"        # what players see, on the HUD and in Settings
+pad = "X"           # A, X, Y, LB, RB, LT, RT, Up, Down, Left or Right
+keys = "F"          # Space, or a letter but W, A, S and D
+```
+
+```luau
+local input = require("@potluck/input")
+input.on("pat", function(player) print(player.name .. " patted it") end)
+
+-- a mini game takes a player's controls while they play it
+world.on("player_joined", function(player) input.focus(player) end)
+world.every(0.1, function()
+	for _, p in world.players() do
+		if input.held("pat", p) then print(p.name .. " is holding Pat") end
+	end
+end)
+```
+
+- A creation's actions are live for a player while they ride one of its creatures, or while it has their controls. Then its buttons do its actions instead of the game's (B and Shift still get a rider off, and Menu or Esc still pauses), and the HUD shows them.
+- `input.on(action, fn)` calls `fn(player)` when a player presses it. Only actions in `potluck.toml` can have handlers; `world.on` and `input.on` handlers together are at most 32.
+- `input.held(action, player)` is true while they hold it.
+- `input.focus(player)` takes a player's controls, so its actions are live wherever they are; `input.focus(player, false)` gives them back. One creation has a player's controls at a time: the last to ask. `input.focused(player)` says whether this one has them.
+- Players can move any action to other buttons (Settings, Creations' buttons), so say what an action does by its name, never by a button. A creation has at most 8 actions. One with a pad button for every action is **pad friendly** on the market.
 
 ### `@potluck/game` 0.1
 
