@@ -343,6 +343,30 @@ async fn the_market_end_to_end() {
 }
 
 #[tokio::test]
+async fn a_creations_page_says_whats_in_it() {
+    let Some(m) = start().await else { return };
+    m.app.seed_base().await.expect("the base creations");
+    let (_, base) = m.call(None, "GET", "/api/base", None).await;
+    let code = |id: &str| base[id]["code"].as_str().unwrap_or_else(|| panic!("{id} is on the market")).to_string();
+    let (status, page) = m.page(&format!("/c/{}", code("balloon")), None).await;
+    assert_eq!(status, 200);
+    assert!(page.contains("What&#39;s in it") || page.contains("What's in it"), "a box of what it has");
+    assert!(page.contains("<b>Burner</b>") && page.contains("A on a pad, Space on a keyboard"), "its buttons");
+    assert!(page.contains("<b>burner</b>") && page.contains("A burner roars"), "its own sounds, with their captions");
+    assert!(page.contains("Its own tests"), "its tests");
+    let hedgehog = code("hedgehog");
+    let (_, page) = m.page(&format!("/c/{hedgehog}"), None).await;
+    assert!(page.contains("<b>hedgehog.bbmodel</b>") && page.contains("15 cubes"), "its model");
+    let (_, page) = m.page(&format!("/c/{hedgehog}?file=hedgehog.bbmodel"), None).await;
+    assert!(page.contains("A Blockbench model") && page.contains("src=\"data:image/png;base64,"), "a model shows its picture, not its numbers");
+    assert!(page.contains("spines_top") && !page.contains("&quot;elements&quot;"), "and its cubes");
+    let (_, page) = m.page(&format!("/c/{}", code("rodeo-ram")), None).await;
+    assert!(page.contains("A client half") && page.contains("<b>client.luau</b>"));
+    let (_, page) = m.page(&format!("/c/{}", code("frog")), None).await;
+    assert!(!page.contains("What&#39;s in it") && !page.contains("What's in it"), "nothing to say, no box");
+}
+
+#[tokio::test]
 async fn keep_identity_puts_the_makers_name_back() {
     let old = "name = \"Mossy\"\nby = \"Ada\"\nversion = 2\n[needs]\nworld = \"0.1\"\n";
     let new = "name = \"Mossy\"\nby = \"Bo\"\nremix_of = \"Mossy (ABCD2345)\"\nversion = 1\n[needs]\nworld = \"0.1\"\ntweak = \"0.1\"\n";
