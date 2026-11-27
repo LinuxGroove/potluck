@@ -423,10 +423,12 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
                 continue;
             }
             let forest = fbm(x as f32 / 30.0, z as f32 / 30.0, 12 + s, 5);
+            // glades: small clearings where light gets down to the floor
+            let glade = fbm(x as f32 / 13.0, z as f32 / 13.0, 17 + s, 3) > 0.6;
             let v = r.next();
-            if h > 34 && h < 62 && v < 0.03 + forest * 0.03 {
+            if h > 34 && h < 62 && !glade && v < 0.01 + forest * 0.035 {
                 pine(w, x, z, r);
-            } else if h <= 34 && forest > 0.55 && v < 0.03 {
+            } else if h <= 34 && forest > 0.55 && !glade && v < 0.008 + 0.024 * smooth(0.55, 0.8, forest) {
                 let k = r.next();
                 if k < 0.3 {
                     birch(w, x, z, r)
