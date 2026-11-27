@@ -736,9 +736,10 @@ fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 
 /// its plants move in the wind.
 /// The ray tracer's stand-in for a chunk's leaves. It counts everything as
 /// solid, so a canopy of whole leaf blocks would shut out the sky and leave
-/// the forest floor black; here each leaf block is a smaller box, nudged
-/// about inside its cell, so sun and sky come down between them in patches,
-/// as they do through the drawn leaves' cut-outs.
+/// the forest floor black; here about half the leaf blocks are left out and
+/// the rest are smaller boxes, nudged about inside their cells, so sun and
+/// sky come down through the gaps in patches, as they do through the drawn
+/// leaves' cut-outs.
 pub fn porous_leaves(w: &Voxels, c: IVec3) -> MeshData {
     let mut m = MeshData::default();
     let o = c * CHUNK;
@@ -749,7 +750,10 @@ pub fn porous_leaves(w: &Voxels, c: IVec3) -> MeshData {
                     continue;
                 }
                 let r = |k: i32| hash2(x * 31 + k, z * 17 - y * 5 + k * 3, 911 + y);
-                let size = 0.36 + 0.12 * r(0);
+                if r(4) < 0.55 {
+                    continue;
+                }
+                let size = 0.52 + 0.1 * r(0);
                 let room = 1.0 - size;
                 let mid = Vec3::new(x as f32 + 0.5 + (r(1) - 0.5) * room, y as f32 + 0.5 + (r(2) - 0.5) * room * 0.6, z as f32 + 0.5 + (r(3) - 0.5) * room);
                 for f in &FACES {

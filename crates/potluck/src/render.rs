@@ -389,6 +389,11 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
     commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.75, 0.82, 1.0), brightness: if medium { 1200.0 } else { 6000.0 }, ..default() });
 }
 
+/// How far into the night it is for the eye, 0 by day and 1 at night.
+fn night_eye(day: f32) -> f32 {
+    (1.0 - day).powf(0.7)
+}
+
 pub fn sky(
     time: Res<Time>,
     mut clock: ResMut<Clock>,
@@ -465,16 +470,16 @@ pub fn sky(
         grade.shadows.lift = -0.008 * golden;
         grade.highlights.gain = 1.0 + 0.04 * golden;
         // eyes adjust to the dark, gently
-        ex.ev100 = 13.7 - (1.0 - day).powf(0.7) * 4.4;
+        ex.ev100 = 13.7 - night_eye(day) * 4.4;
         if rt.0 {
             // ray traced shade has no made-up fill from everywhere, so the
-            // eye opens up a little
-            ex.ev100 -= 0.4;
+            // eye opens up a little, and more at night
+            ex.ev100 -= 0.4 + 1.0 * night_eye(day);
         }
         // under trees or a roof by day the eye opens up: a little where the
         // sky's fill still reaches in, more where ray tracing finds the
         // shade truly dark
-        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.2 } else { 1.0 };
+        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);
         let f = night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day);
