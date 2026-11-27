@@ -920,3 +920,20 @@ fn every_base_creation_runs_and_answers_players() {
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
     assert!(scripts.out.scores.iter().any(|s| s.1 == "longest ride" && s.3 == 7 && s.4 > 0.0), "the ride is on the board: {:?}", scripts.out.scores);
 }
+
+#[test]
+fn clouds_cover_part_of_the_sky() {
+    let n = 512;
+    let cover: Vec<f32> = (0..n * n).map(|i| crate::render::clouds::cover((i % n) as f32 / n as f32, (i / n) as f32 / n as f32)).collect();
+    let cloudy = cover.iter().filter(|&&c| c > 0.5).count() as f32 / cover.len() as f32;
+    if let Ok(dir) = std::env::var("POTLUCK_DUMP_TEX") {
+        let px: Vec<u8> = cover.iter().map(|c| (c * 255.0) as u8).collect();
+        let mut f = format!("P5 {n} {n} 255\n").into_bytes();
+        f.extend(px);
+        std::fs::write(std::path::Path::new(&dir).join("clouds.pgm"), f).unwrap();
+    }
+    assert!((0.2..0.55).contains(&cloudy), "a third or so of the sky is cloud ({cloudy})");
+    // the pattern tiles
+    let edge = (crate::render::clouds::cover(0.0, 0.3) - crate::render::clouds::cover(1.0, 0.3)).abs();
+    assert!(edge < 1e-3, "the texture tiles ({edge})");
+}

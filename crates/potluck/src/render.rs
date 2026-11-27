@@ -15,6 +15,7 @@ use bevy::pbr::{AtmosphereSettings, ContactShadows, DistanceFog, FogFalloff, Scr
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
+pub mod clouds;
 pub mod motes;
 #[cfg(feature = "raytracing")]
 pub mod adapt;

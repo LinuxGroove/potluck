@@ -81,11 +81,15 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
-                (render::sky, render::lanterns, render::flicker, render::motes::motes, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::clouds::drift, render::lanterns, render::flicker, render::motes::motes, creatures::draw, net::draw_players, net::draw_me, game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),
         );
+    // what each render pass costs, logged with a shot: --timings
+    if args.iter().any(|a| a == "--timings") {
+        app.add_plugins((bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(), bevy::render::diagnostic::RenderDiagnosticsPlugin));
+    }
     if args.iter().any(|a| a == "--play") {
         app.add_systems(PostStartup, |mut acts: ResMut<ui::Acts>| acts.0.push(ui::Act::PlayAlone));
     }
@@ -135,6 +139,7 @@ fn shot(
     herd: Res<creatures::Herd>,
     voxels: Res<world::Voxels>,
     off: Option<Res<render::Offscreen>>,
+    diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     use bevy::render::view::screenshot::save_to_disk;
@@ -196,6 +201,14 @@ fn shot(
     if t > s.after && !s.done {
         s.done = true;
         info!("Shot: {:.0} frames a second over the last 3 s", s.frames as f32 / 3.0);
+        if let Some(d) = diagnostics {
+            // the dearest first
+            let mut all: Vec<(String, f64)> = d.iter().filter_map(|x| Some((x.path().to_string(), x.smoothed()?))).collect();
+            all.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for (path, v) in all {
+                info!("Timing: {path} {v:.3}");
+            }
+        }
         let path = s.path.clone();
         commands.spawn(render::screenshot(off.as_deref())).observe(save_to_disk(path));
     }
@@ -226,6 +239,7 @@ fn setup(
     let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
     render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
     render::spawn_sea(&mut commands, &mut meshes, &mut mats);
+    render::clouds::spawn(&mut commands, &mut meshes, &mut mats, &mut images);
     if let Some(off) = off {
         commands.insert_resource(off);
     }

@@ -342,7 +342,8 @@ fn sky_u(s: f32) -> f32 {
 fn sky_through(b: BlockId) -> f32 {
     match b {
         AIR => 1.0,
-        LEAVES | BIRCH_LEAVES | PINE => 0.7,
+        // crowns are full of gaps: a forest floor keeps a good share of sky
+        LEAVES | BIRCH_LEAVES | PINE => 0.8,
         GLASS => 0.85,
         WATER => 0.8,
         _ if blocks::is_opaque(b) => 0.0,
@@ -805,7 +806,9 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                         }
                     }
                     Shape::Solid | Shape::Cutout => {
-                        let layer = if def.light { 4 } else if def.shape == Shape::Solid { 0 } else { 1 };
+                        // glass goes with the plants, which stay out of the ray
+                        // traced scene: the tracer would count it solid
+                        let layer = if def.light { 4 } else if def.shape == Shape::Solid { 0 } else if id == GLASS { 3 } else { 1 };
                         for f in &FACES {
                             let (nx, ny, nz) = (x + f.n[0], y + f.n[1], z + f.n[2]);
                             let nb = w.get(nx, ny, nz);
