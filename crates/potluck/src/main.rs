@@ -36,8 +36,16 @@ fn main() {
             title: "Potluck".into(),
             resolution: WindowResolution::new(window.x, window.y),
             // --no-vsync to see how fast a card really draws; the tools draw
-            // offscreen at their own pace, so they never wait for the screen
-            present_mode: if offscreen || args.iter().any(|a| a == "--no-vsync") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync },
+            // offscreen at their own pace, so they never wait for the screen;
+            // --present=immediate|mailbox|fifo|relaxed asks for one mode
+            present_mode: match opt("present").as_deref() {
+                Some("immediate") => PresentMode::Immediate,
+                Some("mailbox") => PresentMode::Mailbox,
+                Some("fifo") => PresentMode::Fifo,
+                Some("relaxed") => PresentMode::FifoRelaxed,
+                _ if offscreen || args.iter().any(|a| a == "--no-vsync") => PresentMode::AutoNoVsync,
+                _ => PresentMode::AutoVsync,
+            },
             ..default()
         }),
         ..default()
@@ -84,9 +92,10 @@ fn main() {
                 .chain()
                 .after(Sim),
         );
-    // what each render pass costs, logged with a shot: --timings
+    // where a frame's time goes, logged with a shot: --timings
     if args.iter().any(|a| a == "--timings") {
         app.add_plugins((bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(), bevy::render::diagnostic::RenderDiagnosticsPlugin));
+        render::timings::add(&mut app);
     }
     if args.iter().any(|a| a == "--play") {
         app.add_systems(PostStartup, |mut acts: ResMut<ui::Acts>| acts.0.push(ui::Act::PlayAlone));
@@ -142,6 +151,7 @@ fn shot(
     voxels: Res<world::Voxels>,
     off: Option<Res<render::Offscreen>>,
     diagnostics: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
+    frames: Option<Res<render::timings::Shared>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     use bevy::render::view::screenshot::save_to_disk;
@@ -218,9 +228,16 @@ fn shot(
     if t > s.after && !s.done {
         s.done = true;
         info!("Shot: {:.0} frames a second over the last 3 s", s.frames as f32 / 3.0);
+        if let Some(f) = frames {
+            f.report(3.0);
+        }
         if let Some(d) = diagnostics {
-            // the dearest first
-            let mut all: Vec<(String, f64)> = d.iter().filter_map(|x| Some((x.path().to_string(), x.smoothed()?))).collect();
+            // each pass's CPU and GPU time, the dearest first
+            let mut all: Vec<(String, f64)> = d
+                .iter()
+                .filter(|x| x.path().as_str().ends_with("elapsed_gpu") || x.path().as_str().ends_with("elapsed_cpu"))
+                .filter_map(|x| Some((x.path().to_string(), x.smoothed()?)))
+                .collect();
             all.sort_by(|a, b| b.1.total_cmp(&a.1));
             for (path, v) in all {
                 info!("Timing: {path} {v:.3}");

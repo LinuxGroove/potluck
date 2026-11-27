@@ -16,6 +16,7 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
 pub mod clouds;
+pub mod timings;
 pub mod motes;
 
 use crate::mesh::BlockMaterials;
