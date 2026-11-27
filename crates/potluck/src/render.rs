@@ -144,7 +144,30 @@ pub struct LanternLight {
     pub phase: f32,
 }
 
-pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, rt: Raytraced) -> BlockMaterials {
+/// Water: the block material, except that it keeps its own bumpy normals
+/// where the camera has a normal prepass (High, for SSAO). Bevy otherwise
+/// lights see-through things with the prepass's normals, which are those of
+/// the sea floor under them, and the near sea went flat and pale.
+pub type WaterMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, OwnNormals>;
+
+#[derive(Asset, bevy::render::render_resource::AsBindGroup, Reflect, Debug, Clone, Default)]
+pub struct OwnNormals {}
+
+impl bevy::pbr::MaterialExtension for OwnNormals {
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if let Some(f) = descriptor.fragment.as_mut() {
+            f.shader_defs.retain(|d| *d != bevy::shader::ShaderDefVal::from("LOAD_PREPASS_NORMALS"));
+        }
+        Ok(())
+    }
+}
+
+pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, waters: &mut Assets<WaterMaterial>, rt: Raytraced) -> BlockMaterials {
     let solid = StandardMaterial {
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
@@ -188,7 +211,8 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
     // ray traced meshes carry no colours, so there the material takes the
     // colour of a block or two of water instead of showing bare sand
     let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)] }
+    let own = waters.add(WaterMaterial { base: water.clone(), extension: OwnNormals {} });
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], water: own }
 }
 
 /// The open sea round the island, out past the far end of the view: a ring of

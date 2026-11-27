@@ -43,6 +43,7 @@ fn main() {
         ..default()
     }));
     sim(&mut app, SEED);
+    app.add_plugins(MaterialPlugin::<render::WaterMaterial>::default());
     if offscreen {
         app.insert_resource(OffscreenSize(size));
     }
@@ -98,13 +99,15 @@ fn main() {
         demo::add(&mut app, dir.into(), size);
     }
     // a screenshot: --shot=out.png [--after=8] [--at=x,y,z,yaw,pitch] [--time=0.5] [--screen=inside]
-    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5)
+    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5;
+    // --at=creature looks a creature in the face, --at=creature:2 the third)
     if let Some(path) = opt("shot") {
         let after: f32 = opt("after").and_then(|v| v.parse().ok()).unwrap_or(8.0);
         let at: Option<Vec<f32>> = opt("at").map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect());
         let tod: Option<f32> = opt("time").and_then(|v| v.parse().ok());
         let screen = opt("screen");
-        app.insert_resource(Shot { path, after, at, tod, screen, done: false, frames: 0 });
+        let creature = opt("at").and_then(|a| a.strip_prefix("creature").map(|n| n.trim_start_matches(':').parse().unwrap_or(0)));
+        app.insert_resource(Shot { path, after, at, tod, screen, creature, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
         // no outline round the block in the crosshair
         app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
@@ -123,6 +126,8 @@ struct Shot {
     at: Option<Vec<f32>>,
     tod: Option<f32>,
     screen: Option<String>,
+    /// Which creature to look in the face, counting by id.
+    creature: Option<usize>,
     done: bool,
     /// Frames drawn in the last three seconds before the picture, for the frame rate.
     frames: u32,
@@ -181,6 +186,21 @@ fn shot(
             me.flying = true;
         }
     }
+    if let Some(n) = s.creature {
+        let mut ids: Vec<_> = herd.bodies.keys().copied().collect();
+        ids.sort();
+        if let Some(b) = ids.get(n).and_then(|id| herd.bodies.get(id)) {
+            // creatures face -z, turned by their yaw; stand a few blocks in
+            // front, a little above, looking back at it
+            let fwd = Quat::from_rotation_y(b.yaw) * Vec3::NEG_Z;
+            let reach = 2.2 + b.half.x.max(b.half.z) * 2.0;
+            me.pos = b.pos + fwd * reach + Vec3::Y * (b.half.y * 1.4 - 1.5);
+            me.vel = Vec3::ZERO;
+            me.yaw = fwd.x.atan2(fwd.z);
+            me.pitch = -0.2;
+            me.flying = true;
+        }
+    }
     let t = time.elapsed_secs();
     if t > 1.0 && focus.screen == ui::Screen::Title {
         if let Some(sc) = s.screen.clone() {
@@ -221,6 +241,7 @@ fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut waters: ResMut<Assets<render::WaterMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut media: ResMut<Assets<ScatteringMedium>>,
     settings: Res<settings::Settings>,
@@ -231,7 +252,7 @@ fn setup(
 ) {
     let atlas = textures::build(&mut images);
     let rt = render::Raytraced::new(&settings, device.as_deref());
-    commands.insert_resource(render::make_materials(&atlas, &mut mats, rt));
+    commands.insert_resource(render::make_materials(&atlas, &mut mats, &mut waters, rt));
     commands.insert_resource(atlas);
     commands.insert_resource(rt);
     commands.insert_resource(mesh::Cover::of(render::Tier::of(&settings.lighting)));

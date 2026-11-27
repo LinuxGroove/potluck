@@ -880,6 +880,8 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
 #[derive(Resource)]
 pub struct BlockMaterials {
     pub layers: [Handle<StandardMaterial>; 5],
+    /// The water layer's, which keeps its own normals (`render::WaterMaterial`).
+    pub water: Handle<crate::render::WaterMaterial>,
 }
 
 #[derive(Resource, Default)]
@@ -977,10 +979,14 @@ pub fn remesh(
             let mut e = commands.spawn((
                 // water and plants stay out of the ray traced scene, so they keep their colours
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(mats.layers[LAYER_MATERIAL[i]].clone()),
                 Transform::IDENTITY,
                 ChunkPart,
             ));
+            if i == 2 {
+                e.insert(MeshMaterial3d(mats.water.clone()));
+            } else {
+                e.insert(MeshMaterial3d(mats.layers[LAYER_MATERIAL[i]].clone()));
+            }
             if let (true, Some(w)) = (sways, &wind) {
                 e.insert(MeshMorphWeights::Reference(w.0));
             }
