@@ -13,6 +13,7 @@ use bevy::math::Vec2;
 
 use super::{hex, Tex, ART};
 
+mod ores;
 mod props;
 mod tools;
 mod travel;
@@ -728,5 +729,6 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     .chain(props::tiles())
     .chain(tools::tiles())
     .chain(travel::tiles())
+    .chain(ores::tiles())
     .collect()
 }
