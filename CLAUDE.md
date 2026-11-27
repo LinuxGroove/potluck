@@ -27,7 +27,8 @@ Run the tests before every commit. Set `POTLUCK_HOME` to a scratch folder for ru
 |---|---|
 | `crates/potluck/src/lib.rs` | `sim()`: everything a world needs without drawing, shared by the game and the server |
 | `src/main.rs`, `src/server.rs` | The game (window, drawing, input, `--play`, `--shot`, `--demo`) and `potluck-server` (MinimalPlugins at 30 Hz, autosave, saving on stop) |
-| `src/world.rs`, `blocks.rs`, `noise.rs` | The 384 x 128 x 384 island from a seed, the Green, blocks, the save format (`encode`/`decode`) |
+| `src/world.rs`, `blocks.rs`, `noise.rs` | The 384 x 128 x 384 island from a seed, the Green, blocks (block models are `Cuboid`s), the save format (`encode`/`decode`) |
+| `src/world/places.rs` | The camp, the terraced farm and the sandstone villa the gallery's views look at |
 | `src/mesh.rs`, `textures.rs`, `render.rs` | 32³ chunk meshing in three layers, the generated block atlas (glowing tiles kept apart), sky, sun, lanterns, the lighting tiers (`Tier`: Low, Medium, High, Ultra) |
 | `src/player.rs`, `input.rs` | Walking, flying, building, survival; controls read once a frame into `Controls` |
 | `src/script.rs` | Luau VMs (one per creation, sandboxed, memory and time limits), the API, knobs, events, hot reload keeping creatures' state |

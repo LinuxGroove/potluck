@@ -8,6 +8,8 @@ use bevy::prelude::*;
 use crate::blocks::{self, *};
 use crate::noise::{fbm, smooth, Rng};
 
+mod places;
+
 pub const WX: i32 = 384;
 pub const WY: i32 = 128;
 pub const WZ: i32 = 384;
@@ -101,10 +103,10 @@ impl Voxels {
         }
         let old = self.at(p);
         self.data[Self::idx(p.x, p.y, p.z)] = id;
-        if old == LANTERN {
+        if blocks::block(old).light {
             self.lanterns.remove(&p);
         }
-        if id == LANTERN {
+        if blocks::block(id).light {
             self.lanterns.insert(p);
         }
         // the chunk and any neighbour the block touches (for faces and AO)
@@ -150,7 +152,7 @@ impl Voxels {
     fn find_lanterns(&mut self) {
         self.lanterns.clear();
         for (i, &b) in self.data.iter().enumerate() {
-            if b == LANTERN {
+            if blocks::block(b).light {
                 let i = i as i32;
                 self.lanterns.insert(IVec3::new(i % WX, i / (WX * WZ), (i / WX) % WZ));
             }
@@ -273,6 +275,7 @@ pub fn generate(seed: u32) -> Voxels {
     }
     let mut r = Rng::new(seed ^ 0x9e37_79b9);
     plant(&mut w, &hs, &mut r, s);
+    places::build(&mut w, &hs, &mut r);
     build_green(&mut w);
     w.find_lanterns();
     w.mark_all_dirty();
@@ -413,7 +416,7 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
         let along = (START.z - z) / (START.z - GREEN.z);
         let off = (x - (START.x + (GREEN.x - START.x) * along)).abs();
         let corridor = along > 0.0 && along < 1.0 && off < 9.0 + along * 14.0;
-        dg < GREEN_R + 4.0 || dc < 12.0 || corridor
+        dg < GREEN_R + 4.0 || dc < 12.0 || corridor || places::keep_clear(x as i32, z as i32)
     };
     let h_at = |x: i32, z: i32| hs[(z * WX + x) as usize];
     for z in 4..WZ - 4 {

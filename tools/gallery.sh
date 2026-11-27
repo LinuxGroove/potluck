@@ -1,8 +1,8 @@
 #!/bin/sh
 # The benchmark gallery: the same kinds of scene as Ken's seven Hytale
 # shots (2026-11-27), at every lighting tier with frame rates, to put beside
-# them after each pass on the looks. Views whose set pieces aren't built yet
-# stand in with the nearest place the world has.
+# them after each pass on the looks. The camp, the farm and the villa are
+# built for them (crates/potluck/src/world/places.rs).
 #
 #   tools/gallery.sh [out dir] [size] [game binary] [tiers]
 #
@@ -19,12 +19,14 @@ mkdir -p "$out"
 export POTLUCK_HOME="$out/home"
 : > "$out/fps.txt"
 # name, --at (x,y,z,yaw,pitch) and --time (0.25 sunrise, 0.5 noon, 0.75 sunset)
-views="1-rooftop-sunset:206,-9,262,80,-6:0.735
+# (the villa's views give a height: they're under a roof or on one)
+views="1-rooftop-sunset:58,33.6,212,80,-6:0.735
 2-misty-forest:200,-1.7,142,0,4:0.3
-3-camp-meadow:300,-1.7,315,90,-4:0.47
+3-camp-meadow:291,-1.7,328,90,2:0.47
 4-camp-above:300,-44,360,40,-22:0.72
-5-balcony-dusk:192.5,-1.7,262,0,6:0.76
-7-farm-night:192.5,-4,272,0,-12:0.93"
+5-balcony-dusk:45.5,27.4,206,75,2:0.76
+6-library:61,27.6,206,90,4:0.6
+7-farm-night:241,-1.7,309,90,8:0.93"
 for tier in $tiers; do
     echo "$views" | while IFS=: read -r name at tod; do
         log="$out/$name-$tier.log"
