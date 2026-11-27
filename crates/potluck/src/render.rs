@@ -337,12 +337,15 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
                 ..default()
             });
         }
-        if on("contact") {
+        // contact shadows cost High half a millisecond for nothing anyone
+        // could see on the p16g3, so only Ultra without ray tracing keeps them
+        if ultra && on("contact") {
             commands.entity(cam).insert(ContactShadows::default());
         }
         if on("haze") {
-            // POTLUCK_HAZE_STEPS=n tries another number of steps, for measuring
-            let steps = std::env::var("POTLUCK_HAZE_STEPS").ok().and_then(|n| n.parse().ok()).unwrap_or(if ultra { 32 } else { 16 });
+            // TAA blends the jittered steps, so 8 look as good as 16 for half
+            // the cost (POTLUCK_HAZE_STEPS=n tries others, for measuring)
+            let steps = std::env::var("POTLUCK_HAZE_STEPS").ok().and_then(|n| n.parse().ok()).unwrap_or(if ultra { 16 } else { 8 });
             commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: steps });
             commands.spawn((
                 FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
@@ -378,7 +381,7 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         ));
     }
     let mut sun = commands.spawn((
-        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high && on("contact"), illuminance: lux::RAW_SUNLIGHT, ..default() },
+        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high && ultra && on("contact"), illuminance: lux::RAW_SUNLIGHT, ..default() },
         cascades,
         SunDisk::EARTH,
         Transform::default(),

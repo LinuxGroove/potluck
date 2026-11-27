@@ -8,6 +8,17 @@ use bevy::window::{PresentMode, WindowResolution};
 
 use potluck::*;
 
+/// How frames reach the screen in play. On Linux, mailbox: the screen shows
+/// the newest finished frame at each refresh without tearing, and the game
+/// never stops to wait for one. With plain vsync, laptops whose graphics card
+/// hands each frame to another chip for the screen (the p16g3) missed many
+/// refreshes: 35 to 46 fps where mailbox holds 60. Mesa and NVIDIA offer
+/// mailbox on Linux; where it's missing Bevy falls back to tearing, so other
+/// systems keep plain vsync.
+fn smooth_present() -> PresentMode {
+    if cfg!(target_os = "linux") { PresentMode::Mailbox } else { PresentMode::AutoVsync }
+}
+
 fn main() {
     // NVIDIA's driver on Wayland can lose the window a few seconds in with
     // explicit sync ("Timeline acquire sync point set, but no buffer
@@ -52,7 +63,7 @@ fn main() {
                 Some("fifo") => PresentMode::Fifo,
                 Some("relaxed") => PresentMode::FifoRelaxed,
                 _ if offscreen || args.iter().any(|a| a == "--no-vsync") => PresentMode::AutoNoVsync,
-                _ => PresentMode::AutoVsync,
+                _ => smooth_present(),
             },
             ..default()
         }),
