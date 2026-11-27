@@ -134,14 +134,14 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
         metallic_roughness_texture: Some(atlas.rough.clone()),
-        emissive_texture: Some(atlas.glow.clone()),
-        emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * 600.0,
         // the texture says how rough each block is
         perceptual_roughness: 1.0,
         metallic: 0.0,
         reflectance: 0.3,
         ..default()
     };
+    // only glowing blocks get a glowing material (see `mesh::ChunkMesh`)
+    let glow = StandardMaterial { emissive_texture: Some(atlas.glow.clone()), emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * 600.0, ..solid.clone() };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
     // water reflects about 2% straight on (reflectance 0.35) and sends back
     // little light from inside, so its colour is deep and the sky's
@@ -156,7 +156,7 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
         cull_mode: None,
         ..default()
     };
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water)] }
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow)] }
 }
 
 /// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked
@@ -333,9 +333,9 @@ pub fn sky(
         // eyes adjust to the dark, gently
         ex.ev100 = 13.0 - (1.0 - day) * 5.2;
         if rt.0 {
-            // ray traced light has no made-up fill from everywhere, so the
-            // eye opens up a stop
-            ex.ev100 -= 1.0;
+            // ray traced shade has no made-up fill from everywhere, so the
+            // eye opens up a little
+            ex.ev100 -= 0.4;
         }
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);

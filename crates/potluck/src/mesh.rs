@@ -83,15 +83,17 @@ impl MeshData {
     }
 }
 
-/// A chunk's meshes: opaque blocks, cut-out blocks (leaves, glass), water
-/// and plants (cut out too, but kept apart so ray tracing can leave them out:
-/// it counts everything as solid, so plants would cast shadows like cards).
+/// A chunk's meshes: opaque blocks, cut-out blocks (leaves, glass), water,
+/// plants (cut out too, but kept apart so ray tracing can leave them out:
+/// it counts everything as solid, so plants would cast shadows like cards)
+/// and glowing blocks (lanterns: ray tracing treats every glowing mesh as a
+/// lamp, so only these glow, or the sun would be one lamp among hundreds).
 pub struct ChunkMesh {
-    pub layers: [MeshData; 4],
+    pub layers: [MeshData; 5],
 }
 
 /// Which material each layer of a chunk uses.
-pub const LAYER_MATERIAL: [usize; 4] = [0, 1, 2, 1];
+pub const LAYER_MATERIAL: [usize; 5] = [0, 1, 2, 1, 3];
 
 struct Face {
     n: [i32; 3],
@@ -112,7 +114,7 @@ const FACES: [Face; 6] = [
 const AO: [f32; 4] = [1.0, 0.78, 0.6, 0.45];
 
 pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
-    let mut layers = [MeshData::default(), MeshData::default(), MeshData::default(), MeshData::default()];
+    let mut layers: [MeshData; 5] = Default::default();
     let o = c * CHUNK;
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
     for y in o.y..o.y + CHUNK {
@@ -160,7 +162,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
                         }
                     }
                     Shape::Solid | Shape::Cutout => {
-                        let layer = if def.shape == Shape::Solid { 0 } else { 1 };
+                        let layer = if def.light { 4 } else if def.shape == Shape::Solid { 0 } else { 1 };
                         for f in &FACES {
                             let (nx, ny, nz) = (x + f.n[0], y + f.n[1], z + f.n[2]);
                             let nb = w.get(nx, ny, nz);
@@ -204,12 +206,12 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
 
 #[derive(Resource)]
 pub struct BlockMaterials {
-    pub layers: [Handle<StandardMaterial>; 3],
+    pub layers: [Handle<StandardMaterial>; 4],
 }
 
 #[derive(Resource, Default)]
 pub struct ChunkEntities {
-    pub map: HashMap<IVec3, [Option<Entity>; 4]>,
+    pub map: HashMap<IVec3, [Option<Entity>; 5]>,
     /// How many chunks have been meshed since the world loaded.
     pub meshed: usize,
 }
@@ -257,7 +259,7 @@ pub fn remesh(
     });
     for (c, m) in done {
         chunks.meshed += 1;
-        let slot = chunks.map.entry(c).or_insert([None; 4]);
+        let slot = chunks.map.entry(c).or_insert([None; 5]);
         for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
                 commands.entity(e).despawn();
