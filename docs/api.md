@@ -83,7 +83,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Sounds | 10 a second; heard within 40 blocks |
 | Blocks of its own (`[blocks]`) | 16, each with up to 24 colours, pictures 8 to 64 pixels square and up to 16 boxes; 128 from every creation in a world together, and as many pictures as the block atlas holds |
 | Sounds of its own (`[sounds]`) | 16, each up to 3 seconds, with up to 3 layers besides the first and 32 notes a layer |
-| Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
+| Things given or taken (`world.give`, `world.take`) | 64 at a time; a player's pockets hold 36 slots, of up to 99 of a block or one tool each |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
 | Flying (`flies`, `creature:climb`) | -4 to 4 blocks a second, eased into; no higher than 24 blocks over the world's highest blocks |
 | Digging speeds (`world.digging`) | 0 to 10 times as fast for each kind of block, every creation's multiplied and kept to that |
@@ -113,7 +113,7 @@ What a creation can never do, at any version: read or write files, reach the net
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
 - **0.5**: `world.on` for `"block_placed"`, `"block_broken"` and `"block_used"`: a player put down, broke or used (Interact on) a block, with the player, the middle of the block and its name.
 - **0.4**: `world.daytime` and `world.daylight` (the time of day), `world.find_light` (the nearest lantern, brazier, candle or other block that gives light), and `world.hurt` and `world.heal` for survival players' health. A client half has `daytime` and `daylight` too.
-- **0.3**: `world.pockets`, `world.has`, `world.take` and `world.give`, for the blocks players carry in survival.
+- **0.3**: `world.pockets`, `world.has`, `world.take` and `world.give`, for the blocks players carry in survival. Since the backpack came, players carry 36 slots rather than nine kinds, and `world.give` can give fewer than asked when they're nearly full. Its answer was always how many it gave.
 - **0.2**: `world.after`, `world.every` and `world.cancel` (timers), and `world.on` for `"player_joined"` and `"player_left"`. A creation with no creatures can now run code every tick.
 - **0.1**: the first version.
 

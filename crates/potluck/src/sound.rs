@@ -125,7 +125,12 @@ pub fn material(id: BlockId) -> Material {
             _ => Material::Soft,
         };
     }
-    let n = blocks::block(id).name.to_lowercase();
+    named(blocks::block(id).name)
+}
+
+/// What something is made of, going by its name.
+pub fn named(name: &str) -> Material {
+    let n = name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
     if has(&["water"]) {
         Material::Water

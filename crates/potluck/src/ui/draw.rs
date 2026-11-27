@@ -1,6 +1,6 @@
 //! How the menus look. Short menus are words on a shade over the world
 //! ("open air": no box, the chosen line marked in mint); screens you browse
-//! or read (Creations, Blocks, the market, Look inside, servers, suggestions) get a
+//! or read (Creations, Blocks, the backpack, the market, Look inside, servers, suggestions) get a
 //! near-solid sheet so pictures and code stay readable. Sizes are for a
 //! 720-line window and scale with the window's height.
 
@@ -23,6 +23,9 @@ fn mint(a: f32) -> Color {
 fn white(a: f32) -> Color {
     Color::srgba(1.0, 1.0, 1.0, a)
 }
+fn amber(a: f32) -> Color {
+    Color::srgba(1.0, 0.77, 0.36, a)
+}
 
 /// How a screen is laid out.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -41,7 +44,7 @@ pub fn look(s: &Screen) -> Look {
     match s {
         Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) => Look::Map,
         Screen::Chat => Look::Chat,
-        Screen::Library | Screen::Blocks | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
+        Screen::Library | Screen::Blocks | Screen::Backpack | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
         _ => Look::Air,
     }
 }
@@ -167,7 +170,7 @@ fn head_notes(screen: &Screen, items: &[Item]) -> (Option<String>, Option<String
             Some(k) => (Some(k), None, 1),
             None => (None, None, 0),
         },
-        Screen::Settings | Screen::Library | Screen::Blocks | Screen::Controls | Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => (None, None, 0),
+        Screen::Settings | Screen::Library | Screen::Blocks | Screen::Backpack | Screen::Controls | Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => (None, None, 0),
         _ => match note_at(0) {
             Some(sub) => (None, Some(sub), 1),
             None => (None, None, 0),
@@ -175,16 +178,26 @@ fn head_notes(screen: &Screen, items: &[Item]) -> (Option<String>, Option<String
     }
 }
 
-/// The prompts along the bottom: what each button does here.
-fn prompts(screen: &Screen, item: Option<&Item>, info: &WorldInfo) -> Vec<(MenuPrompt, &'static str, &'static str, &'static str)> {
+/// The prompts along the bottom: what each button does here. `moving` is
+/// whether something on the backpack is on its way to another slot.
+fn prompts(screen: &Screen, item: Option<&Item>, info: &WorldInfo, moving: bool) -> Vec<(MenuPrompt, &'static str, &'static str, &'static str)> {
     let choose = match item.map(|i| &i.kind) {
         Some(Kind::Slider { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Swatch { .. }) => "Change",
         Some(Kind::Field { .. }) => "Type",
         Some(Kind::Card(_)) => "Look inside",
         Some(Kind::Tile(_)) => "Hold it",
+        Some(Kind::Slot(_)) if moving => "Put it here",
+        Some(Kind::Slot(_)) => "Move",
         _ => "Choose",
     };
     let mut v = vec![(MenuPrompt::Accept, "A", "Enter", choose)];
+    if *screen == Screen::Backpack {
+        if !moving && matches!(item.map(|i| &i.kind), Some(Kind::Slot(_))) {
+            v.push((MenuPrompt::Interact, "X", "F", "Move half"));
+        }
+        v.push((MenuPrompt::Back, "B", "Esc", if moving { "Put it back" } else { "Back" }));
+        return v;
+    }
     match screen {
         Screen::Title => return v,
         Screen::Settings | Screen::Library | Screen::Blocks => v.push((MenuPrompt::Page, "LB RB", "Tab", "Pages")),
@@ -277,8 +290,13 @@ pub fn draw_menu(
         _ => width,
     } / s;
     // what fits: cards (or blocks) by rows, anything else by height
-    let cards: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i.kind, Kind::Card(_) | Kind::Tile(_))).map(|(n, _)| n).collect();
-    let grid = if focus.screen == Screen::Blocks { Grid::tiles(win, s) } else { Grid::new(win, s, !cards.is_empty() && look == Look::Sheet) };
+    let cards: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i.kind, Kind::Card(_) | Kind::Tile(_) | Kind::Slot(_))).map(|(n, _)| n).collect();
+    let grid = match focus.screen {
+        Screen::Blocks => Grid::tiles(win, s),
+        // the backpack's three rows and the hotbar, all at once
+        Screen::Backpack => Grid { on: true, cols: crate::items::HOTBAR, rows: crate::items::POCKETS / crate::items::HOTBAR },
+        _ => Grid::new(win, s, !cards.is_empty() && look == Look::Sheet),
+    };
     let (first, end) = if grid.on {
         let k = cards.iter().position(|&i| i == focus.sel).unwrap_or(0);
         let row = k / grid.cols;
@@ -304,7 +322,7 @@ pub fn draw_menu(
     let running: Vec<&String> = if focus.screen == Screen::Library { lib.running.iter().collect() } else { vec![] };
     // made blocks' pictures arrive after their tiles
     let pictures = photos.version + atlas.as_ref().map_or(0, |a| a.icons.len() as u64);
-    let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}|{first}|{end}|{s}|{}|{}|{pages:?}|{running:?}|{pictures}|{}", focus.screen, focus.sel, focus.scroll, side, ctx.pad, info.in_world, grid.cols);
+    let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}|{first}|{end}|{s}|{}|{}|{pages:?}|{running:?}|{pictures}|{}|{:?}", focus.screen, focus.sel, focus.scroll, side, ctx.pad, info.in_world, grid.cols, focus.moving);
     if sig == focus.sig {
         return;
     }
@@ -322,7 +340,7 @@ pub fn draw_menu(
     }
     let sel = focus.sel;
     let item_sel = items.get(sel);
-    let bottom = prompts(&focus.screen, item_sel, &info);
+    let bottom = prompts(&focus.screen, item_sel, &info, focus.moving.is_some());
     let m = Menu { title, items: &items, skip, first, end, sel, kicker, sub, rows, width, pages, prompts: bottom };
     match look {
         Look::Air => air(&mut commands, &ctx, &m, &focus, &info),
@@ -789,6 +807,8 @@ fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Libr
                 creations(sh, ctx, m, focus, lib, photos, grid, cards);
             } else if focus.screen == Screen::Blocks {
                 block_sheet(sh, ctx, m, lib, grid, cards, atlas);
+            } else if focus.screen == Screen::Backpack {
+                backpack(sh, ctx, m, focus, atlas);
             } else if let Some(side) = side {
                 inside(sh, ctx, m, side, focus.scroll);
             } else {
@@ -985,6 +1005,135 @@ fn block_sheet(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, lib: &Library
                     f.spawn((Node { padding: UiRect::axes(ctx.u(8.0), ctx.u(4.0)), border_radius: BorderRadius::all(ctx.u(6.0)), ..default() }, BackgroundColor(white(0.08)))).with_child((Text::new(fact), ctx.plain(12.0), TextColor(SOFT)));
                 }
             });
+        });
+    });
+}
+
+/// The backpack: its 27 slots in three rows, then the hotbar's nine, and the
+/// chosen slot's thing beside them. A slot on its way somewhere else is
+/// marked in amber until it's put down.
+fn backpack(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, atlas: Option<&BlockAtlas>) {
+    use crate::items::{self, HOTBAR, POCKETS};
+    let icon = |t: items::Thing| atlas.and_then(|a| a.icons.get(items::icon(t)).cloned());
+    let moving = focus.moving.map(|m| m.0);
+    // a slot as a square: its thing's picture and how many
+    let square = |g: &mut ChildSpawnerCommands, n: usize, i: usize| {
+        let slot = focus.pockets.0[i];
+        let picked = n == m.sel;
+        let lifted = moving == Some(i);
+        let mut e = g.spawn((
+            Interaction::default(),
+            MenuButton(n),
+            Node { aspect_ratio: Some(1.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(10.0)), min_width: px(0), ..default() },
+            BackgroundColor(if lifted { amber(0.16) } else { white(if picked { 0.12 } else { 0.05 }) }),
+        ));
+        if picked {
+            e.insert((Outline::new(ctx.u(3.0), px(0), MINT), BoxShadow(vec![ShadowStyle { color: mint(0.35), x_offset: px(0), y_offset: px(0), spread_radius: px(0), blur_radius: ctx.u(16.0) }])));
+        } else if lifted {
+            e.insert(Outline::new(ctx.u(3.0), px(0), amber(0.9)));
+        }
+        if slot.empty() {
+            return;
+        }
+        e.with_children(|sq| {
+            if let Some(h) = icon(slot.thing) {
+                let mut img = ImageNode::new(h);
+                if lifted {
+                    img.color = Color::srgba(1.0, 1.0, 1.0, 0.45);
+                }
+                sq.spawn((img, Node { width: percent(64), height: percent(64), ..default() }));
+            }
+            if items::stack(slot.thing) > 1 {
+                sq.spawn((
+                    Text::new(slot.count.to_string()),
+                    ctx.round(15.0, 700),
+                    TextColor(INK),
+                    ctx.shadow(1.5, 0.8),
+                    Node { position_type: PositionType::Absolute, right: ctx.u(7.0), bottom: ctx.u(3.0), ..default() },
+                ));
+            }
+        });
+    };
+    sh.spawn(Node { align_items: AlignItems::Center, flex_shrink: 0.0, ..default() }).with_children(|top| {
+        top.spawn((Text::new(m.title.clone()), ctx.heading(36.0), TextColor(INK), ctx.shadow(3.0, 0.28)));
+    });
+    sh.spawn(Node { column_gap: ctx.u(24.0), flex_grow: 1.0, min_height: px(0), margin: UiRect::top(ctx.u(16.0)), ..default() }).with_children(|body| {
+        // as wide as nine squares of about 76 each, at most
+        let wide = ctx.u(HOTBAR as f32 * 76.0 + (HOTBAR as f32 - 1.0) * 8.0);
+        body.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, min_width: px(0), max_width: wide, row_gap: ctx.u(8.0), ..default() }).with_children(|left| {
+            let grid = |left: &mut ChildSpawnerCommands, range: std::ops::Range<usize>| {
+                left.spawn(Node { display: Display::Grid, grid_template_columns: RepeatedGridTrack::flex(HOTBAR as u16, 1.0), column_gap: ctx.u(8.0), row_gap: ctx.u(8.0), padding: UiRect::all(ctx.u(4.0)), margin: UiRect::all(ctx.u(-4.0)), flex_shrink: 0.0, ..default() }).with_children(|g| {
+                    for n in range {
+                        if let Some(Kind::Slot(i)) = m.items.get(n).map(|it| &it.kind) {
+                            square(g, n, *i);
+                        }
+                    }
+                });
+            };
+            // the items are the backpack's 27 slots, then the hotbar's 9
+            let back = POCKETS - HOTBAR;
+            grid(left, 0..back);
+            left.spawn((Text::new("HOTBAR"), ctx.kicker(12.5, 1.4), TextColor(MINT), Node { margin: UiRect::top(ctx.u(10.0)), ..default() }));
+            grid(left, back..POCKETS);
+            if let Some(n) = m.items.iter().position(|it| matches!(it.kind, Kind::Button(_))) {
+                left.spawn(Node { margin: UiRect::top(ctx.u(14.0)), flex_shrink: 0.0, ..default() }).with_children(|b| item(b, ctx, n, &m.items[n], n == m.sel, m.rows, false));
+            }
+        });
+        // the chosen slot's thing
+        let chosen = match m.items.get(m.sel).map(|it| &it.kind) {
+            Some(Kind::Slot(i)) => Some(*i),
+            _ => None,
+        };
+        let slot = chosen.map(|i| focus.pockets.0[i]).filter(|s| !s.empty());
+        body.spawn((
+            Node { flex_direction: FlexDirection::Column, width: ctx.u(Grid::DETAIL), flex_shrink: 0.0, padding: UiRect::all(ctx.u(18.0)), row_gap: ctx.u(10.0), border_radius: BorderRadius::all(ctx.u(16.0)), overflow: Overflow::clip(), ..default() },
+            BackgroundColor(white(0.05)),
+        ))
+        .with_children(|d| {
+            d.spawn((Node { width: percent(100), aspect_ratio: Some(1.6), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(12.0)), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25))))
+                .with_children(|pic| {
+                    if let Some(h) = slot.and_then(|s| icon(s.thing)) {
+                        pic.spawn((ImageNode::new(h), Node { height: percent(70), aspect_ratio: Some(1.0), ..default() }));
+                    }
+                });
+            let place = match chosen {
+                Some(i) if i < HOTBAR => format!("Hotbar, slot {}", i + 1),
+                Some(_) => "Backpack".into(),
+                None => String::new(),
+            };
+            if !place.is_empty() {
+                d.spawn((Text::new(place.to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT)));
+            }
+            match slot {
+                Some(s) => {
+                    d.spawn((Text::new(items::name(s.thing)), ctx.heading(28.0), TextColor(INK)));
+                    let most = items::stack(s.thing);
+                    let mut facts = vec![];
+                    if most > 1 {
+                        facts.push(format!("{} of {most} in this slot", s.count));
+                    }
+                    let all = focus.pockets.count(s.thing);
+                    if all > s.count {
+                        facts.push(format!("{all} in all"));
+                    }
+                    facts.push(if items::is_item(s.thing) { "Something to hold".into() } else { "A block to put down".into() });
+                    d.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: ctx.u(6.0), row_gap: ctx.u(6.0), ..default() }).with_children(|f| {
+                        for fact in facts {
+                            f.spawn((Node { padding: UiRect::axes(ctx.u(8.0), ctx.u(4.0)), border_radius: BorderRadius::all(ctx.u(6.0)), ..default() }, BackgroundColor(white(0.08)))).with_child((Text::new(fact), ctx.plain(12.0), TextColor(SOFT)));
+                        }
+                    });
+                }
+                None if chosen.is_some() => {
+                    d.spawn((Text::new("An empty slot"), ctx.heading(24.0), TextColor(SOFT)));
+                }
+                None => {}
+            }
+            let says = if focus.moving.is_some() {
+                "Choose where it goes. Onto the same thing it stacks; onto something else, the two swap."
+            } else {
+                "Choose something to move it to another slot. What's in the hotbar is what you can hold."
+            };
+            d.spawn((Text::new(says), ctx.plain(13.0), TextColor(FAINT), Node { margin: UiRect::top(ctx.u(6.0)), ..default() }));
         });
     });
 }

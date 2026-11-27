@@ -1,7 +1,7 @@
 //! Worlds the player keeps. Each lives in its own folder under `worlds/`
 //! in the data folder and saves as they play: every two minutes, when the
 //! pause menu opens, on leaving and on quitting. A save holds the island
-//! (`made::world_bytes`, only what changed from the seed), what creations
+//! (`made::world_bytes`: every block, run-length encoded), what creations
 //! keep (`@potluck/store`), their boards, the creations running besides the
 //! base game's, and the player: what they carry, their health and where
 //! they stood. Friends' worlds and servers aren't kept here: their host
@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::blocks;
+use crate::items;
 use crate::creations::{Creation, Library, Origin, Payload};
 use crate::creatures::Herd;
 use crate::hosting::Boards;
@@ -43,7 +43,7 @@ pub struct Kept {
     pub played: u64,
 }
 
-/// Where the player stood and what they had, saved with the world. Blocks
+/// Where the player stood and what they had, saved with the world. Things
 /// go by name, so a save outlives a block's id changing.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Stood {
@@ -51,7 +51,10 @@ pub struct Stood {
     pub yaw: f32,
     pub pitch: f32,
     pub slot: usize,
-    pub hotbar: Vec<String>,
+    /// Every slot's thing, the hotbar's then the backpack's ("" for none),
+    /// and how many of it.
+    #[serde(alias = "hotbar")]
+    pub pockets: Vec<String>,
     pub counts: Vec<u32>,
     pub health: f32,
     pub flying: bool,
@@ -64,14 +67,14 @@ impl Stood {
             yaw: me.yaw,
             pitch: me.pitch,
             slot: me.slot,
-            hotbar: me.hotbar.iter().map(|b| blocks::block(*b).name.to_string()).collect(),
-            counts: me.counts.to_vec(),
+            pockets: me.pockets.0.iter().map(|s| if s.thing == 0 { String::new() } else { items::name(s.thing).to_string() }).collect(),
+            counts: me.pockets.0.iter().map(|s| s.count).collect(),
             health: me.health,
             flying: me.flying,
         }
     }
 
-    /// Puts the player back as they were. A block that's gone (its
+    /// Puts the player back as they were. A thing that's gone (its
     /// creation isn't here any more) leaves its slot empty.
     pub fn put(&self, me: &mut Me, voxels: &Voxels) {
         me.respawn(voxels, None);
@@ -82,14 +85,13 @@ impl Stood {
         me.yaw = if self.yaw.is_finite() { self.yaw } else { 0.0 };
         me.pitch = if self.pitch.is_finite() { self.pitch.clamp(-1.55, 1.55) } else { 0.0 };
         me.slot = self.slot.min(8);
-        for i in 0..9 {
-            let id = self.hotbar.get(i).and_then(|n| blocks::by_name(n));
-            match id {
-                Some(id) => {
-                    me.hotbar[i] = id;
-                    me.counts[i] = self.counts.get(i).copied().unwrap_or(0);
+        for (i, slot) in me.pockets.0.iter_mut().enumerate() {
+            match self.pockets.get(i).and_then(|n| items::by_name(n)) {
+                Some(t) => {
+                    slot.thing = t;
+                    slot.count = self.counts.get(i).copied().unwrap_or(0).min(items::stack(t));
                 }
-                None => me.counts[i] = 0,
+                None => slot.count = 0,
             }
         }
         if self.health.is_finite() && self.health > 0.0 {
