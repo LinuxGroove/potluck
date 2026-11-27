@@ -104,8 +104,70 @@ impl BlockAtlas {
     /// tile `name`, over that tile if it has one, glowing where `glow` says:
     /// a block a creation made. None when the atlas has no room left.
     pub fn put(&mut self, images: &mut Assets<Image>, name: &'static str, rgba: &[[u8; 4]], n: usize, glow: &[bool]) -> Option<u16> {
-        let glows = glow.iter().any(|g| *g);
-        let slot = match self.tiles.get(name) {
+        let slot = self.slot_for(name, glow.iter().any(|g| *g))?;
+        let full = self.full;
+        let src: Vec<[f32; 4]> = rgba.iter().map(|p| p.map(|v| v as f32)).collect();
+        let height = src.iter().map(|p| lum([p[0], p[1], p[2]])).collect();
+        let t = Tex { size: n, rgba: src.clone(), height, bump: 1.2, glow: glow.iter().any(|g| *g), rough: None };
+        let normal = resample(&normal_of(&t), n, full);
+        let rough = vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full];
+        let (color, lit) = self.lit_texels(&src, n, glow);
+        let mut writes = vec![];
+        for (image, texels, srgb) in [(self.color.id(), &color, true), (self.normal.id(), &normal, false), (self.rough.id(), &rough, false), (self.glow.id(), &lit, true)] {
+            writes.extend(self.cell_writes(slot, image, texels, srgb));
+        }
+        self.writes.extend(writes);
+        self.tiles.insert(name, slot as u16);
+        self.icons.insert(name, images.add(icon_image(&color, full)));
+        Some(slot as u16)
+    }
+
+    /// A moving picture: draws its first frame as `put` does, and returns
+    /// what to draw again for each frame (its colours and glow; the bumps
+    /// stay the first frame's), so showing one is only sending it. Each
+    /// frame is its colours, its glow and how many px square it is. None
+    /// when the atlas has no room left.
+    pub fn put_moving(&mut self, images: &mut Assets<Image>, name: &'static str, frames: &[(&[[u8; 4]], &[bool], usize)]) -> Option<Vec<Vec<TileWrite>>> {
+        let glows = frames.iter().any(|(_, g, _)| g.iter().any(|g| *g));
+        let (first, glow, n) = *frames.first()?;
+        // a slot where glow is kept apart if any frame glows
+        let slot = self.slot_for(name, glows)?;
+        self.tiles.insert(name, slot as u16);
+        self.put(images, name, first, n, glow)?;
+        Some(
+            frames
+                .iter()
+                .map(|(rgba, glow, n)| {
+                    let src: Vec<[f32; 4]> = rgba.iter().map(|p| p.map(|v| v as f32)).collect();
+                    let (color, lit) = self.lit_texels(&src, *n, glow);
+                    let mut w = self.cell_writes(slot, self.color.id(), &color, true);
+                    w.extend(self.cell_writes(slot, self.glow.id(), &lit, true));
+                    w
+                })
+                .collect(),
+        )
+    }
+
+    /// A picture's colours and its glow, at full size.
+    fn lit_texels(&self, src: &[[f32; 4]], n: usize, glow: &[bool]) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+        let lit: Vec<[f32; 4]> = src.iter().zip(glow).map(|(p, g)| if *g { *p } else { [0.0, 0.0, 0.0, 255.0] }).collect();
+        (resample(src, n, self.full), resample(&lit, n, self.full))
+    }
+
+    /// Every mip level of one atlas image's cell for a tile.
+    fn cell_writes(&self, slot: usize, image: AssetId<Image>, texels: &[[f32; 4]], srgb: bool) -> Vec<TileWrite> {
+        (0..mips(self.full))
+            .map(|level| {
+                let (data, cell) = cell_texels(texels, self.full, level, srgb);
+                let (x, y) = ((slot % GRID * cell) as u32, (slot / GRID * cell) as u32);
+                TileWrite { image, level, x, y, size: cell as u32, data }
+            })
+            .collect()
+    }
+
+    /// The tile `name` draws into: its own if it has one, or a new one.
+    fn slot_for(&mut self, name: &'static str, glows: bool) -> Option<usize> {
+        Some(match self.tiles.get(name) {
             Some(s) => *s as usize,
             // glowing tiles keep an empty tile beside them and a row away
             // from the rest, as in `build`
@@ -123,26 +185,7 @@ impl BlockAtlas {
                 self.next += 1;
                 self.next - 1
             }
-        };
-        let full = self.full;
-        let src: Vec<[f32; 4]> = rgba.iter().map(|p| p.map(|v| v as f32)).collect();
-        let height = src.iter().map(|p| lum([p[0], p[1], p[2]])).collect();
-        let t = Tex { size: n, rgba: src.clone(), height, bump: 1.2, glow: glows, rough: None };
-        let color = resample(&src, n, full);
-        let normal = resample(&normal_of(&t), n, full);
-        let rough = vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full];
-        let lit: Vec<[f32; 4]> = src.iter().zip(glow).map(|(p, g)| if *g { *p } else { [0.0, 0.0, 0.0, 255.0] }).collect();
-        let lit = resample(&lit, n, full);
-        for (image, texels, srgb) in [(self.color.id(), &color, true), (self.normal.id(), &normal, false), (self.rough.id(), &rough, false), (self.glow.id(), &lit, true)] {
-            for level in 0..mips(full) {
-                let (data, cell) = cell_texels(texels, full, level, srgb);
-                let (x, y) = ((slot % GRID * cell) as u32, (slot / GRID * cell) as u32);
-                self.writes.push(TileWrite { image, level, x, y, size: cell as u32, data });
-            }
-        }
-        self.tiles.insert(name, slot as u16);
-        self.icons.insert(name, images.add(icon_image(&color, full)));
-        Some(slot as u16)
+        })
     }
 
     /// The UV rectangle of a tile: `(u0, v0, u1, v1)`, inside its gutter.

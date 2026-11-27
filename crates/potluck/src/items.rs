@@ -1,6 +1,6 @@
 //! What players carry: every block, and items, things that are only carried
-//! and held (tools and swords, and what ores give; ingots, food and armour
-//! later).
+//! and held (tools and swords, what ores give, ingots, charcoal and flint,
+//! and cooked food; armour later).
 //!
 //! A `Thing` is either. Ids under `FIRST_ITEM` are blocks, by their block
 //! id; ids from `FIRST_ITEM` up are the game's own items, listed in `ITEMS`.
@@ -35,6 +35,15 @@ pub const RAW_IRON: Thing = 266;
 pub const RAW_GOLD: Thing = 267;
 pub const CRYSTAL: Thing = 268;
 pub const RAW_MOONSILVER: Thing = 269;
+pub const CHARCOAL: Thing = 270;
+pub const FLINT: Thing = 271;
+pub const COPPER_INGOT: Thing = 272;
+pub const IRON_INGOT: Thing = 273;
+pub const GOLD_INGOT: Thing = 274;
+pub const MOONSILVER_INGOT: Thing = 275;
+pub const FLINT_AND_STEEL: Thing = 276;
+pub const BREAD: Thing = 277;
+pub const ROASTED_CARROTS: Thing = 278;
 
 /// How many of a block go in one slot.
 pub const BLOCK_STACK: u32 = 99;
@@ -79,6 +88,17 @@ pub static ITEMS: &[Item] = &[
     stuff("Raw gold", "raw_gold"),
     stuff("Crystal", "crystal"),
     stuff("Raw moonsilver", "raw_moonsilver"),
+    // what furnaces make (the furnace creation), and the fire creation's
+    // flint and steel
+    stuff("Charcoal", "charcoal"),
+    stuff("Flint", "flint"),
+    stuff("Copper ingot", "copper_ingot"),
+    stuff("Iron ingot", "iron_ingot"),
+    stuff("Gold ingot", "gold_ingot"),
+    stuff("Moonsilver ingot", "moonsilver_ingot"),
+    tool("Flint and steel", "flint_and_steel"),
+    stuff("Bread", "bread"),
+    stuff("Roasted carrots", "roasted_carrots"),
 ];
 
 /// A block as a thing to carry.

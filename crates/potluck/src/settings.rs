@@ -41,6 +41,9 @@ pub struct Settings {
     pub volume: f32,
     /// Words on the screen for sounds, and which side they're on.
     pub subtitles: bool,
+    /// Keeps moving pictures (fire, lit furnaces) still; weather's lightning
+    /// will heed it too.
+    pub reduce_flashing: bool,
     /// Fill the screen, or play in a window (F11 switches).
     pub fullscreen: bool,
     /// The dev bridge: coding helpers on this computer can reload, test and
@@ -85,6 +88,7 @@ impl Default for Settings {
             bindings: Default::default(),
             volume: 0.8,
             subtitles: false,
+            reduce_flashing: false,
             fullscreen: true,
             dev_bridge: false,
             minimap: "middle".into(),

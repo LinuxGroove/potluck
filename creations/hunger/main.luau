@@ -26,6 +26,8 @@ local HURT_EVERY = 5 -- seconds between hurts on an empty belly
 
 -- What's food, most filling first: a remix can add its own.
 local FOODS = {
+	{ name = "Bread", fills = 8, says = "You ate some bread." },
+	{ name = "Roasted carrots", fills = 7, says = "You ate some roasted carrots." },
 	{ name = "Carrots", fills = 6, says = "You ate some carrots." },
 	{ name = "Wheat", fills = 2, says = "You chewed some wheat." },
 }

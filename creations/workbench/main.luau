@@ -33,6 +33,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Stone = 4 }, give = "Mossy brick", n = 4 },
 		-- the Brickworks creation's, when it's in the world
 		{ want = { Cobblestone = 8 }, give = "Kiln", n = 1 },
+		-- the furnace creation's
+		{ want = { Cobblestone = 8 }, give = "Furnace", n = 1 },
 	},
 	Furniture = {
 		{ want = { Planks = 6 }, give = "Table", n = 1 },
@@ -47,6 +49,7 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Glass = 1, Cobblestone = 2 }, give = "Lantern", n = 1 },
 		{ want = { Cobblestone = 4, ["Oak log"] = 1 }, give = "Brazier", n = 1 },
 		{ want = { Candle = 1, ["Cream wool"] = 1 }, give = "Paper lantern", n = 2 },
+		{ want = { Planks = 3, Coal = 1 }, give = "Campfire", n = 1 },
 	},
 	["Garden and farm"] = {
 		{ want = { Planks = 3 }, give = "Fence", n = 2 },
@@ -61,6 +64,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone pickaxe", n = 1 },
 		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone axe", n = 1 },
 		{ want = { Cobblestone = 1, Planks = 2 }, give = "Stone shovel", n = 1 },
+		-- lights fires (the fire creation)
+		{ want = { Flint = 1, ["Iron ingot"] = 1 }, give = "Flint and steel", n = 1 },
 	},
 	Weapons = {
 		{ want = { Planks = 2 }, give = "Wooden sword", n = 1 },
