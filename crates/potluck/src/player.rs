@@ -83,6 +83,9 @@ pub struct Me {
     /// How fast creations let this player heal by themselves
     /// (`world.healing`): 1 as usual, 0 not at all.
     pub healing: f32,
+    /// How much faster what's in hand digs each kind of block
+    /// (`world.digging`, in the order of `sound::DIG_KINDS`), by what it is.
+    pub digging: std::collections::HashMap<BlockId, [f32; 5]>,
     /// Blocks this player placed and broke since the host last looked:
     /// (where, what it was, what it is now), for creations' block events.
     pub built: Vec<(IVec3, BlockId, BlockId)>,
@@ -91,6 +94,8 @@ pub struct Me {
     regen: f32,
     /// Seconds since the last hurt, for the HUD's flash.
     pub hurt: f32,
+    /// Where the player was last hurt too badly, for the map's marker.
+    pub fell_at: Option<Vec3>,
 }
 
 impl Default for Me {
@@ -128,10 +133,12 @@ impl Default for Me {
             health_due: 0.0,
             hurts: vec![],
             healing: 1.0,
+            digging: Default::default(),
             built: vec![],
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
+            fell_at: None,
         }
     }
 }
@@ -170,6 +177,16 @@ impl Me {
         self.fall_from = self.pos.y;
         self.riding = None;
         self.flying = false;
+    }
+
+    /// Puts the player at a spot as it is (a trip to a waypoint), keeping
+    /// which way they face.
+    pub fn place(&mut self, at: Vec3) {
+        self.pos = at;
+        self.vel = Vec3::ZERO;
+        self.fall_from = at.y;
+        self.flying = false;
+        self.breaking = None;
     }
 
     pub fn give(&mut self, id: BlockId) {
@@ -216,6 +233,18 @@ impl Me {
         if self.built.len() < 256 {
             self.built.push((at, old, new));
         }
+    }
+
+    /// What's in hand: the hotbar's chosen slot, or nothing when it's an
+    /// empty one in survival.
+    pub fn held(&self, survival: bool) -> BlockId {
+        if survival && self.counts[self.slot] == 0 { AIR } else { self.hotbar[self.slot] }
+    }
+
+    /// How much faster than by hand the thing in hand breaks a block in
+    /// survival, as creations' `world.digging` said.
+    pub fn dig_speed(&self, block: BlockId) -> f32 {
+        crate::sound::material(block).dig().and_then(|k| self.digging.get(&self.held(true)).map(|s| s[k])).unwrap_or(1.0)
     }
 
     pub fn hurt(&mut self, amount: f32) {
@@ -473,6 +502,9 @@ pub fn walk(
     }
     if me.pos.y < -20.0 || me.health <= 0.0 {
         let msg = if me.health <= 0.0 { "You were hurt too badly. Back to the hill." } else { "You fell out of the world. Back to the hill." };
+        if me.health <= 0.0 && settings.survival {
+            me.fell_at = Some(me.pos);
+        }
         let w = &*voxels;
         me.respawn(w, None);
         toasts.push(msg);
@@ -521,9 +553,11 @@ pub fn build(
         let hardness = blocks::block(hit.id).hardness;
         if hardness >= 0.0 {
             if settings.survival {
+                // a tool in hand digs its kind of block faster
+                let step = dt * me.dig_speed(hit.id) / hardness.max(0.05);
                 let progress = match me.breaking {
-                    Some((b, p)) if b == hit.block => p + dt / hardness.max(0.05),
-                    _ => dt / hardness.max(0.05),
+                    Some((b, p)) if b == hit.block => p + step,
+                    _ => step,
                 };
                 if progress >= 1.0 {
                     if voxels.set(hit.block, AIR) {
@@ -565,7 +599,7 @@ pub fn build(
     // placing
     if c.place_pressed {
         let id = me.hotbar[me.slot];
-        if settings.survival && me.counts[me.slot] == 0 {
+        if settings.survival && me.counts[me.slot] == 0 || blocks::is_item(id) {
             return;
         }
         let at = if blocks::shape(hit.id) == Shape::Cross { hit.block } else { hit.block + hit.normal };
@@ -649,6 +683,7 @@ pub fn report_pockets(
     net: Res<crate::net::Net>,
     mut actions: ResMut<crate::game::Actions>,
     mut last: Local<Option<(u32, bool, Vec<(BlockId, u32)>, u32)>>,
+    mut held: Local<Option<(u32, BlockId)>>,
 ) {
     let Some(mut me) = me else { return };
     if !info.in_world {
@@ -662,5 +697,11 @@ pub fn report_pockets(
     if last.as_ref() != Some(&now) {
         actions.0.push((net.my_id, crate::game::Action::Pockets { survival: now.1, items: now.2.clone(), seen: now.3 }));
         *last = Some(now);
+    }
+    // what's in hand, for `world.held`
+    let hand = (lib.world, me.held(settings.survival));
+    if *held != Some(hand) {
+        actions.0.push((net.my_id, crate::game::Action::Held(hand.1)));
+        *held = Some(hand);
     }
 }

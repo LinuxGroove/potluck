@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 12;
+pub const PROTOCOL: u32 = 17;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -81,11 +81,18 @@ pub enum Msg {
         protocol: u32,
         #[serde(default)]
         pass: Option<String>,
+        /// Under 13: chat with quick lines, nothing from outside the world.
+        #[serde(default)]
+        young: bool,
     },
-    Welcome { id: u32, seed: u32, time: f32, host: String },
+    /// `teleport` and `chat`: what this world lets players do.
+    Welcome { id: u32, seed: u32, time: f32, host: String, teleport: bool, chat: bool },
     Refused(String),
     Creation(Payload),
     Stop(String),
+    /// Every block creations made in this world (`made`), by id: in the
+    /// welcome, and again when it changes.
+    Made(Vec<crate::made::Entry>),
     Blocks(Vec<(i32, i32, i32, u8)>),
     Me { pos: [f32; 3], yaw: f32 },
     /// Players near you that moved, and those gone from view.
@@ -121,6 +128,13 @@ pub enum Msg {
     /// A creation hurt you, but only down to some health: (how much, the
     /// least it leaves).
     HurtTo(f32, f32),
+    /// How much faster each thing held digs each kind of block now
+    /// (`world.digging`): all of it, in the order of `sound::DIG_KINDS`.
+    Digging(Vec<(crate::blocks::BlockId, [f32; 5])>),
+    /// What a player asks to say in chat (to the host).
+    Say(crate::chat::Say),
+    /// Lines of chat, as the host keeps them (from the host).
+    Chat(Vec<crate::chat::Line>),
 }
 
 pub enum Event {
@@ -173,6 +187,8 @@ pub struct Remote {
     pub handle: Option<String>,
     pub pos: Vec3,
     pub yaw: f32,
+    /// Under 13, as the player said when they joined.
+    pub young: bool,
     out: Option<Sender<Vec<u8>>>,
     welcomed: bool,
     /// What this player has been told, so only changes go out.
@@ -198,7 +214,7 @@ fn r2v(v: Vec3) -> [f32; 3] {
 }
 
 fn remote(id: u32, name: String, out: Option<Sender<Vec<u8>>>) -> Remote {
-    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, out, welcomed: false, seen: Seen::default() }
+    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, young: false, out, welcomed: false, seen: Seen::default() }
 }
 
 pub struct HostNet {
@@ -212,6 +228,10 @@ pub struct HostNet {
     since_roster: f32,
     /// Bytes sent this second, and the last whole second's.
     sent: (usize, usize, f32),
+    /// What players asked to say, for chat.
+    says: Vec<(u32, crate::chat::Say)>,
+    /// Players welcomed since chat last looked, for its history.
+    welcomed: Vec<u32>,
 }
 
 pub struct ClientNet {
@@ -223,6 +243,11 @@ pub struct ClientNet {
     addr: String,
     /// Everyone in the world, as the host last said.
     pub roster: Vec<String>,
+    /// What the world lets players do, from its welcome.
+    teleport: bool,
+    chat: bool,
+    /// Lines of chat from the host, for chat to take.
+    lines: Vec<crate::chat::Line>,
 }
 
 pub enum Role {
@@ -298,17 +323,18 @@ impl Net {
                 }
             });
         }
-        self.role = Role::Host(HostNet { events: Mutex::new(rx), status, name: o.name, since_status: 9.0, players: BTreeMap::new(), stop_beacon: stop, rules: o.rules, since_roster: 9.0, sent: (0, 0, 0.0) });
+        self.role = Role::Host(HostNet { events: Mutex::new(rx), status, name: o.name, since_status: 9.0, players: BTreeMap::new(), stop_beacon: stop, rules: o.rules, since_roster: 9.0, sent: (0, 0, 0.0), says: vec![], welcomed: vec![] });
         self.my_id = 1;
         Ok(format!("{}:{}", local_ip(), o.port))
     }
 
-    pub fn join(&mut self, addr: &str, name: &str, pass: Option<String>) -> Result<(), String> {
+    pub fn join(&mut self, addr: &str, name: &str, pass: Option<String>, young: bool) -> Result<(), String> {
         self.leave();
         let (tx, rx) = channel();
         let out = transport::connect(addr, PORT, tx)?;
-        let _ = out.send(frame_msg(&Msg::Hello { name: name.to_string(), protocol: PROTOCOL, pass }));
-        self.role = Role::Client(ClientNet { events: Mutex::new(rx), out, host_name: String::new(), players: BTreeMap::new(), welcomed: false, addr: addr.to_string(), roster: vec![] });
+        let _ = out.send(frame_msg(&Msg::Hello { name: name.to_string(), protocol: PROTOCOL, pass, young }));
+        let role = ClientNet { events: Mutex::new(rx), out, host_name: String::new(), players: BTreeMap::new(), welcomed: false, addr: addr.to_string(), roster: vec![], teleport: true, chat: true, lines: vec![] };
+        self.role = Role::Client(role);
         Ok(())
     }
 
@@ -393,6 +419,9 @@ impl Net {
     pub fn broadcast_toast(&mut self, t: &str) {
         self.pending.push(Msg::Toast(t.to_string()));
     }
+    pub fn broadcast_digging(&mut self, digging: Vec<(crate::blocks::BlockId, [f32; 5])>) {
+        self.pending.push(Msg::Digging(digging));
+    }
     pub fn send_creation(&self, c: &Creation) {
         self.send_host(&Msg::Creation(c.payload()));
     }
@@ -457,6 +486,7 @@ pub fn host_net(
     mut info: ResMut<WorldInfo>,
     ticks: Res<crate::hosting::TickTimes>,
     mut heard: ResMut<crate::sound::Heard>,
+    mut made_sent: Local<u64>,
 ) {
     let pending = std::mem::take(&mut net.pending);
     let Role::Host(_) = &net.role else {
@@ -466,6 +496,11 @@ pub fn host_net(
         }
         return;
     };
+    // blocks creations made go before anything built with them
+    if crate::made::generation() != *made_sent {
+        *made_sent = crate::made::generation();
+        net.broadcast(&Msg::Made(crate::made::table()));
+    }
     for m in &pending {
         net.broadcast(m);
     }
@@ -499,7 +534,7 @@ pub fn host_net(
             }
             Event::World(..) => {}
             Event::Msg(id, m) => match m {
-                Msg::Hello { name, protocol, pass } => {
+                Msg::Hello { name, protocol, pass, young } => {
                     let Role::Host(h) = &mut net.role else { continue };
                     let here = h.players.values().filter(|p| p.welcomed).count() + usize::from(me.is_some());
                     let rules = h.rules.clone();
@@ -521,12 +556,16 @@ pub fn host_net(
                     };
                     p.name = shown;
                     p.handle = handle;
+                    p.young = young;
                     // where they'll appear, until they say where they are
                     p.pos = Vec3::new(crate::world::START.x, 0.0, crate::world::START.z);
                     // the world, then everything in it
                     let world = frame_world(&voxels.encode());
                     let mut sent = world.len();
-                    let _ = out.send(frame_msg(&Msg::Welcome { id, seed: voxels.seed, time: clock.time, host: h.name.clone() }));
+                    let _ = out.send(frame_msg(&Msg::Welcome { id, seed: voxels.seed, time: clock.time, host: h.name.clone(), teleport: rules.teleport, chat: rules.chat }));
+                    let made = frame_msg(&Msg::Made(crate::made::table()));
+                    sent += made.len();
+                    let _ = out.send(made);
                     let _ = out.send(world);
                     for cid in &lib.running {
                         if let Some(c) = lib.list.get(cid) {
@@ -535,7 +574,13 @@ pub fn host_net(
                             let _ = out.send(f);
                         }
                     }
+                    // what tools dig faster here
+                    let digging = scripts.digging();
+                    if !digging.is_empty() {
+                        let _ = out.send(frame_msg(&Msg::Digging(digging)));
+                    }
                     p.welcomed = true;
+                    h.welcomed.push(id);
                     h.sent.0 += sent;
                     h.since_roster = 9.0;
                     toasts.push(format!("{} joined", p.name));
@@ -567,6 +612,13 @@ pub fn host_net(
                     }
                 }
                 Msg::Act(a) => actions.0.push((id, a)),
+                Msg::Say(say) => {
+                    if let Role::Host(h) = &mut net.role {
+                        if h.players.get(&id).is_some_and(|p| p.welcomed) && h.says.len() < 256 {
+                            h.says.push((id, say));
+                        }
+                    }
+                }
                 Msg::Creation(p) => {
                     let (who, handle, welcomed) = match &net.role {
                         Role::Host(h) => h.players.get(&id).map(|p| (p.name.clone(), p.handle.clone(), p.welcomed)).unwrap_or_default(),
@@ -745,6 +797,106 @@ impl Net {
     }
 
     /// A line for one player's screen.
+    /// Asks the host to say something in chat (a guest).
+    pub fn say(&self, say: &crate::chat::Say) {
+        if let Role::Client(c) = &self.role {
+            let _ = c.out.send(frame_msg(&Msg::Say(say.clone())));
+        }
+    }
+
+    /// Lines of chat the host sent since last asked (a guest).
+    pub fn take_chat(&mut self) -> Vec<crate::chat::Line> {
+        match &mut self.role {
+            Role::Client(c) => std::mem::take(&mut c.lines),
+            _ => vec![],
+        }
+    }
+
+    /// What players asked to say since last asked (the host).
+    pub fn take_says(&mut self) -> Vec<(u32, crate::chat::Say)> {
+        match &mut self.role {
+            Role::Host(h) => std::mem::take(&mut h.says),
+            _ => vec![],
+        }
+    }
+
+    /// Players welcomed since last asked (the host).
+    pub fn take_welcomed(&mut self) -> Vec<u32> {
+        match &mut self.role {
+            Role::Host(h) => std::mem::take(&mut h.welcomed),
+            _ => vec![],
+        }
+    }
+
+    /// A line of chat to everyone here; younger players' games get only
+    /// what's for them (the host).
+    pub fn send_chat(&mut self, line: &crate::chat::Line) {
+        if let Role::Host(h) = &mut self.role {
+            let f = frame_msg(&Msg::Chat(vec![line.clone()]));
+            for p in h.players.values().filter(|p| p.welcomed && (!p.young || line.for_young())) {
+                if let Some(o) = &p.out {
+                    h.sent.0 += f.len();
+                    let _ = o.send(f.clone());
+                }
+            }
+        }
+    }
+
+    /// Lines of chat to one player: the history when they join (the host).
+    pub fn send_chat_to(&self, pid: u32, lines: Vec<crate::chat::Line>) {
+        if lines.is_empty() {
+            return;
+        }
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Chat(lines)));
+            }
+        }
+    }
+
+    /// Whether a player here said they're under 13 (the host).
+    pub fn young_of(&self, pid: u32) -> bool {
+        match &self.role {
+            Role::Host(h) => h.players.get(&pid).is_some_and(|p| p.young),
+            _ => false,
+        }
+    }
+
+    /// A player's name here, as others see it.
+    pub fn name_of(&self, pid: u32) -> Option<String> {
+        match &self.role {
+            Role::Host(h) => h.players.get(&pid).map(|p| p.name.clone()),
+            Role::Client(c) => c.players.get(&pid).map(|p| p.name.clone()),
+            Role::Solo => None,
+        }
+    }
+
+    /// The address of the world joined, for keeping its waypoints apart.
+    pub fn joined_address(&self) -> Option<&str> {
+        match &self.role {
+            Role::Client(c) => Some(&c.addr),
+            _ => None,
+        }
+    }
+
+    /// Whether this world lets players go places from the map.
+    pub fn teleport_allowed(&self) -> bool {
+        match &self.role {
+            Role::Solo => true,
+            Role::Host(h) => h.rules.teleport,
+            Role::Client(c) => c.teleport,
+        }
+    }
+
+    /// Whether this world lets players chat.
+    pub fn chat_allowed(&self) -> bool {
+        match &self.role {
+            Role::Solo => true,
+            Role::Host(h) => h.rules.chat,
+            Role::Client(c) => c.chat,
+        }
+    }
+
     pub fn tell(&self, pid: u32, text: &str) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
@@ -822,8 +974,8 @@ fn news_for(me: u32, at: Vec3, seen: &mut Seen, everyone: &[PlayerSnap], bodies:
         let changed = old.is_none_or(|old| moved(old.pos, b.pos) || (old.yaw - b.yaw).abs() > 0.01 || old.rider != b.rider || old.says != b.says || old.rev != b.rev);
         if changed {
             let mut snap = b.clone();
-            if old.is_some() {
-                // what it is doesn't change
+            if old.is_some_and(|o| o.kind == b.kind) {
+                // what it is only changes when it becomes another kind
                 snap.creation.clear();
                 snap.kind.clear();
             }
@@ -906,7 +1058,8 @@ pub fn client_net(
             }
             Event::Joined(..) => {}
             Event::Msg(_, m) => match m {
-                Msg::Welcome { id, seed, time, host } => {
+                Msg::Made(list) => crate::made::adopt(&list),
+                Msg::Welcome { id, seed, time, host, teleport, chat } => {
                     net.my_id = id;
                     voxels.seed = seed;
                     clock.time = time;
@@ -914,9 +1067,12 @@ pub fn client_net(
                     lib.running.clear();
                     lib.world += 1;
                     scripts.vms.clear();
+                    me.digging.clear();
                     if let Role::Client(c) = &mut net.role {
                         c.welcomed = true;
                         c.host_name = host.clone();
+                        (c.teleport, c.chat) = (teleport, chat);
+                        c.lines.clear();
                     }
                     toasts.push(format!("Welcome to {host}"));
                 }
@@ -978,6 +1134,15 @@ pub fn client_net(
                         c.roster = all;
                     }
                 }
+                Msg::Chat(lines) => {
+                    if let Role::Client(c) = &mut net.role {
+                        c.lines.extend(lines);
+                        let n = c.lines.len();
+                        if n > 200 {
+                            c.lines.drain(..n - 200);
+                        }
+                    }
+                }
                 Msg::Go { address, note } => {
                     if !note.is_empty() {
                         toasts.push(note);
@@ -1029,6 +1194,10 @@ pub fn client_net(
                 }
                 Msg::Health(change) if change.is_finite() => me.health_due += change.clamp(-MAX_HEALTH, MAX_HEALTH),
                 Msg::Healing(rate) if rate.is_finite() => me.healing = rate.clamp(0.0, crate::script::MAX_HEALING as f32),
+                Msg::Digging(list) => {
+                    let ok = |s: &[f32; 5]| s.iter().all(|v| v.is_finite());
+                    me.digging = list.into_iter().filter(|(_, s)| ok(s)).map(|(b, s)| (b, s.map(|v| v.clamp(0.0, crate::script::MAX_DIGGING as f32)))).collect();
+                }
                 Msg::HurtTo(n, down_to) if n.is_finite() && down_to.is_finite() && me.hurts.len() < 64 => {
                     me.hurts.push((n.clamp(0.0, MAX_HEALTH), down_to.clamp(0.0, MAX_HEALTH)))
                 }
@@ -1075,12 +1244,15 @@ fn blank_body(id: u64) -> Body {
         rider: None,
         rideable: false,
         seat: 1.0,
+        flies: false,
+        climb: 0.0,
         says: None,
         on_ground: true,
         face: None,
         parts: vec![],
         rev: 0,
         phase: 0.0,
+        born: String::new(),
     }
 }
 

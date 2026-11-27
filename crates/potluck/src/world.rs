@@ -47,7 +47,15 @@ pub struct Voxels {
     pub changes: Vec<(IVec3, BlockId)>,
     /// Lantern positions, for the lights near the player.
     pub lanterns: HashSet<IVec3>,
+    /// Which world this is: a new number for each one made or received, so
+    /// the map knows to draw it again (`map::MapImage`).
+    pub id: u64,
+    /// Columns (x, z) whose blocks changed since the map last looked.
+    pub map_dirty: HashSet<IVec2>,
 }
+
+/// The next `Voxels::id`.
+static WORLDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Voxels {
     pub fn empty(seed: u32) -> Self {
@@ -58,6 +66,8 @@ impl Voxels {
             shade: HashSet::new(),
             changes: Vec::new(),
             lanterns: HashSet::new(),
+            id: WORLDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            map_dirty: HashSet::new(),
         }
     }
 
@@ -107,6 +117,9 @@ impl Voxels {
         }
         let old = self.at(p);
         self.data[Self::idx(p.x, p.y, p.z)] = id;
+        if self.map_dirty.len() < 65536 {
+            self.map_dirty.insert(IVec2::new(p.x, p.z));
+        }
         if blocks::block(old).light {
             self.lanterns.remove(&p);
         }
@@ -158,6 +171,27 @@ impl Voxels {
                 self.lanterns.insert(IVec3::new(i % WX, i / (WX * WZ), (i / WX) % WZ));
             }
         }
+    }
+
+    /// Calls `f` with each block whose id is `from` or more, and where it
+    /// is (blocks creations made, when their looks change: `made::draw`).
+    pub fn each_from(&self, from: BlockId, mut f: impl FnMut(IVec3, BlockId)) {
+        for (i, &b) in self.data.iter().enumerate() {
+            if b >= from {
+                let i = i as i32;
+                f(IVec3::new(i % WX, i / (WX * WZ), (i / WX) % WZ), b);
+            }
+        }
+    }
+
+    /// Gives blocks new ids: a saved world's made blocks, when another
+    /// block has theirs here (`made::restore`).
+    pub fn renumber(&mut self, to: &[BlockId; 256]) {
+        for b in self.data.iter_mut() {
+            *b = to[*b as usize];
+        }
+        self.find_lanterns();
+        self.mark_all_dirty();
     }
 
     /// The whole world, run-length encoded (for sending to friends who join).

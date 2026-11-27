@@ -2,7 +2,10 @@
 //! The game (`potluck`) and the dedicated server (`potluck-server`) share
 //! everything here; only the game draws.
 
+pub mod behaviours;
 pub mod blocks;
+pub mod bridge;
+pub mod chat;
 pub mod creations;
 pub mod creatures;
 pub mod demo;
@@ -11,18 +14,25 @@ pub mod green;
 pub mod halves;
 pub mod hosting;
 pub mod input;
+pub mod keyboard;
+pub mod made;
+pub mod map;
 pub mod mesh;
+pub mod model;
 pub mod net;
 pub mod noise;
+pub mod photos;
 pub mod player;
 pub mod render;
 pub mod script;
 pub mod settings;
 pub mod share;
 pub mod sound;
+pub mod testing;
 pub mod textures;
 pub mod transport;
 pub mod ui;
+pub mod waypoints;
 pub mod world;
 
 use bevy::prelude::*;
@@ -56,6 +66,8 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<hosting::TickTimes>()
         .init_resource::<sound::Heard>()
         .init_resource::<halves::Halves>()
+        .init_resource::<chat::Chat>()
+        .init_resource::<photos::Photos>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
@@ -63,10 +75,15 @@ pub fn sim(app: &mut App, seed: u32) {
         .add_systems(
             Update,
             (game::host_step, net::host_net, game::reloads, game::share_results).chain().in_set(Sim),
-        );
+        )
+        .add_systems(Update, chat::run.after(Sim));
     // sounds, where there's a speaker: the game, not the server
     if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
         sound::add(app);
+    }
+    // the dev bridge, for coding helpers: where there's a screen and a player
+    if app.is_plugin_added::<bevy::window::WindowPlugin>() {
+        bridge::add(app);
     }
 }
 

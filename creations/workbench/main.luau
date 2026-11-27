@@ -5,7 +5,7 @@
 -- Every recipe is in RECIPES below, so a remix can add its own, change the
 -- prices, or craft at a different block.
 
-local world = require("@potluck/world@0.5")
+local world = require("@potluck/world@0.8")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -20,32 +20,54 @@ local BENCH = "Table" -- the block you craft at
 -- A recipe: what it takes, what it makes and how many.
 type Recipe = { want: { [string]: number }, give: string, n: number }
 
--- Up to four kinds of thing, each with up to four recipes (a question has
--- four choices at most).
-local KINDS = { "Building", "Furniture", "Lights", "Garden and farm" }
+-- Up to eight kinds of thing, each with up to eight recipes (a question has
+-- eight choices at most). Tools and swords do their work through the Tools
+-- creation, and a basket fills up into a balloon through the Hot air
+-- balloon creation.
+local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel" }
 local RECIPES: { [string]: { Recipe } } = {
 	Building = {
 		{ want = { ["Oak log"] = 1 }, give = "Planks", n = 4 },
 		{ want = { ["Birch log"] = 1 }, give = "Planks", n = 4 },
 		{ want = { Sand = 4 }, give = "Sandstone", n = 1 },
 		{ want = { Stone = 4 }, give = "Mossy brick", n = 4 },
+		-- the Brickworks creation's, when it's in the world
+		{ want = { Cobblestone = 8 }, give = "Kiln", n = 1 },
 	},
 	Furniture = {
 		{ want = { Planks = 6 }, give = "Table", n = 1 },
 		{ want = { Planks = 2 }, give = "Stool", n = 1 },
 		{ want = { Planks = 6 }, give = "Barrel", n = 1 },
+		{ want = { Planks = 4 }, give = "Crate", n = 1 },
 		{ want = { Planks = 6 }, give = "Bookshelf", n = 1 },
 	},
 	Lights = {
 		{ want = { Hay = 1 }, give = "Candle", n = 2 },
 		{ want = { Glass = 1, Cobblestone = 2 }, give = "Lantern", n = 1 },
 		{ want = { Cobblestone = 4, ["Oak log"] = 1 }, give = "Brazier", n = 1 },
+		{ want = { Candle = 1, ["Cream wool"] = 1 }, give = "Paper lantern", n = 2 },
 	},
 	["Garden and farm"] = {
 		{ want = { Planks = 3 }, give = "Fence", n = 2 },
 		{ want = { Dirt = 3 }, give = "Clay pot", n = 1 },
 		{ want = { Wheat = 4 }, give = "Hay", n = 1 },
 		{ want = { Dirt = 4 }, give = "Farmland", n = 4 },
+	},
+	Tools = {
+		{ want = { Planks = 3 }, give = "Wooden pickaxe", n = 1 },
+		{ want = { Planks = 3 }, give = "Wooden axe", n = 1 },
+		{ want = { Planks = 2 }, give = "Wooden shovel", n = 1 },
+		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone pickaxe", n = 1 },
+		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone axe", n = 1 },
+		{ want = { Cobblestone = 1, Planks = 2 }, give = "Stone shovel", n = 1 },
+	},
+	Weapons = {
+		{ want = { Planks = 2 }, give = "Wooden sword", n = 1 },
+		{ want = { Cobblestone = 2, Planks = 1 }, give = "Stone sword", n = 1 },
+	},
+	-- put down, a basket fills up into a hot air balloon (the balloon creation)
+	Travel = {
+		{ want = { ["Cream wool"] = 6, Planks = 4, Lantern = 1 }, give = "Balloon basket", n = 1 },
 	},
 }
 
@@ -96,9 +118,20 @@ end
 
 local choose
 
+-- Whether a block is in this world: some come from other creations (the
+-- kiln and paper lanterns from Brickworks).
+local function exists(name: string): boolean
+	return (pcall(world.kind, name))
+end
+
 -- the recipes of one kind; `said` is how the last one went
 local function recipes(player, at: vector, kind: string, said: string?)
-	local list = RECIPES[kind]
+	local list = {}
+	for _, r in RECIPES[kind] do
+		if exists(r.give) then
+			table.insert(list, r)
+		end
+	end
 	local choices, more = {}, {}
 	for _, r in list do
 		local short, long = label(r)

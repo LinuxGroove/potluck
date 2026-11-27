@@ -3,7 +3,8 @@
 //! builds or breaks a block and pats or rides a creature, and reads all
 //! the server sends. Bots that lose the connection join again. Every minute
 //! it prints how the server is doing (from its status page) and appends a
-//! line of JSON to --report.
+//! line of JSON to --report: with --pid, the server's memory, CPU (as a
+//! share of one core) and threads too, and what the bots got by message.
 //!
 //!     potluck-bots --address=ws://127.0.0.1:47126 [--bots=50] [--minutes=60]
 //!                  [--build] [--ramp=0.5] [--report=soak.jsonl] [--pid=SERVER_PID]
@@ -29,7 +30,7 @@ const HELP: &str = "Options:
   --ramp=0.5                       seconds between bots joining
   --every=60                       seconds between reports
   --report=FILE                    append a line of JSON each report
-  --pid=PID                        the server's process, for its memory";
+  --pid=PID                        the server's process, for its memory and CPU";
 
 fn arg(args: &[String], key: &str) -> Option<String> {
     args.iter().find_map(|a| a.strip_prefix(&format!("--{key}=")).map(|s| s.to_string()))
@@ -44,6 +45,35 @@ struct Counts {
     refused: u64,
     blocks: u64,
     acts: u64,
+    /// bytes received by message kind (World, People, Bodies, ...)
+    kinds: BTreeMap<String, u64>,
+}
+
+/// The message's name, from the start of its frame: tag 1 is the world,
+/// tag 0 JSON such as {"People":{...}} or "Variant".
+fn kind_of(frame: &[u8]) -> String {
+    match frame.first() {
+        Some(1) => "World".into(),
+        Some(0) => {
+            let text = &frame[1..frame.len().min(48)];
+            let text = String::from_utf8_lossy(text);
+            text.split('"').nth(1).unwrap_or("?").to_string()
+        }
+        _ => "?".into(),
+    }
+}
+
+/// The server's CPU time so far in seconds (user and system), and its threads.
+fn cpu_seconds(pid: &str) -> Option<(f64, u64)> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // the fields after the command's closing bracket: state is the 3rd field
+    let rest = s.rsplit_once(')')?.1;
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    let ticks = 100.0; // USER_HZ on Linux
+    let utime: f64 = f.get(11)?.parse().ok()?;
+    let stime: f64 = f.get(12)?.parse().ok()?;
+    let threads: u64 = f.get(17)?.parse().ok()?;
+    Some(((utime + stime) / ticks, threads))
 }
 
 struct Bot {
@@ -142,6 +172,7 @@ fn main() {
     let mut last = Counts::default();
     let began = Instant::now();
     let mut since_report = 0.0f32;
+    let mut cpu_was = pid.as_deref().and_then(cpu_seconds).map(|c| c.0);
     let step = Duration::from_millis(50);
     let mut was = Instant::now();
     eprintln!("potluck-bots: {count} bots for {address}, reporting from {status}");
@@ -159,6 +190,13 @@ fn main() {
             since_report = 0.0;
             let s: Value = agent.get(&status).call().ok().and_then(|mut r| r.body_mut().read_to_string().ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
             let mins = began.elapsed().as_secs_f64() / 60.0;
+            let cpu = pid.as_deref().and_then(cpu_seconds);
+            let cpu_percent = match (cpu, cpu_was) {
+                (Some((now, _)), Some(was)) => Some(((now - was) / every as f64 * 1000.0).round() / 10.0),
+                _ => None,
+            };
+            cpu_was = cpu.map(|c| c.0);
+            let kinds: BTreeMap<&String, f64> = counts.kinds.iter().map(|(k, v)| (k, ((v - last.kinds.get(k).copied().unwrap_or(0)) as f64 / every as f64 / 1024.0 * 10.0).round() / 10.0)).collect();
             let line = json!({
                 "minutes": (mins * 10.0).round() / 10.0,
                 "connected": bots.iter().filter(|b| b.welcomed).count(),
@@ -167,6 +205,8 @@ fn main() {
                 "tick_ms": s["tick_ms"], "tick_ms_max": s["tick_ms_max"],
                 "server_bytes_per_second": s["bytes_per_second"], "up_seconds": s["up_seconds"],
                 "server_rss_mb": pid.as_deref().and_then(rss_mb),
+                "server_cpu_percent": cpu_percent, "server_threads": cpu.map(|c| c.1),
+                "kb_per_second_by_kind": kinds,
                 "bots_kb_per_second": ((counts.bytes - last.bytes) as f64 / every as f64 / 1024.0 * 10.0).round() / 10.0,
                 "msgs_per_second": ((counts.msgs - last.msgs) as f64 / every as f64).round(),
                 "joins": counts.joins, "drops": counts.drops, "refused": counts.refused,
@@ -180,7 +220,7 @@ fn main() {
                     let _ = writeln!(f, "{line}");
                 }
             }
-            last = Counts { bytes: counts.bytes, msgs: counts.msgs, blocks: counts.blocks, acts: counts.acts, ..Default::default() };
+            last = Counts { bytes: counts.bytes, msgs: counts.msgs, blocks: counts.blocks, acts: counts.acts, kinds: counts.kinds.clone(), ..Default::default() };
         }
         std::thread::sleep(step.saturating_sub(was.elapsed()));
     }
@@ -205,7 +245,7 @@ fn tick(bot: &mut Bot, dt: f32, address: &str, ground: &mut Ground, counts: &mut
         let (tx, rx) = channel();
         match transport::connect(address, net::PORT, tx) {
             Ok(out) => {
-                let _ = out.send(net::frame_msg(&Msg::Hello { name: bot.name.clone(), protocol: net::PROTOCOL, pass: None }));
+                let _ = out.send(net::frame_msg(&Msg::Hello { name: bot.name.clone(), protocol: net::PROTOCOL, pass: None, young: false }));
                 bot.out = Some(out);
                 bot.rx = Some(rx);
             }
@@ -226,6 +266,7 @@ fn tick(bot: &mut Bot, dt: f32, address: &str, ground: &mut Ground, counts: &mut
                     if let Wire::Data(_, b) = &w {
                         counts.bytes += b.len() as u64;
                         counts.msgs += 1;
+                        *counts.kinds.entry(kind_of(b)).or_default() += b.len() as u64;
                     }
                     match net::decode(w) {
                         Some(Event::Msg(_, Msg::Welcome { seed, .. })) => {

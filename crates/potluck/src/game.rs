@@ -35,6 +35,8 @@ pub enum Action {
     Pockets { survival: bool, items: Vec<(crate::blocks::BlockId, u32)>, seen: u32 },
     /// Interact on a block, for creations' `block_used`.
     UseBlock([i32; 3]),
+    /// What this player has in hand now (`world.held`); air for nothing.
+    Held(crate::blocks::BlockId),
 }
 
 /// How far from a player a block they use can be.
@@ -256,6 +258,7 @@ pub fn host_step(
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
             Action::Net(note) => scripts.hear(pid, note),
             Action::Pockets { survival, items, seen } => scripts.set_pockets(pid, survival, &items, seen),
+            Action::Held(b) => scripts.set_held(pid, b),
             Action::UseBlock(at) => {
                 let at = IVec3::from_array(at);
                 if (at.as_vec3() + Vec3::splat(0.5)).distance(player.pos) <= USE_REACH {
@@ -319,6 +322,13 @@ pub fn host_step(
         } else {
             net.send_healing(pid, rate);
         }
+    }
+    // what tools dig faster, for every game here
+    if let Some(digging) = scripts.digging_changes() {
+        if let Some(me) = me.as_mut() {
+            me.digging = digging.iter().copied().collect();
+        }
+        net.broadcast_digging(digging);
     }
     // messages creations sent their client halves
     for (pid, note) in scripts.net_changes(&here) {
@@ -406,10 +416,16 @@ pub fn labels(herd: Res<Herd>, net: Res<Net>, green: Res<Green>, lib: Res<Librar
 /// Starts (or restarts) a creation in this world: on the host it runs here
 /// and goes to everyone; a guest sends it to the host.
 pub fn bring(id: &str, lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, net: &mut Net, toasts: &mut Toasts) {
-    let Some(c) = lib.list.get(id).cloned() else { return };
+    let _ = bring_checked(id, lib, scripts, herd, net, toasts);
+}
+
+/// As `bring`, saying why a creation didn't start (it keeps the last
+/// version that did).
+pub fn bring_checked(id: &str, lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, net: &mut Net, toasts: &mut Toasts) -> Result<(), String> {
+    let Some(c) = lib.list.get(id).cloned() else { return Err(format!("there's no creation called {id}")) };
     if let Role::Client(_) = net.role {
         net.send_creation(&c);
-        return;
+        return Ok(());
     }
     match scripts.start(&c, herd) {
         Ok(()) => {
@@ -420,6 +436,7 @@ pub fn bring(id: &str, lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd
                 vm.error = None;
             }
             net.broadcast_creation(&c);
+            Ok(())
         }
         Err(e) => {
             if let Some(vm) = scripts.vms.get_mut(&c.id) {
@@ -427,6 +444,7 @@ pub fn bring(id: &str, lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd
                 vm.log.push(format!("error: {e}"));
             }
             toasts.push(format!("{} has a problem: {e}", c.manifest.name));
+            Err(e)
         }
     }
 }
@@ -823,6 +841,8 @@ pub fn do_acts(
                 net.leave();
                 *voxels = crate::world::generate(voxels.seed);
                 herd.bodies.clear();
+                // what creations kept was the old world's, which is gone
+                scripts.shared.lock().unwrap().store = Default::default();
                 start_world(&mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
                 me.respawn(&voxels, None);
                 info.in_world = false;
@@ -837,6 +857,9 @@ pub fn do_acts(
                 settings.lighting = crate::render::Tier::next(&settings.lighting).into();
                 settings.save();
             }
+            // the map's and chat's own, done before this (`map::map_acts`,
+            // `chat::acts`); one left over had nothing to do
+            _ => {}
         }
     }
     acts.0.extend(later);
@@ -920,7 +943,7 @@ pub fn share_results(
                 focus.status.clear();
                 focus.link = Some((url, title));
             }
-            Done::Pass { address, pass } => match net.join(&address, &settings.name, pass) {
+            Done::Pass { address, pass } => match net.join(&address, &settings.name, pass, settings.young) {
                 Ok(()) => focus.status = format!("Joining {address}..."),
                 Err(e) => focus.status = format!("Couldn't join {address}: {e}"),
             },

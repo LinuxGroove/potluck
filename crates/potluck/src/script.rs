@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 7), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -48,7 +48,9 @@ pub const MAX_METERS: usize = 3;
 /// The fastest `world.healing` makes a player heal by themselves.
 pub const MAX_HEALING: f64 = 4.0;
 /// Choices a panel can offer.
-pub const MAX_CHOICES: usize = 4;
+pub const MAX_CHOICES: usize = 8;
+/// The most `world.digging` speeds a kind of block up by.
+pub const MAX_DIGGING: f64 = 10.0;
 /// Panels waiting on one player's screen, from every creation together.
 pub const MAX_PANELS: usize = 8;
 /// Questions one creation may have waiting for answers, over every player.
@@ -90,8 +92,12 @@ pub struct KindDef {
     pub speed: f32,
     pub rideable: bool,
     pub seat: f32,
+    /// Floats with no gravity, as `creature:climb` says (world 0.9).
+    pub flies: bool,
     pub count: u32,
     pub home: Vec3,
+    /// What it does by itself, before any code (world 0.10).
+    pub behaviours: Option<crate::behaviours::Behaviours>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,6 +147,14 @@ pub struct GameShared {
     pub healing: BTreeMap<(u32, String), f32>,
     /// Players whose healing changed since the host last looked.
     pub healing_changed: BTreeSet<u32>,
+    /// What each player has in hand, as their game last said (`world.held`).
+    pub held: HashMap<u32, blocks::BlockId>,
+    /// How much faster holding something digs each kind of block
+    /// (`world.digging`): (what's held, creation) to speeds in the order of
+    /// `sound::DIG_KINDS`.
+    pub digging: BTreeMap<(blocks::BlockId, String), [f32; 5]>,
+    /// Whether `digging` changed since the host last sent it.
+    pub digging_changed: bool,
 }
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
@@ -603,7 +617,7 @@ struct LoadState {
 }
 
 pub struct Vm {
-    lua: Lua,
+    pub(crate) lua: Lua,
     world: Table,
     base: Table,
     game: Table,
@@ -614,8 +628,11 @@ pub struct Vm {
     /// Where `print` writes, read after every call into the creation.
     state: Arc<Mutex<LoadState>>,
     pub kinds: Vec<KindDef>,
-    kind_tables: HashMap<String, Table>,
+    pub(crate) kind_tables: HashMap<String, Table>,
     instances: HashMap<u64, Table>,
+    /// What `@potluck/test` shares with the harness: the cases its
+    /// `test.luau` gave, and what the harness tells it (`testing.rs`).
+    pub(crate) test_harness: Table,
     pub knobs: Vec<Knob>,
     pub log: Vec<String>,
     pub error: Option<String>,
@@ -624,6 +641,14 @@ pub struct Vm {
     deadline: Arc<Mutex<Instant>>,
     rng: Rng,
     pub load_ms: f32,
+    /// How long its ticks take, on average and at most lately, in ms: its
+    /// budget is `TICK_BUDGET`.
+    pub tick_ms: f32,
+    pub tick_peak: f32,
+    /// What Look inside shows of them, taken once a second so the screen
+    /// isn't redrawn every tick: (average, longest, memory in bytes).
+    shown: (f32, f32, usize),
+    ticks: u32,
 }
 
 #[derive(Resource, Default)]
@@ -639,6 +664,8 @@ pub struct Scripts {
     /// What players did to blocks, for creations' `world.on`: (player,
     /// event, where, the block).
     block_events: Vec<(u32, &'static str, IVec3, blocks::BlockId)>,
+    /// Where each creature is with its kind's behaviours.
+    behaving: HashMap<u64, crate::behaviours::Behaving>,
 }
 
 pub(crate) fn vec_of(v: &Value) -> Option<Vec3> {
@@ -796,6 +823,66 @@ pub(crate) fn player_table(lua: &Lua, p: &PlayerInfo) -> mlua::Result<Table> {
     Ok(t)
 }
 
+/// A Luau value as Luau would write it, kept short: for the dev bridge.
+pub(crate) fn show(v: &Value) -> String {
+    fn go(v: &Value, depth: u32, out: &mut String) {
+        if out.len() > 2000 {
+            return;
+        }
+        match v {
+            Value::Nil => out.push_str("nil"),
+            Value::Boolean(b) => out.push_str(&b.to_string()),
+            Value::Integer(i) => out.push_str(&i.to_string()),
+            Value::Number(n) => out.push_str(&n.to_string()),
+            Value::String(s) => out.push_str(&format!("{:?}", s.to_string_lossy())),
+            Value::Vector(v) => out.push_str(&format!("vector({}, {}, {})", v.x(), v.y(), v.z())),
+            Value::Table(t) if depth < 4 => {
+                out.push('{');
+                let mut first = true;
+                let n = t.raw_len();
+                for i in 1..=n {
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    go(&t.raw_get::<Value>(i).unwrap_or(Value::Nil), depth + 1, out);
+                }
+                for (k, val) in t.pairs::<Value, Value>().flatten() {
+                    if matches!(k, Value::Integer(i) if i >= 1 && i as usize <= n) {
+                        continue;
+                    }
+                    if !first {
+                        out.push_str(", ");
+                    }
+                    first = false;
+                    match &k {
+                        Value::String(s) => out.push_str(&s.to_string_lossy()),
+                        other => {
+                            out.push('[');
+                            go(other, depth + 1, out);
+                            out.push(']');
+                        }
+                    }
+                    out.push_str(" = ");
+                    go(&val, depth + 1, out);
+                }
+                out.push('}');
+            }
+            Value::Table(_) => out.push_str("{...}"),
+            Value::Function(_) => out.push_str("function"),
+            other => out.push_str(other.type_name()),
+        }
+    }
+    let mut out = String::new();
+    go(v, 0, &mut out);
+    if out.len() > 2000 {
+        let cut = (0..=2000).rev().find(|&i| out.is_char_boundary(i)).unwrap_or(0);
+        out.truncate(cut);
+        out.push_str(" ...");
+    }
+    out
+}
+
 /// Copies a creature's own fields out of the sandbox, to keep across a reload.
 pub(crate) fn to_json(v: &Value, depth: u32) -> Option<serde_json::Value> {
     use serde_json::Value as J;
@@ -856,7 +943,84 @@ pub(crate) fn from_json(lua: &Lua, j: &serde_json::Value) -> mlua::Result<Value>
 
 const RESERVED: &[&str] = &["id", "position", "rider", "kind"];
 
-fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
+/// A part's `texture` from `world.model`: which model, texture and
+/// rectangles, and how far its colour is from the model's, as a tint.
+fn painted(t: &Table, color: Color) -> mlua::Result<crate::creatures::Painted> {
+    let file: String = t.get::<Option<String>>("file")?.ok_or_else(|| bad("a part's texture needs the model's file"))?;
+    let own = t.get::<Option<String>>("color")?.and_then(|c| parse_color(&c)).unwrap_or(color).to_srgba();
+    let now = color.to_srgba();
+    let tint = |a: f32, b: f32| if b < 0.02 { a.max(0.02) / 0.02 } else { a / b }.clamp(0.0, 4.0);
+    let mut faces = [None; 6];
+    if let Some(fs) = t.get::<Option<Table>>("faces")? {
+        for (i, name) in crate::creatures::FACES.iter().enumerate() {
+            if let Some(r) = fs.get::<Option<Vec<f32>>>(*name)? {
+                if r.len() == 4 {
+                    faces[i] = Some([r[0], r[1], r[2], r[3]].map(|x| x.clamp(0.0, 1.0)));
+                }
+            }
+        }
+    }
+    Ok(crate::creatures::Painted {
+        file,
+        texture: t.get::<Option<u32>>("index")?.unwrap_or(0),
+        faces,
+        tint: [tint(now.red, own.red), tint(now.green, own.green), tint(now.blue, own.blue)],
+        stamp: t.get::<Option<u32>>("stamp")?.unwrap_or(0),
+    })
+}
+
+/// `world.model(file, scale)`: a Blockbench model in the creation's folder as
+/// a body, the same list of boxes `world.creature`'s `body` takes, so code can
+/// change it before using it. What was left out goes to the log.
+fn model_body(lua: &Lua, models: &BTreeMap<String, String>, file: &str, scale: f32) -> mlua::Result<Table> {
+    let file = file.trim_start_matches("./");
+    if !file.ends_with(".bbmodel") {
+        return Err(bad(format!("world.model reads Blockbench models (.bbmodel), not {file}")));
+    }
+    let text = models.get(file).ok_or_else(|| bad(format!("there's no file called {file} in this creation")))?;
+    let (parts, notes) = crate::model::read(file, text, scale).map_err(bad)?;
+    if !notes.is_empty() {
+        let print: mlua::Function = lua.globals().get("print")?;
+        for n in notes {
+            print.call::<()>(n)?;
+        }
+    }
+    let stamp = crate::model::stamp(text);
+    let body = lua.create_table()?;
+    for p in parts {
+        let t = lua.create_table()?;
+        t.set(1, p.name)?;
+        t.set("size", vector(p.size))?;
+        t.set("at", vector(p.at))?;
+        let color = format!("#{:02x}{:02x}{:02x}", p.color[0], p.color[1], p.color[2]);
+        t.set("color", color.as_str())?;
+        // where its picture is in the model, for the games that draw it
+        if let Some((index, faces)) = p.picture {
+            let pic = lua.create_table()?;
+            pic.set("file", file)?;
+            pic.set("index", index)?;
+            pic.set("color", color.as_str())?;
+            pic.set("stamp", stamp)?;
+            let fs = lua.create_table()?;
+            for (name, rect) in crate::creatures::FACES.iter().zip(faces) {
+                if let Some(r) = rect {
+                    fs.set(*name, lua.create_sequence_from(r)?)?;
+                }
+            }
+            pic.set("faces", fs)?;
+            t.set("texture", pic)?;
+        }
+        for (key, on) in [("head", p.head), ("leg", p.leg), ("glow", p.glow)] {
+            if on {
+                t.set(key, true)?;
+            }
+        }
+        body.push(t)?;
+    }
+    Ok(body)
+}
+
+fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
     let name: String = def.get::<Option<String>>("name")?.ok_or_else(|| bad("a creature needs a name"))?;
     let mut parts = Vec::new();
     if let Some(body) = def.get::<Option<Table>>("body")? {
@@ -867,7 +1031,12 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
             let at = vec_of(&part.get::<Value>("at")?).unwrap_or(Vec3::ZERO).clamp(Vec3::splat(-8.0), Vec3::splat(8.0));
             let color = part.get::<Option<String>>("color")?.and_then(|c| parse_color(&c)).unwrap_or(Color::srgb(0.6, 0.6, 0.6));
             let glow = part.get::<Option<bool>>("glow")?.unwrap_or(false);
+            let paint = match part.get::<Option<Table>>("texture")? {
+                Some(t) => Some(Box::new(painted(&t, color)?)),
+                None => None,
+            };
             parts.push(Part {
+                paint,
                 name: pname,
                 size,
                 at,
@@ -876,7 +1045,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
                 head: part.get::<Option<bool>>("head")?.unwrap_or(false),
                 glow,
             });
-            if parts.len() >= 64 {
+            if parts.len() >= crate::model::MAX_PARTS {
                 break;
             }
         }
@@ -910,9 +1079,14 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
         speed: def.get::<Option<f32>>("speed")?.unwrap_or(2.0).clamp(0.0, 20.0),
         rideable: def.get::<Option<bool>>("rideable")?.unwrap_or(false),
         seat: def.get::<Option<f32>>("seat")?.unwrap_or(half.y).clamp(0.2, 5.0),
+        flies: def.get::<Option<bool>>("flies")?.unwrap_or(false),
         count: def.get::<Option<u32>>("count")?.unwrap_or(1).min(32),
         home,
         parts,
+        behaviours: match def.get::<Option<Table>>("behaviours")? {
+            Some(t) => Some(crate::behaviours::parse(&t, own)?),
+            None => None,
+        },
     })
 }
 
@@ -964,22 +1138,36 @@ impl Vm {
             }
             Ok(VmState::Continue)
         });
+        let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
         let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, note_budget: NOTES_A_SECOND, ..default() }));
-        let setup = || -> mlua::Result<(Table, Table, Table)> {
+        let setup = || -> mlua::Result<(Table, Table, Table, Table)> {
             let world = lua.create_table()?;
             let game = lua.create_table()?;
             let base = lua.create_table()?;
             let base_mt = lua.create_table()?;
             base_mt.set("__index", base.clone())?;
+            // world 0.11: Blockbench models as bodies
+            let models: Arc<BTreeMap<String, String>> = Arc::new(creation.files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).map(|(n, t)| (n.clone(), t.clone())).collect());
+            {
+                let models = models.clone();
+                world.set("model", lua.create_function(move |lua, (file, scale): (String, Option<f32>)| model_body(lua, &models, &file, scale.unwrap_or(1.0)))?)?;
+            }
             // world.creature: define a kind of creature
             {
                 let st = state.clone();
                 let base_mt = base_mt.clone();
+                let own = own.clone();
+                let models = models.clone();
                 world.set(
                     "creature",
-                    lua.create_function(move |_, def: Table| {
-                        let kind = parse_kind(&def)?;
+                    lua.create_function(move |lua, def: Table| {
+                        // body = "frog.bbmodel" is short for world.model("frog.bbmodel")
+                        if let Value::String(file) = def.get::<Value>("body")? {
+                            let body = model_body(lua, &models, &file.to_str()?, 1.0)?;
+                            def.set("body", body)?;
+                        }
+                        let kind = parse_kind(&def, &own)?;
                         def.set_metatable(Some(base_mt.clone()))?;
                         let mut s = st.lock().unwrap();
                         if s.kinds.iter().any(|(k, _)| k.name == kind.name) {
@@ -1119,6 +1307,56 @@ impl Vm {
                             sh.healing_changed.insert(pid);
                         }
                         Ok(true)
+                    })?,
+                )?;
+            }
+            // world 0.8: what players hold, and tools that dig faster
+            {
+                let sh = shared.clone();
+                world.set(
+                    "held",
+                    lua.create_function(move |_, player: Value| {
+                        let pid = pid_of(&player)?;
+                        let b = sh.lock().unwrap().held.get(&pid).copied().unwrap_or(blocks::AIR);
+                        Ok((b != blocks::AIR).then(|| blocks::block(b).name))
+                    })?,
+                )?;
+                world.set(
+                    "kind",
+                    lua.create_function(move |_, name: String| {
+                        let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+                        Ok(crate::sound::material(id).name())
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "digging",
+                    lua.create_function(move |_, (name, speeds): (String, Option<Table>)| {
+                        let id = carried_block(&name)?;
+                        let mut by_kind = [1.0f32; 5];
+                        if let Some(t) = &speeds {
+                            for pair in t.pairs::<String, f64>() {
+                                let (kind, n) = pair.map_err(|_| bad("digging takes speeds by kind, like { hard = 4 }"))?;
+                                let Some(k) = crate::sound::DIG_KINDS.iter().position(|d| *d == kind) else {
+                                    return Err(bad(format!("digging knows {}, not \"{kind}\"", crate::sound::DIG_KINDS.join(", "))));
+                                };
+                                if !n.is_finite() || !(0.0..=MAX_DIGGING).contains(&n) {
+                                    return Err(bad(format!("a digging speed is a number from 0 to {MAX_DIGGING} (1 is as usual)")));
+                                }
+                                by_kind[k] = n as f32;
+                            }
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        let key = (id, me.clone());
+                        let now = speeds.is_some().then_some(by_kind).filter(|s| *s != [1.0; 5]);
+                        if sh.digging.get(&key).copied() != now {
+                            match now {
+                                Some(s) => sh.digging.insert(key, s),
+                                None => sh.digging.remove(&key),
+                            };
+                            sh.digging_changed = true;
+                        }
+                        Ok(())
                     })?,
                 )?;
             }
@@ -1306,14 +1544,14 @@ impl Vm {
                     })?,
                 )?;
             }
-            // sound 0.1: the game's sounds, by name, somewhere or for one player
+            // sound 0.1: the game's sounds, by name, somewhere or for one
+            // player; 0.2: and the creation's own, from potluck.toml
             let sound = lua.create_table()?;
             {
                 let options = sound_options;
-                let queue = |sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
-                    if crate::sound::caption_of(&name).is_none() {
-                        return Err(bad(format!("there's no sound called \"{name}\" (sound.names() lists them)")));
-                    }
+                let queue = move |own: &crate::sound::Own, sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
+                    let (name, own_caption) = own.resolve(&name).ok_or_else(|| bad(crate::sound::Own::unknown(&name)))?;
+                    let caption = caption.or(own_caption);
                     let mut w = w.lock().unwrap();
                     if w.sound_budget < 1.0 {
                         // too many at once: this one's skipped
@@ -1323,20 +1561,21 @@ impl Vm {
                     sh.lock().unwrap().sounds.push((who, crate::sound::Play { name, at, volume, pitch, caption }));
                     Ok(true)
                 };
-                let (sh, w) = (shared.clone(), waiting.clone());
+                let (sh, w, o) = (shared.clone(), waiting.clone(), own.clone());
                 sound.set(
                     "play",
-                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&sh, &w, None, name, options(opts)?))?,
+                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&o, &sh, &w, None, name, options(opts)?))?,
                 )?;
-                let (sh, w) = (shared.clone(), waiting.clone());
+                let (sh, w, o) = (shared.clone(), waiting.clone(), own.clone());
                 sound.set(
                     "play_for",
                     lua.create_function(move |_, (player, name, opts): (Value, String, Option<Table>)| {
                         let pid = pid_of(&player)?;
-                        queue(&sh, &w, Some(pid), name, options(opts)?)
+                        queue(&o, &sh, &w, Some(pid), name, options(opts)?)
                     })?,
                 )?;
-                sound.set("names", lua.create_function(|_, ()| Ok(crate::sound::SOUNDS.iter().map(|s| s.0).collect::<Vec<_>>()))?)?;
+                let o = own.clone();
+                sound.set("names", lua.create_function(move |_, ()| Ok(o.names()))?)?;
             }
             // net 0.1: messages to and from the creation's client half
             let net = lua.create_table()?;
@@ -1422,6 +1661,9 @@ impl Vm {
             let cache = lua.create_table()?;
             let w2 = world.clone();
             let g2 = game.clone();
+            // test 0.1: a creation's own tests, which only run in test runs
+            let (test, test_harness): (Table, Table) = lua.load(crate::testing::TEST_MODULE).set_name("=@potluck/test").eval()?;
+            let t2 = test.clone();
             let req = lua.create_function(move |lua, name: String| {
                 if let Some(module) = api_module(&name)? {
                     return Ok(match module {
@@ -1432,6 +1674,7 @@ impl Vm {
                         "ui" => Value::Table(ui.clone()),
                         "sound" => Value::Table(sound.clone()),
                         "net" => Value::Table(net.clone()),
+                        "test" => Value::Table(t2.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -1447,9 +1690,9 @@ impl Vm {
                 }
             })?;
             lock_down(&lua)?;
-            Ok((world, base, game))
+            Ok((world, base, game, test_harness))
         };
-        let (world, base, game) = setup().map_err(|e| e.to_string())?;
+        let (world, base, game, test_harness) = setup().map_err(|e| e.to_string())?;
         let main = creation.manifest.main.clone();
         let src = creation.files.get(&main).ok_or_else(|| format!("{} has no {main}", creation.manifest.name))?;
         let mut vm = Vm {
@@ -1463,6 +1706,7 @@ impl Vm {
             state: state.clone(),
             kinds: vec![],
             kind_tables: HashMap::new(),
+            test_harness,
             instances: HashMap::new(),
             knobs: vec![],
             log: vec![],
@@ -1472,6 +1716,10 @@ impl Vm {
             deadline,
             rng: Rng::new(crate::noise::seed_of(&creation.id)),
             load_ms: 0.0,
+            tick_ms: 0.0,
+            tick_peak: 0.0,
+            shown: (0.0, 0.0, 0),
+            ticks: 0,
         };
         // the top level runs with the read-only parts of the world reachable
         let mut scratch_vox = Voxels::empty(0);
@@ -1498,7 +1746,7 @@ impl Vm {
 
     /// Runs `f` with the API's world functions bound to this tick's state.
     #[allow(clippy::too_many_arguments)]
-    fn session<R>(
+    pub(crate) fn session<R>(
         &mut self,
         voxels: &mut Voxels,
         herd: &mut Herd,
@@ -1531,6 +1779,9 @@ impl Vm {
             world.set("set_block", s.create_function(move |_, (p, name): (Value, String)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?;
                 let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+                if blocks::is_item(id) {
+                    return Err(bad(format!("{name} is something to hold, not a block to put down")));
+                }
                 Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
@@ -1610,6 +1861,25 @@ impl Vm {
                 if ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::AIR && ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::WATER {
                     p.y = ctx.voxels.top(p.x.floor() as i32, p.z.floor() as i32) as f32 + 1.2;
                 }
+                // one wider than a block, put down beside a wall, starts just
+                // clear of it rather than stuck in it
+                let h = def.half;
+                let clear = |q: Vec3| !crate::player::blocked(ctx.voxels, Vec3::new(q.x - h.x, q.y, q.z - h.x), Vec3::new(h.x * 2.0, h.y, h.x * 2.0));
+                if !clear(p) {
+                    let reach = (h.x - 0.45).max(0.0) + 0.05;
+                    let mut best: Option<(f32, Vec3)> = None;
+                    for i in -4..=4 {
+                        for j in -4..=4 {
+                            let off = Vec3::new(i as f32, 0.0, j as f32) * (reach / 4.0);
+                            if clear(p + off) && best.is_none_or(|(d, _)| off.length() < d) {
+                                best = Some((off.length(), p + off));
+                            }
+                        }
+                    }
+                    if let Some((_, q)) = best {
+                        p = q;
+                    }
+                }
                 Ok(ctx.herd.spawn(&creation, &def, p))
             })?)?;
             world.set("creatures", s.create_function(move |_, kind: Option<Table>| {
@@ -1655,6 +1925,42 @@ impl Vm {
                     if b.on_ground {
                         b.vel.y = 7.0 * power.unwrap_or(1.0).clamp(0.0, 3.0);
                     }
+                }
+                Ok(())
+            })?)?;
+            // world 0.9: fliers, and changing into another kind
+            base.set("climb", s.create_function(move |_, (me, speed): (Table, f32)| {
+                let id = id_of(&me)?;
+                if !speed.is_finite() {
+                    return Err(bad("climb takes a speed in blocks a second"));
+                }
+                let mut ctx = c.borrow_mut();
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(false) };
+                if !b.flies {
+                    return Ok(false);
+                }
+                b.climb = speed.clamp(-crate::creatures::MAX_CLIMB, crate::creatures::MAX_CLIMB);
+                Ok(true)
+            })?)?;
+            base.set("on_ground", s.create_function(move |_, me: Table| {
+                let id = id_of(&me)?;
+                Ok(c.borrow().herd.bodies.get(&id).is_some_and(|b| b.on_ground))
+            })?)?;
+            base.set("become", s.create_function(move |lua, (me, kind): (Table, Table)| {
+                let id = id_of(&me)?;
+                let name: String = kind.get::<Option<String>>("name")?.ok_or_else(|| bad("become needs a creature made with world.creature"))?;
+                let mut ctx = c.borrow_mut();
+                let def = ctx.kinds.iter().find(|k| k.name == name).cloned().ok_or_else(|| bad("become needs a creature made with world.creature in this creation"))?;
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(()) };
+                if b.kind != def.name {
+                    b.kind = def.name.clone();
+                    b.restyle(&def);
+                    b.rev += 1;
+                    // its handlers are the new kind's from now on
+                    let mt = lua.create_table()?;
+                    mt.set("__index", kind)?;
+                    me.set_metatable(Some(mt))?;
+                    me.raw_set("kind", def.name.as_str())?;
                 }
                 Ok(())
             })?)?;
@@ -1776,7 +2082,7 @@ impl Vm {
     }
 
     /// The Lua table for a creature, made the first time it's needed.
-    fn instance(&mut self, b: &Body) -> mlua::Result<(Table, bool)> {
+    pub(crate) fn instance(&mut self, b: &Body) -> mlua::Result<(Table, bool)> {
         if let Some(t) = self.instances.get(&b.id) {
             return Ok((t.clone(), false));
         }
@@ -1790,7 +2096,12 @@ impl Vm {
         Ok((t, true))
     }
 
-    fn fill(&self, t: &Table, b: &Body, players: &[PlayerInfo]) -> mlua::Result<()> {
+    /// A creature's Lua table, if it has had one made already.
+    pub(crate) fn known(&self, id: u64) -> Option<Table> {
+        self.instances.get(&id).cloned()
+    }
+
+    pub(crate) fn fill(&self, t: &Table, b: &Body, players: &[PlayerInfo]) -> mlua::Result<()> {
         t.raw_set("position", vector(b.pos))?;
         t.raw_set("kind", b.kind.as_str())?;
         let rider = match b.rider.and_then(|r| players.iter().find(|p| p.id == r)) {
@@ -1812,6 +2123,24 @@ impl Vm {
             self.paused = true;
             out.toasts.push(format!("{name} is paused after too many errors. Look inside to see why."));
         }
+    }
+
+    /// The memory its sandbox uses, in bytes.
+    pub fn memory(&self) -> usize {
+        self.lua.used_memory()
+    }
+
+    /// How it's doing against its budgets, for Look inside: a tick's time
+    /// (on average, and the longest lately) of its 15 ms, and its memory of 32 MB.
+    pub fn budget(&self) -> String {
+        let (avg, peak, mem) = self.shown;
+        let mem = if self.ticks == 0 { self.memory() } else { mem };
+        format!(
+            "a tick takes {avg:.1} ms (at most {peak:.1}) of its {} ms  ·  {:.1} of {} MB",
+            TICK_BUDGET.as_millis(),
+            mem as f32 / (1 << 20) as f32,
+            MEMORY_LIMIT >> 20
+        )
     }
 
     /// The creatures' own fields, to carry over a reload.
@@ -1860,6 +2189,8 @@ fn tidy_error(e: &mlua::Error) -> String {
 
 impl Scripts {
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
+        // its own blocks first, so its code can use them by name
+        crate::made::register(&creation.id, &creation.manifest.blocks)?;
         let saved = creation.knobs.clone();
         let mut vm = Vm::load(creation, &saved, self.shared.clone())?;
         // keep what the creatures were doing across a reload
@@ -1889,6 +2220,12 @@ impl Scripts {
         let slowed: Vec<u32> = sh.healing.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
         sh.healing.retain(|k, _| k.1 != id);
         sh.healing_changed.extend(slowed);
+        // and its tools dig as usual
+        let before = sh.digging.len();
+        sh.digging.retain(|k, _| k.1 != id);
+        if sh.digging.len() != before {
+            sh.digging_changed = true;
+        }
         drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
     }
@@ -2078,6 +2415,32 @@ impl Scripts {
         changed.into_iter().map(|pid| (pid, sh.healing.iter().filter(|(k, _)| k.0 == pid).map(|(_, r)| *r).product::<f32>().clamp(0.0, MAX_HEALING as f32))).collect()
     }
 
+    /// What a player has in hand now, as their game says (`world.held`).
+    pub fn set_held(&mut self, player: u32, b: blocks::BlockId) {
+        self.shared.lock().unwrap().held.insert(player, b);
+    }
+
+    /// How much faster each thing held digs each kind of block, every
+    /// creation's `world.digging` multiplied together: what every game is
+    /// told, in order of what's held.
+    pub fn digging(&self) -> Vec<(blocks::BlockId, [f32; 5])> {
+        let sh = self.shared.lock().unwrap();
+        let mut out: BTreeMap<blocks::BlockId, [f32; 5]> = BTreeMap::new();
+        for ((b, _), s) in &sh.digging {
+            let e = out.entry(*b).or_insert([1.0; 5]);
+            for k in 0..5 {
+                e[k] = (e[k] * s[k]).clamp(0.0, MAX_DIGGING as f32);
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// `digging()`, when it changed since the last time this was asked.
+    pub fn digging_changes(&mut self) -> Option<Vec<(blocks::BlockId, [f32; 5])>> {
+        let changed = std::mem::take(&mut self.shared.lock().unwrap().digging_changed);
+        changed.then(|| self.digging())
+    }
+
     /// The time of day creations see (`world.daytime`).
     pub fn set_day(&mut self, time: f32) {
         self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
@@ -2129,6 +2492,14 @@ impl Scripts {
             // they came to it, so it may ask them things again
             self.shared.lock().unwrap().ui.quiet.remove(&(player.id, creation.clone()));
         }
+        // its kind's behaviours first, so its own handler has the last word
+        if let Some(k) = vm.kinds.iter().find(|k| k.name == b.kind && k.behaviours.is_some()).cloned() {
+            let mut sounds = Vec::new();
+            if let Some(body) = herd.bodies.get_mut(&b.id) {
+                crate::behaviours::react(body, &k, event, player, &mut self.behaving, &mut vm.rng, &mut sounds);
+            }
+            self.shared.lock().unwrap().sounds.extend(sounds.into_iter().map(|p| (None, p)));
+        }
         let r = vm.session(voxels, herd, &players, &mut self.out, &creation, time.max(0.001), &mut log, |lua, _| {
             if let Some(f) = t.get::<Option<Function>>(event)? {
                 f.call::<()>((t.clone(), player_table(lua, &p)?))?;
@@ -2140,6 +2511,36 @@ impl Scripts {
             let name = b.kind.clone();
             vm.failed(&name, e, &mut self.out);
         }
+    }
+
+    /// The world's time as creations see it, in seconds.
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// Runs a few lines of Luau in a running creation's sandbox, as if they
+    /// were part of its code, with one tick's time: what they printed and
+    /// returned (the dev bridge's `run`). An error here is the caller's, so
+    /// it doesn't count toward pausing the creation.
+    pub fn run(&mut self, voxels: &mut Voxels, herd: &mut Herd, id: &str, code: &str) -> Result<(Vec<String>, String), String> {
+        let players = self.players.clone();
+        let time = self.time.max(0.001);
+        let vm = self.vms.get_mut(id).ok_or_else(|| format!("{id} isn't running in this world"))?;
+        // what it prints goes to its log as usual, and back to the caller
+        let kept = std::mem::take(&mut vm.log);
+        let mut log = Vec::new();
+        let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
+            let vals: mlua::MultiValue = lua.load(code).set_name("=run").eval()?;
+            Ok(vals.iter().map(show).collect::<Vec<_>>().join(", "))
+        });
+        let mut printed = std::mem::replace(&mut vm.log, kept);
+        printed.extend(log);
+        vm.log.extend(printed.iter().cloned());
+        if vm.log.len() > 200 {
+            let n = vm.log.len() - 200;
+            vm.log.drain(..n);
+        }
+        r.map(|v| (printed, v))
     }
 
     /// Ticks every creation's creatures, ten times a second.
@@ -2166,17 +2567,19 @@ impl Scripts {
                 sh.ui.forget_player(p.id);
                 sh.healing.retain(|k, _| k.0 != p.id);
                 sh.healing_changed.remove(&p.id);
+                sh.held.remove(&p.id);
             }
             sh.ui.joined.extend(joined.iter().map(|p| p.id));
             sh.ui.time = time;
         }
+        self.behaving.retain(|i, _| herd.bodies.contains_key(i));
         for (id, vm) in self.vms.iter_mut() {
             if vm.paused {
                 continue;
             }
-            // keep each kind's numbers up
+            // keep each kind's numbers up, counting those that came as it
             for k in vm.kinds.clone() {
-                let have = herd.bodies.values().filter(|b| b.creation == *id && b.kind == k.name).count() as u32;
+                let have = herd.bodies.values().filter(|b| b.creation == *id && b.born == k.name).count() as u32;
                 for i in have..k.count {
                     let a = i as f32 * 2.4;
                     let mut at = k.home + Vec3::new(a.cos() * 2.5, 2.0, a.sin() * 2.5);
@@ -2186,6 +2589,13 @@ impl Scripts {
                 }
             }
             vm.instances.retain(|i, _| herd.bodies.contains_key(i));
+            // what its creatures do by themselves, before its own code
+            if vm.kinds.iter().any(|k| k.behaviours.is_some()) {
+                let held = self.shared.lock().unwrap().held.clone();
+                let mut sounds = Vec::new();
+                crate::behaviours::step(herd, id, &vm.kinds, &players, &held, &mut self.behaving, &mut vm.rng, step, &mut sounds);
+                self.shared.lock().unwrap().sounds.extend(sounds.into_iter().map(|p| (None, p)));
+            }
             let bodies: Vec<Body> = herd.bodies.values().filter(|b| b.creation == *id).cloned().collect();
             let mut calls = Vec::new();
             for b in &bodies {
@@ -2225,6 +2635,7 @@ impl Scripts {
                 w.answers.retain(|a| !left.iter().any(|p| p.id == a.1));
                 w.notes.retain(|n| !left.iter().any(|p| p.id == n.0));
             }
+            let began = Instant::now();
             let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
                 // who came and went
                 if !joined.is_empty() || !left.is_empty() {
@@ -2293,6 +2704,13 @@ impl Scripts {
                 }
                 Ok(())
             });
+            let ms = began.elapsed().as_secs_f32() * 1000.0;
+            vm.tick_ms = if vm.tick_ms == 0.0 { ms } else { vm.tick_ms * 0.95 + ms * 0.05 };
+            vm.tick_peak = (vm.tick_peak * 0.99).max(ms);
+            vm.ticks += 1;
+            if vm.ticks % 10 == 1 {
+                vm.shown = (vm.tick_ms, vm.tick_peak, vm.memory());
+            }
             vm.log.extend(log);
             if vm.log.len() > 200 {
                 let n = vm.log.len() - 200;

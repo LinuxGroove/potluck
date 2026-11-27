@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.7, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1
+-- @potluck/world 0.12, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.1, @potluck/test 0.2
 
 export type Position = vector | { number }
 
@@ -18,17 +18,33 @@ export type Part = {
 	leg: boolean?,
 	head: boolean?,
 	glow: boolean?,
+	-- 0.11: where its picture is in one of the creation's Blockbench models (world.model fills it in)
+	texture: { file: string, index: number?, color: string?, stamp: number?, faces: { [string]: { number } }? }?,
 }
 
 export type CreatureDef = {
 	name: string,
-	body: { Part }?,
+	-- a list of boxes, or (0.11) a Blockbench model in the creation's folder: "hedgehog.bbmodel"
+	body: ({ Part } | string)?,
 	size: { number }?,
 	speed: number?,
 	count: number?,
 	home: (string | Position)?,
 	rideable: boolean?,
 	seat: number?,
+	flies: boolean?,
+	behaviours: Behaviours?,
+}
+
+-- What a creature does by itself, with no code (world 0.10).
+export type Behaviours = {
+	wander: boolean?,
+	follow_food: (string | { string })?,
+	follow_when_used: (boolean | number)?,
+	flee_when_hit: (boolean | number)?,
+	hop_when_hit: (boolean | number)?,
+	chatter: (string | { string })?,
+	sound: string?,
 }
 
 export type Creature = {
@@ -45,11 +61,16 @@ export type Creature = {
 	distance_to: (self: Creature, pos: Position) -> number,
 	throw_rider: (self: Creature, force: number?) -> boolean,
 	remove: (self: Creature) -> (),
+	on_ground: (self: Creature) -> boolean,
+	climb: (self: Creature, speed: number) -> boolean,
+	become: (self: Creature, kind: any) -> (),
 	[string]: any,
 }
 
 export type World = {
 	creature: (def: CreatureDef) -> any,
+	-- 0.11: a Blockbench model (.bbmodel in the creation's folder) as a body, 16 pixels to a block times scale
+	model: (file: string, scale: number?) -> { Part },
 	block: (pos: Position) -> string,
 	set_block: (pos: Position, name: string) -> boolean,
 	top: (x: number, z: number) -> number,
@@ -81,6 +102,10 @@ export type World = {
 	heal: (player: Player | number, amount: number) -> boolean,
 	-- 0.6
 	healing: (player: Player | number, rate: number) -> boolean,
+	-- 0.8
+	held: (player: Player | number) -> string?,
+	kind: (block: string) -> "soft" | "hard" | "wood" | "plant" | "glass" | "water" | "air",
+	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number? }?) -> (),
 }
 
 export type Score = { name: string, value: number }
@@ -130,9 +155,12 @@ export type SoundOptions = {
 	caption: string?,
 }
 
+-- `name` is one of the game's sounds, or one of the creation's own from
+-- `[sounds.name]` in potluck.toml (0.2), which come first.
 export type Sound = {
 	play: (name: string, opts: SoundOptions?) -> boolean,
 	play_for: (player: Player | number, name: string, opts: SoundOptions?) -> boolean,
+	-- its own first, then the game's
 	names: () -> { string },
 }
 
@@ -147,6 +175,42 @@ export type ClientNet = {
 	send: (topic: string, value: Stored?) -> boolean,
 	on: (topic: string, fn: (value: Stored) -> ()) -> (),
 	me: () -> Player,
+}
+
+-- In test.luau, while the creation's tests run (the dev bridge's test, potluck-server --test).
+export type TestPlayerOptions = {
+	at: Position?,
+	survival: boolean?,
+	carrying: { [string]: number }?,
+}
+
+export type Test = {
+	case: (name: string, fn: () -> ()) -> (),
+	check: (ok: any, message: string?) -> any,
+	same: (got: any, want: any, message: string?) -> (),
+	-- these hand over to the game: keep each on a line of its own
+	wait: (seconds: number) -> (),
+	player: (name: string?, opts: TestPlayerOptions?) -> Player,
+	move: (player: Player, at: Position) -> Player,
+	place: (player: Player, at: Position, block: string) -> (),
+	dig: (player: Player, at: Position) -> (),
+	use_block: (player: Player, at: Position) -> (),
+	use: (player: Player, creature: Creature | number) -> (),
+	hit: (player: Player, creature: Creature | number) -> (),
+	ride: (player: Player, creature: Creature | number) -> (),
+	get_off: (player: Player) -> (),
+	press: (player: Player, action: string) -> (),
+	release: (player: Player, action: string) -> (),
+	answer: (player: Player, choice: number) -> (),
+	hold: (player: Player, block: string?) -> (),
+	-- these only look
+	kind: (name: string) -> any,
+	creature: (id: number | Creature) -> Creature?,
+	health: (player: Player | number) -> number?,
+	shown: (player: Player | number, id: string) -> string?,
+	asked: (player: Player | number) -> { title: string, text: string, choices: { string } }?,
+	-- 0.2
+	heard: (name: string) -> number,
 }
 
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }

@@ -105,6 +105,12 @@ pub struct Controls {
     pub pause: bool,
     pub share: bool,
     pub camera: bool,
+    /// The map (M, View), a waypoint where you are (B, D-pad down), the
+    /// minimap's zoom (N, D-pad right) and chat (T or Enter, D-pad up).
+    pub map: bool,
+    pub mark: bool,
+    pub minimap: bool,
+    pub chat: bool,
     // menus
     pub up: bool,
     pub down: bool,
@@ -119,6 +125,9 @@ pub struct Controls {
     pub pad: bool,
     /// Right stick held left or right, for sliders.
     pub slide: f32,
+    /// A menu's next page (1) or the one before (-1): RB and LB, or Tab and
+    /// Shift+Tab.
+    pub page: i32,
     stick_latch: bool,
     y_held: f32,
     /// Buttons a creation could ask for, held now and pressed this frame:
@@ -187,6 +196,10 @@ pub fn read(
     c.pause = kp(KeyCode::Escape);
     c.share = kp(KeyCode::KeyP);
     c.camera = kp(KeyCode::F5);
+    c.map = kp(KeyCode::KeyM);
+    c.mark = kp(KeyCode::KeyB);
+    c.minimap = kp(KeyCode::KeyN);
+    c.chat = kp(KeyCode::KeyT) || kp(KeyCode::Enter) || kp(KeyCode::NumpadEnter);
     c.up = kp(KeyCode::ArrowUp);
     c.down = kp(KeyCode::ArrowDown);
     c.left = kp(KeyCode::ArrowLeft);
@@ -194,6 +207,9 @@ pub fn read(
     c.accept = kp(KeyCode::Enter) || kp(KeyCode::NumpadEnter);
     c.back = kp(KeyCode::Escape);
     c.backspace = kp(KeyCode::Backspace);
+    if kp(KeyCode::Tab) {
+        c.page += if c.crouch { -1 } else { 1 };
+    }
     if keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some() || motion.delta.length() > 2.0 {
         c.pad = false;
     }
@@ -243,12 +259,16 @@ pub fn read(
         c.break_held |= p(GamepadButton::RightTrigger2);
         c.break_pressed |= jp(GamepadButton::RightTrigger2);
         c.place_pressed |= jp(GamepadButton::LeftTrigger2);
-        if jp(GamepadButton::LeftTrigger) { c.hotbar_step -= 1 }
-        if jp(GamepadButton::RightTrigger) { c.hotbar_step += 1 }
+        if jp(GamepadButton::LeftTrigger) { c.hotbar_step -= 1; c.page -= 1 }
+        if jp(GamepadButton::RightTrigger) { c.hotbar_step += 1; c.page += 1 }
         c.interact |= jp(GamepadButton::West);
         c.pause |= jp(GamepadButton::Start);
         c.camera |= jp(GamepadButton::RightThumb);
         c.share |= jp(GamepadButton::DPadLeft);
+        c.map |= jp(GamepadButton::Select);
+        c.chat |= jp(GamepadButton::DPadUp);
+        c.mark |= jp(GamepadButton::DPadDown);
+        c.minimap |= jp(GamepadButton::DPadRight);
         // Y: hold to look inside what you aim at
         if p(GamepadButton::North) {
             c.y_held += dt;
@@ -262,12 +282,13 @@ pub fn read(
             }
             c.y_held = 0.0;
         }
-        // menus: the d-pad, or the left stick flicked
+        // menus: the d-pad, or the left stick flicked (but on the map, where
+        // the stick moves the map)
         c.up |= jp(GamepadButton::DPadUp);
         c.down |= jp(GamepadButton::DPadDown);
         c.left |= jp(GamepadButton::DPadLeft);
         c.right |= jp(GamepadButton::DPadRight);
-        let raw = pad.left_stick();
+        let raw = if focus.screen == crate::ui::Screen::Map { Vec2::ZERO } else { pad.left_stick() };
         if raw.length() > 0.6 {
             if !c.stick_latch {
                 c.stick_latch = true;
@@ -325,6 +346,10 @@ pub fn claim(c: &mut Controls, live: Option<String>, lib: &Library, settings: &S
             "pad:LT" => c.place_pressed = false,
             "pad:RT" => (c.break_held, c.break_pressed) = (false, false),
             "pad:Left" | "key:P" => c.share = false,
+            "pad:Up" | "key:T" => c.chat = false,
+            "pad:Down" | "key:B" => c.mark = false,
+            "pad:Right" | "key:N" => c.minimap = false,
+            "key:M" => c.map = false,
             _ => {}
         }
     }
@@ -343,6 +368,9 @@ pub fn glyph(pad: bool, action: &str) -> &'static str {
         (true, "accept") => "A",
         (true, "share") => "D-pad left",
         (true, "pause") => "Menu",
+        (true, "map") => "View",
+        (true, "chat") => "D-pad up",
+        (true, "mark") => "D-pad down",
         (false, "break") => "Left click",
         (false, "place") => "Right click",
         (false, "interact") => "F",
@@ -352,6 +380,9 @@ pub fn glyph(pad: bool, action: &str) -> &'static str {
         (false, "accept") => "Enter",
         (false, "share") => "P",
         (false, "pause") => "Esc",
+        (false, "map") => "M",
+        (false, "chat") => "T",
+        (false, "mark") => "B",
         _ => "?",
     }
 }

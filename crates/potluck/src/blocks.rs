@@ -1,9 +1,16 @@
 //! The base game's blocks: what each looks like and how it behaves.
 //!
 //! Block ids are bytes, stored in chunks and sent over the network, so never
-//! renumber one; add new blocks at the end.
+//! renumber one; add new blocks at the end. Ids from `FIRST_MADE` up are
+//! blocks creations made (`made`), given out by each world.
+
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub type BlockId = u8;
+
+/// Blocks creations make (`[blocks.marble]` in potluck.toml) take ids from
+/// here up, as their creations first run in a world.
+pub const FIRST_MADE: BlockId = 128;
 
 pub const AIR: BlockId = 0;
 pub const GRASS: BlockId = 1;
@@ -52,6 +59,10 @@ pub const SANDSTONE_BRICKS: BlockId = 43;
 pub const COLUMN: BlockId = 44;
 pub const BRAZIER: BlockId = 45;
 pub const FENCE: BlockId = 46;
+// 47 to 63 are kept for the looks; 64 and up are for the creations' work.
+pub const WOODEN_PICKAXE: BlockId = 64;
+pub const STONE_SWORD: BlockId = 71;
+pub const BALLOON_BASKET: BlockId = 72;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
@@ -80,6 +91,8 @@ pub struct Block {
     pub model: &'static [Cuboid],
     /// Whether bodies bump into a model (a table, but not a candle).
     pub solid: bool,
+    /// Something to carry and hold (a tool, a sword) that's never placed.
+    pub item: bool,
 }
 
 /// Which way a side faces: east, west, up, down, south, north.
@@ -148,12 +161,17 @@ impl Cuboid {
 }
 
 const fn b(name: &'static str, faces: [&'static str; 3], shape: Shape, hardness: f32) -> Block {
-    Block { name, faces, shape, light: false, hardness, model: &[], solid: false }
+    Block { name, faces, shape, light: false, hardness, model: &[], solid: false, item: false }
 }
 
 /// A block made of boxes.
 const fn m(name: &'static str, faces: [&'static str; 3], model: &'static [Cuboid], solid: bool, hardness: f32) -> Block {
-    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid }
+    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid, item: false }
+}
+
+/// Something to hold, never placed: its tile is its icon.
+const fn item(name: &'static str, tile: &'static str) -> Block {
+    Block { name, faces: [tile, tile, tile], shape: Shape::Air, light: false, hardness: 0.0, model: &[], solid: false, item: true }
 }
 
 const fn lit(mut b: Block) -> Block {
@@ -209,6 +227,7 @@ const BRAZIER_BOXES: &[Cuboid] = &[
     bx([3, 0, 11], [5, 6, 13]),
     bx([11, 0, 11], [13, 6, 13]),
 ];
+const BASKET_BOXES: &[Cuboid] = &[bx([2, 0, 2], [14, 10, 14]), bx([1, 10, 1], [15, 12, 15])];
 const FENCE_BOXES: &[Cuboid] = &[
     bx([6, 0, 6], [10, 16, 10]).tex(["log_top", "", "log_top"]),
     bx([10, 6, 7], [16, 9, 9]).when(When::Joins(0)),
@@ -269,10 +288,74 @@ pub static BLOCKS: &[Block] = &[
     m("Column", ["column_top", "column", "column_top"], COLUMN_BOXES, true, 1.3),
     lit(m("Brazier", ["brazier_top", "brazier", "brazier_top"], BRAZIER_BOXES, true, 0.8)),
     m("Fence", ["planks", "fence", "planks"], FENCE_BOXES, true, 0.6),
+    // 47 to 63: kept for the looks
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    b("Air", ["", "", ""], Shape::Air, 0.0),
+    // 64 on: tools and swords (the tools and gloomlings creations say what they do)
+    item("Wooden pickaxe", "pickaxe_wood"),
+    item("Stone pickaxe", "pickaxe_stone"),
+    item("Wooden axe", "axe_wood"),
+    item("Stone axe", "axe_stone"),
+    item("Wooden shovel", "shovel_wood"),
+    item("Stone shovel", "shovel_stone"),
+    item("Wooden sword", "sword_wood"),
+    item("Stone sword", "sword_stone"),
+    // 72: put down, it becomes a hot air balloon (the balloon creation)
+    m("Balloon basket", ["basket_top", "basket", "basket_top"], BASKET_BOXES, true, 0.5),
 ];
 
+/// The blocks creations made, by id less `FIRST_MADE`. Only `set_made`
+/// stores here, and only blocks it leaked, which are never freed; looking
+/// one up is one load, as meshing does it for every block.
+static MADE: [AtomicPtr<Block>; 128] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 128];
+
+/// A made block's id that no creation here has given a block (a guest's
+/// copy of a world before the host's list comes).
+static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false, item: false };
+
+/// Gives a made block's id its block, or takes it away (`made` only).
+pub(crate) fn set_made(id: BlockId, b: Option<&'static Block>) {
+    if id >= FIRST_MADE {
+        let p = b.map(|b| b as *const Block as *mut Block).unwrap_or(std::ptr::null_mut());
+        MADE[(id - FIRST_MADE) as usize].store(p, Ordering::Release);
+    }
+}
+
+/// The block a creation made with this id, if one did.
+pub fn made(id: BlockId) -> Option<&'static Block> {
+    if id < FIRST_MADE {
+        return None;
+    }
+    let p = MADE[(id - FIRST_MADE) as usize].load(Ordering::Acquire);
+    // SAFETY: `set_made` only stores pointers to leaked blocks, never freed
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
 pub fn block(id: BlockId) -> &'static Block {
+    if id >= FIRST_MADE {
+        return made(id).unwrap_or(&UNKNOWN);
+    }
     BLOCKS.get(id as usize).unwrap_or(&BLOCKS[0])
+}
+
+/// Something to hold (a tool), never placed.
+pub fn is_item(id: BlockId) -> bool {
+    block(id).item
 }
 
 pub fn shape(id: BlockId) -> Shape {
@@ -296,9 +379,17 @@ pub const STARTER_HOTBAR: [BlockId; 9] =
 
 /// Looks a block up by its name (as creations write it), ignoring case and
 /// spaces: "mossy brick", "Mossy_Brick" and "mossybrick" all match.
+/// Blocks creations made are found after the game's own.
 pub fn by_name(name: &str) -> Option<BlockId> {
-    let key: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
-    BLOCKS.iter().position(|b| {
-        b.name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase() == key
-    }).map(|i| i as BlockId)
+    let key = squash(name);
+    BLOCKS
+        .iter()
+        .position(|b| squash(b.name) == key)
+        .map(|i| i as BlockId)
+        .or_else(|| (FIRST_MADE..=BlockId::MAX).find(|&id| made(id).is_some_and(|b| squash(b.name) == key)))
+}
+
+/// A name as `by_name` compares it: letters and digits, lowercase.
+pub fn squash(name: &str) -> String {
+    name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
 }

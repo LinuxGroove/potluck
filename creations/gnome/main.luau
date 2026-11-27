@@ -51,6 +51,10 @@ local TOPICS = {
 		"The four arches on the north side of the Green show what friends brought into this world, and what the market has: favourites of the jams, this week's jam and what's trending.\n\nWalk up to one and Interact to bring it in.",
 	},
 	{
+		"Exploring",
+		"Far out from here lie three Old Greens, gone cold long ago: one by the shore, one in the woods and one up on the heights.\n\nTake a lantern and something from round about to a hearth, and use it to light it again. Each gives you something back.",
+	},
+	{
 		"Playing together",
 		"Host a world for friends from the title screen, or join theirs. Servers on the market are always on.\n\nRide a mossback if you dare, and try the Rodeo Ram by the paddock.",
 	},
@@ -59,7 +63,7 @@ local TOPICS = {
 -- for survival players, in place of the last
 local GETTING_BY = {
 	"Getting by",
-	"Break blocks to gather them. Any table is a workbench: Interact on it to make planks, lights and more.\n\nInteract on grass to dig farmland, and plant wheat or carrots. Keep food with you, and a lantern by your door: Gloomlings can't bear light.",
+	"Break blocks to gather them. Any table is a workbench: Interact on it to make planks, lights, tools, even a hot air balloon. Crates keep your things.\n\nInteract on grass to dig farmland, and plant wheat or carrots. Keep food with you, and a lantern by your door: Gloomlings can't bear light.",
 }
 
 local function ask(gnome, player)

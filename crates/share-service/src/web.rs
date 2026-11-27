@@ -438,6 +438,7 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
                         @if let Some(m) = &manifest { span { "Commit" } span.mono { (&m.commit[..m.commit.len().min(10)]) } }
                     }
                 }
+                (contents(&toml, &files))
                 div.box {
                     h4 { "Checks for version " (shown.n) }
                     (checks_list(&checks))
@@ -484,6 +485,112 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
     layout(&app, &p, &c.name, "", body).into_response()
 }
 
+/// What a creation brings besides its code: its buttons, its own sounds,
+/// its Blockbench models, a client half and its tests. Nothing when it has
+/// none of them.
+fn contents(toml: &crate::checks::Toml, files: &BTreeMap<String, String>) -> Markup {
+    let models: Vec<(&String, usize)> = files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).map(|(n, t)| (n, crate::checks::model_cubes(t).unwrap_or(0))).collect();
+    let tests = files.contains_key("test.luau");
+    if toml.actions.is_empty() && toml.sounds.is_empty() && toml.blocks.is_empty() && models.is_empty() && toml.client.is_none() && !tests {
+        return html! {};
+    }
+    html! {
+        div.box {
+            h4 { "What's in it" }
+            ul.inlist {
+                @for a in toml.actions.values() {
+                    li { "A button, " b { (a.name) } span.sub { " · " @if a.pad.is_empty() { "no pad button" } @else { (a.pad) " on a pad" } @if !a.keys.is_empty() { ", " (a.keys) " on a keyboard" } } }
+                }
+                @for (name, v) in &toml.sounds {
+                    li { "A sound of its own, " b { (name) } @if let Some(c) = v.get("caption").and_then(|c| c.as_str()) { span.sub { " · \u{201c}" (c) "\u{201d}" } } }
+                }
+                @for (key, b) in &toml.blocks {
+                    li.block {
+                        @if let Some(svg) = block_picture(b) { (svg) }
+                        "A block of its own, " b { (crate::checks::block_name(key, b)) }
+                        @if b.get("light").and_then(|l| l.as_bool()) == Some(true) { span.sub { " · gives light" } }
+                    }
+                }
+                @for (file, cubes) in &models {
+                    li { "A Blockbench model, " b { (file) } span.sub { " · " (count(*cubes as i64, "cube")) } }
+                }
+                @if let Some(client) = &toml.client {
+                    li { "A client half, " b { (client) } span.sub { " · runs on each player's own game" } }
+                }
+                @if tests { li { "Its own tests, " b { "test.luau" } } }
+            }
+        }
+    }
+}
+
+/// A block's side as a small picture: its letters' colours, a rectangle for
+/// each run of one colour along a row. Only checked colours and numbers go
+/// into it, so it can go on the page as it is.
+fn block_picture(b: &toml::Value) -> Option<Markup> {
+    let colors: BTreeMap<char, String> = b
+        .get("colors")?
+        .as_table()?
+        .iter()
+        .filter_map(|(k, v)| {
+            let hex = v.as_str()?.strip_prefix('#')?;
+            let ok = (hex.len() == 3 || hex.len() == 6) && hex.chars().all(|c| c.is_ascii_hexdigit());
+            (k.chars().count() == 1 && ok).then(|| (k.chars().next().unwrap(), format!("#{hex}")))
+        })
+        .collect();
+    let v = b.get("side").or_else(|| b.get("picture"))?;
+    let rows: Vec<Vec<char>> = match v {
+        toml::Value::String(t) => t.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).map(|l| l.chars().collect()).collect(),
+        toml::Value::Array(a) => a.iter().filter_map(|l| l.as_str()).map(|l| l.trim().chars().collect()).collect(),
+        _ => return None,
+    };
+    let n = rows.len();
+    if ![8, 16, 32, 64].contains(&n) || rows.iter().any(|r| r.len() != n) {
+        return None;
+    }
+    let mut svg = format!(r#"<svg class="pixels" viewBox="0 0 {n} {n}" width="32" height="32" shape-rendering="crispEdges" aria-hidden="true">"#);
+    for (y, row) in rows.iter().enumerate() {
+        let mut x = 0;
+        while x < n {
+            let c = row[x];
+            let mut w = 1;
+            while x + w < n && row[x + w] == c {
+                w += 1;
+            }
+            if let Some(fill) = colors.get(&c) {
+                svg.push_str(&format!(r#"<rect x="{x}" y="{y}" width="{w}" height="1" fill="{fill}"/>"#));
+            }
+            x += w;
+        }
+    }
+    svg.push_str("</svg>");
+    Some(PreEscaped(svg))
+}
+
+/// A Blockbench model on its page: its texture as a picture and its cubes,
+/// rather than the file's numbers.
+fn model_view(path: &str, text: &str) -> Markup {
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    let cubes: Vec<&str> = v.get("elements").and_then(|e| e.as_array()).into_iter().flatten().filter(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or("cube") == "cube").filter_map(|e| e.get("name").and_then(|n| n.as_str())).collect();
+    // only a PNG kept in the file, in plain base64: nothing else reaches the page
+    let pictures: Vec<&str> = v
+        .get("textures")
+        .and_then(|t| t.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.get("source").and_then(|s| s.as_str()))
+        .filter(|s| s.strip_prefix("data:image/png;base64,").is_some_and(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"+/=".contains(&c))))
+        .collect();
+    html! {
+        div.model {
+            p { "A Blockbench model: open " b { (path) } " in " a href="https://www.blockbench.net" { "Blockbench" } " to change it. Each cube is a part of a creature's body, 16 pixels to a block." }
+            @for src in &pictures { img.texture src=(src) alt={ "The picture painted on " (path) }; }
+            @if !cubes.is_empty() {
+                p.sub { (count(cubes.len() as i64, "cube")) ": " (cubes.join(", ")) }
+            }
+        }
+    }
+}
+
 fn code_tab(c: &Creation, files: &BTreeMap<String, String>, want: &str, n: i64) -> Markup {
     let main = files.get("potluck.toml").and_then(|t| toml::from_str::<crate::checks::Toml>(t).ok()).map(|t| t.main).filter(|m| !m.is_empty()).unwrap_or_else(|| "main.luau".into());
     let path = if files.contains_key(want) { want.to_string() } else if files.contains_key(&main) { main } else { files.keys().next().cloned().unwrap_or_default() };
@@ -494,7 +601,7 @@ fn code_tab(c: &Creation, files: &BTreeMap<String, String>, want: &str, n: i64) 
                 a.on[*f == path] href={ "/c/" (c.code) "?file=" (f) "&v=" (n) } { (f) }
             }
         }
-        div.codewrap { (highlight::code(&path, &text)) }
+        @if path.ends_with(".bbmodel") { (model_view(&path, &text)) } @else { div.codewrap { (highlight::code(&path, &text)) } }
     }
 }
 

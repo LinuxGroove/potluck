@@ -3,9 +3,8 @@
 -- follow her in a line. Two kinds of creature from one creation: they
 -- share this file, so the ducklings can always see where she is.
 
-local world = require("@potluck/world")
+local world = require("@potluck/world@0.10")
 local tweak = require("@potluck/tweak")
-local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	ducklings = { 3, min = 0, max = 6, label = "Ducklings", order = 1 },
@@ -18,6 +17,12 @@ local Duck = world.creature {
 	speed = 1.8,
 	count = 1,
 	home = "creek",
+	-- quacks now and then by itself, and hops when bopped
+	behaviours = {
+		chatter = if knobs.quack then { "Quack!", "Quack quack." } else nil,
+		sound = if knobs.quack then "quack" else nil,
+		hop_when_hit = 0.6,
+	},
 	body = {
 		{ "body", size = { 0.5, 0.36, 0.7 }, at = { 0, 0.34, 0.04 }, color = knobs.feathers },
 		{ "tail", size = { 0.26, 0.16, 0.16 }, at = { 0, 0.5, 0.42 }, color = knobs.feathers },
@@ -36,6 +41,7 @@ local Duckling = world.creature {
 	speed = 2.2,
 	count = math.floor(knobs.ducklings),
 	home = "creek",
+	behaviours = { chatter = { "Peep!" }, sound = "chirp", hop_when_hit = 0.4 },
 	body = {
 		{ "body", size = { 0.28, 0.22, 0.34 }, at = { 0, 0.2, 0 }, color = "#f2d14b" },
 		{ "head", size = { 0.18, 0.18, 0.18 }, at = { 0, 0.4, -0.14 }, color = "#f2d14b", head = true },
@@ -49,10 +55,6 @@ local Duckling = world.creature {
 local mum: vector? = nil
 local trail: { vector } = {}
 
-function Duck:spawned()
-	self.quack_in = world.random(8, 20)
-end
-
 function Duck:tick(dt: number)
 	self:wander()
 	mum = self.position
@@ -63,20 +65,10 @@ function Duck:tick(dt: number)
 			table.remove(trail)
 		end
 	end
-	self.quack_in -= dt
-	if self.quack_in <= 0 then
-		self.quack_in = world.random(10, 30)
-		if knobs.quack then
-			self:say("Quack!")
-			sound.play("quack", { at = self })
-		end
-	end
 end
 
 function Duck:hit(player)
-	self:hop(0.6)
 	self:say("QUACK!")
-	sound.play("quack", { at = self, pitch = 1.15 })
 end
 
 function Duckling:spawned()
@@ -99,6 +91,4 @@ end
 
 function Duckling:used(player)
 	self:hop(0.4)
-	self:say("Peep!")
-	sound.play("chirp", { at = self, volume = 0.6 })
 end

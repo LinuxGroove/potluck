@@ -3,6 +3,7 @@
 //! numbers when the game starts, the same every time, so there are no
 //! sound files to ship or share.
 
+use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
 use std::num::NonZero;
 use std::sync::Arc;
@@ -114,6 +115,16 @@ pub fn material(id: BlockId) -> Material {
     if id == blocks::AIR {
         return Material::Air;
     }
+    // a block a creation made says, if it likes
+    if let Some(k) = crate::made::kind(id) {
+        return match k {
+            "hard" => Material::Hard,
+            "wood" => Material::Wood,
+            "plant" => Material::Plant,
+            "glass" => Material::Glass,
+            _ => Material::Soft,
+        };
+    }
     let n = blocks::block(id).name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
     if has(&["water"]) {
@@ -122,7 +133,7 @@ pub fn material(id: BlockId) -> Material {
         Material::Glass
     } else if has(&["leaves", "needles", "tall grass", "flower", "fern", "bush", "wheat", "carrot", "reed", "vine", "moss carpet"]) {
         Material::Plant
-    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door"]) {
+    } else if has(&["log", "plank", "barrel", "crate", "bookshelf", "table", "stool", "fence", "stake", "wood", "door", "basket"]) {
         Material::Wood
     } else if has(&["stone", "brick", "cobble", "bedrock", "column", "brazier", "pot", "lantern", "slate", "tile", "ore", "iron"]) {
         Material::Hard
@@ -131,7 +142,29 @@ pub fn material(id: BlockId) -> Material {
     }
 }
 
+/// The kinds of block a tool can dig faster (`world.digging`), in the order
+/// of a tool's speeds.
+pub const DIG_KINDS: [&str; 5] = ["soft", "hard", "wood", "plant", "glass"];
+
 impl Material {
+    /// Its name for creations (`world.kind`): one of `DIG_KINDS`, or water or air.
+    pub fn name(self) -> &'static str {
+        match self {
+            Material::Soft => "soft",
+            Material::Hard => "hard",
+            Material::Wood => "wood",
+            Material::Plant => "plant",
+            Material::Glass => "glass",
+            Material::Water => "water",
+            Material::Air => "air",
+        }
+    }
+
+    /// Where it is in a tool's speeds, for the kinds that can be dug.
+    pub fn dig(self) -> Option<usize> {
+        DIG_KINDS.iter().position(|k| *k == self.name())
+    }
+
     pub fn step(self) -> Option<&'static str> {
         match self {
             Material::Soft => Some("step"),
@@ -404,8 +437,14 @@ pub fn synth(name: &str) -> Vec<f32> {
         }
         _ => vec![],
     };
-    // about as loud as each other: peaks at 0.8 at most, and the steady
-    // ones (squares, fanfares) brought down to the rest
+    level(&mut v);
+    v
+}
+
+/// Makes a sound about as loud as the rest, with no click at the end.
+fn level(v: &mut [f32]) {
+    // peaks at 0.8 at most, and the steady ones (squares, fanfares)
+    // brought down to the rest
     let peak = v.iter().fold(0.0f32, |m, s| m.max(s.abs()));
     let rms = (v.iter().map(|s| s * s).sum::<f32>() / v.len().max(1) as f32).sqrt();
     if peak > 0.0 {
@@ -420,7 +459,317 @@ pub fn synth(name: &str) -> Vec<f32> {
     for i in 0..fade {
         v[n - 1 - i] *= i as f32 / fade as f32;
     }
+}
+
+// ---------- creations' own sounds ----------
+
+/// Sounds one creation may make of its own.
+pub const MOST_OWN: usize = 16;
+/// How long one of them may be, in seconds.
+pub const OWN_LONGEST: f32 = 3.0;
+/// Layers one may have besides its first.
+pub const MOST_LAYERS: usize = 3;
+/// Notes one layer may play in a row.
+pub const MOST_NOTES: usize = 32;
+/// What a creation's sound may say how to make, as `[sounds.moo]` has it.
+pub const RECIPE_KEYS: &[&str] = &["caption", "wave", "pitch", "notes", "each", "length", "attack", "decay", "wobble", "pulse", "lowpass", "highpass", "layers"];
+/// What a layer may say: the same, less caption and layers, and where it starts and how loud it is.
+pub const LAYER_KEYS: &[&str] = &["wave", "pitch", "notes", "each", "length", "attack", "decay", "wobble", "pulse", "lowpass", "highpass", "at", "gain"];
+pub const WAVES: &[&str] = &["sine", "triangle", "saw", "square", "noise"];
+
+/// One of a creation's own sounds, made from numbers in its potluck.toml
+/// (`[sounds.moo]`) the same way on every game. The table is its first
+/// layer; `layers` adds more, each starting `at` seconds in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recipe {
+    pub caption: String,
+    pub layer: Layer,
+    pub layers: Vec<Layer>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layer {
+    pub wave: usize,
+    /// Hz at the start and the end (for noise, how bright it is).
+    pub pitch: (f32, f32),
+    /// Notes in a row, in Hz, each `each` seconds long; 0 is a rest.
+    pub notes: Vec<f32>,
+    pub each: f32,
+    pub length: f32,
+    pub attack: f32,
+    pub decay: f32,
+    /// Times a second, and Hz up and down.
+    pub wobble: (f32, f32),
+    /// Times a second, and how much quieter (0 to 1).
+    pub pulse: (f32, f32),
+    pub lowpass: Option<f32>,
+    pub highpass: Option<f32>,
+    pub at: f32,
+    pub gain: f32,
+}
+
+/// A note's name ("C5", "F#4", "Bb3"; "-" is a rest) in Hz.
+pub fn note(name: &str) -> Option<f32> {
+    let name = name.trim();
+    if name == "-" {
+        return Some(0.0);
+    }
+    let mut c = name.chars();
+    let step = match c.next()?.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    let rest: String = c.collect();
+    let (shift, octave) = match rest.chars().next() {
+        Some('#') => (1, &rest[1..]),
+        Some('b') => (-1, &rest[1..]),
+        _ => (0, &rest[..]),
+    };
+    let octave: i32 = if octave.is_empty() { 4 } else { octave.parse().ok().filter(|o| (0..=9).contains(o))? };
+    let midi = 12 * (octave + 1) + step + shift;
+    Some(440.0 * 2f32.powf((midi - 69) as f32 / 12.0))
+}
+
+fn num(v: &serde_json::Value) -> Option<f32> {
+    v.as_f64().map(|n| n as f32).filter(|n| n.is_finite())
+}
+
+/// Two numbers, as [a, b].
+fn pair(v: &serde_json::Value) -> Option<(f32, f32)> {
+    match v {
+        serde_json::Value::Array(a) if a.len() == 2 => Some((num(&a[0])?, num(&a[1])?)),
+        _ => None,
+    }
+}
+
+fn parse_layer(what: &str, t: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Result<Layer, String> {
+    for k in t.keys() {
+        if !keys.contains(&k.as_str()) {
+            return Err(format!("{what}: there's no \"{k}\" (a sound has {})", keys.join(", ")));
+        }
+    }
+    let number = |k: &str, usual: f32, lo: f32, hi: f32| -> Result<f32, String> {
+        match t.get(k) {
+            None => Ok(usual),
+            Some(v) => num(v).map(|n| n.clamp(lo, hi)).ok_or_else(|| format!("{what}: {k} is a number")),
+        }
+    };
+    let wave = match t.get("wave") {
+        None => 0,
+        Some(v) => v.as_str().and_then(|w| WAVES.iter().position(|x| *x == w)).ok_or_else(|| format!("{what}: wave is one of {}", WAVES.join(", ")))?,
+    };
+    let hz = |n: f32| n.clamp(20.0, 12000.0);
+    let pitch = match t.get("pitch") {
+        None => (440.0, 440.0),
+        Some(v) => match (num(v), pair(v)) {
+            (Some(n), _) => (hz(n), hz(n)),
+            (_, Some((a, b))) => (hz(a), hz(b)),
+            _ => return Err(format!("{what}: pitch is a number of Hz, or [from, to]")),
+        },
+    };
+    let notes = match t.get("notes") {
+        None => vec![],
+        Some(serde_json::Value::Array(a)) => {
+            if a.len() > MOST_NOTES {
+                return Err(format!("{what}: {MOST_NOTES} notes at most"));
+            }
+            a.iter()
+                .map(|n| match n {
+                    serde_json::Value::String(s) => note(s),
+                    v => num(v).map(|n| if n <= 0.0 { 0.0 } else { hz(n) }),
+                })
+                .collect::<Option<Vec<f32>>>()
+                .ok_or_else(|| format!("{what}: notes are names like \"C5\", \"F#4\" or \"-\" for a rest, or numbers of Hz"))?
+        }
+        Some(_) => return Err(format!("{what}: notes are a list, like [\"C5\", \"E5\", \"G5\"]")),
+    };
+    let each = number("each", 0.15, 0.02, 1.0)?;
+    let length = if notes.is_empty() { number("length", 0.4, 0.02, OWN_LONGEST)? } else { (notes.len() as f32 * each).min(OWN_LONGEST) };
+    let one = if notes.is_empty() { length } else { each };
+    let attack = number("attack", 0.01, 0.0, one)?;
+    let decay = number("decay", one / 3.0, 0.005, 10.0)?;
+    let two = |k: &str, rate: f32, most: f32| -> Result<(f32, f32), String> {
+        match t.get(k) {
+            None => Ok((0.0, 0.0)),
+            Some(v) => pair(v).map(|(a, b)| (a.clamp(0.0, rate), b.clamp(0.0, most))).ok_or_else(|| format!("{what}: {k} is [times a second, how much]")),
+        }
+    };
+    let filter = |k: &str| -> Result<Option<f32>, String> {
+        match t.get(k) {
+            None => Ok(None),
+            Some(v) => num(v).map(|n| Some(n.clamp(20.0, 20000.0))).ok_or_else(|| format!("{what}: {k} is a number of Hz")),
+        }
+    };
+    Ok(Layer {
+        wave,
+        pitch,
+        notes,
+        each,
+        length,
+        attack,
+        decay,
+        wobble: two("wobble", 40.0, 2000.0)?,
+        pulse: two("pulse", 40.0, 1.0)?,
+        lowpass: filter("lowpass")?,
+        highpass: filter("highpass")?,
+        at: number("at", 0.0, 0.0, OWN_LONGEST)?,
+        gain: number("gain", 1.0, 0.0, 2.0)?,
+    })
+}
+
+/// Whether `name` will do for one of a creation's own sounds.
+pub fn own_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 24 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Reads one of a creation's own sounds, saying plainly what's wrong.
+pub fn recipe(name: &str, v: &serde_json::Value) -> Result<Recipe, String> {
+    let what = format!("sounds.{name}");
+    if !own_name_ok(name) {
+        return Err(format!("{what}: a sound's name is lowercase letters, digits and _"));
+    }
+    let serde_json::Value::Object(t) = v else {
+        return Err(format!("{what}: a sound is a table, [sounds.{name}], with a wave, a pitch and a length"));
+    };
+    let layer = parse_layer(&what, t, RECIPE_KEYS)?;
+    let caption = match t.get("caption") {
+        None => {
+            let words = name.replace('_', " ");
+            let mut c = words.chars();
+            c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+        }
+        Some(serde_json::Value::String(c)) => c.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(30).collect(),
+        Some(_) => return Err(format!("{what}: caption is words, what subtitles say")),
+    };
+    let layers = match t.get("layers") {
+        None => vec![],
+        Some(serde_json::Value::Array(a)) => {
+            if a.len() > MOST_LAYERS {
+                return Err(format!("{what}: {MOST_LAYERS} layers at most, besides the sound itself"));
+            }
+            let mut out = vec![];
+            for (i, l) in a.iter().enumerate() {
+                let what = format!("{what}.layers[{}]", i + 1);
+                let serde_json::Value::Object(l) = l else {
+                    return Err(format!("{what}: a layer is a table, [[sounds.{name}.layers]]"));
+                };
+                out.push(parse_layer(&what, l, LAYER_KEYS)?);
+            }
+            out
+        }
+        Some(_) => return Err(format!("{what}: layers are a list of tables, [[sounds.{name}.layers]]")),
+    };
+    Ok(Recipe { caption, layer, layers })
+}
+
+/// Reads all of a creation's own sounds.
+pub fn recipes(sounds: &BTreeMap<String, serde_json::Value>) -> Result<BTreeMap<String, Recipe>, String> {
+    if sounds.len() > MOST_OWN {
+        return Err(format!("a creation has {MOST_OWN} sounds of its own at most, and this one has {}", sounds.len()));
+    }
+    sounds.iter().map(|(n, v)| Ok((n.clone(), recipe(n, v)?))).collect()
+}
+
+fn wave_of(i: usize) -> fn(f32) -> f32 {
+    [sine, tri, saw, soft_square, sine][i.min(4)]
+}
+
+/// One layer's samples.
+fn make_layer(l: &Layer, rng: &mut Rng) -> Vec<f32> {
+    let (wobble, pulse) = (l.wobble, l.pulse);
+    let shape = |t: f32, secs: f32| {
+        // the attack and fall, the pulsing, and a quick fade at the end of
+        // each note so notes don't click
+        perc(t, l.attack, l.decay) * (1.0 - pulse.1 * (0.5 - 0.5 * (TAU * pulse.0 * t).cos())) * ((secs - t) / 0.008).clamp(0.0, 1.0)
+    };
+    let one = |secs: f32, from: f32, to: f32, rng: &mut Rng| -> Vec<f32> {
+        let freq = move |t: f32| from * (to / from).powf((t / secs).min(1.0)) + wobble.1 * (TAU * wobble.0 * t).sin();
+        if l.wave == 4 {
+            noise(secs, rng, |t| shape(t, secs), |t| freq(t).max(20.0))
+        } else {
+            tone(secs, |t| freq(t).max(1.0), |t| shape(t, secs), wave_of(l.wave))
+        }
+    };
+    let mut v = if l.notes.is_empty() {
+        one(l.length, l.pitch.0, l.pitch.1, rng)
+    } else {
+        let mut v = vec![0.0; len(l.length)];
+        for (i, f) in l.notes.iter().enumerate() {
+            let at = i as f32 * l.each;
+            if *f > 0.0 && at < l.length {
+                let note = one(l.each, *f, *f, rng);
+                mix(&mut v, &note, at, 1.0);
+            }
+        }
+        v
+    };
+    if let Some(c) = l.lowpass {
+        lowpass(&mut v, c);
+    }
+    if let Some(c) = l.highpass {
+        highpass(&mut v, c);
+    }
     v
+}
+
+/// Makes one of a creation's own sounds, the same on every game: `key` is
+/// "creation/name", which its noise is seeded from.
+pub fn make_own(r: &Recipe, key: &str) -> Vec<f32> {
+    let mut rng = Rng::new(crate::noise::seed_of(key));
+    let mut v = make_layer(&r.layer, &mut rng);
+    for l in &r.layers {
+        let s = make_layer(l, &mut rng);
+        mix(&mut v, &s, l.at, l.gain);
+    }
+    v.truncate(len(OWN_LONGEST));
+    level(&mut v);
+    v
+}
+
+/// What a creation can play by name: its own sounds, then the game's.
+#[derive(Clone, Debug, Default)]
+pub struct Own {
+    creation: String,
+    captions: BTreeMap<String, String>,
+}
+
+impl Own {
+    /// A creation's own sounds, from its potluck.toml.
+    pub fn of(creation: &str, sounds: &BTreeMap<String, serde_json::Value>) -> Result<Own, String> {
+        Ok(Own { creation: creation.to_string(), captions: recipes(sounds)?.into_iter().map(|(n, r)| (n, r.caption)).collect() })
+    }
+
+    /// What playing `name` sends: the name every game knows it by, and
+    /// what subtitles say (None for the game's own word).
+    pub fn resolve(&self, name: &str) -> Option<(String, Option<String>)> {
+        match self.captions.get(name) {
+            Some(c) => Some((format!("{}/{name}", self.creation), Some(c.clone()))),
+            None => caption_of(name).map(|_| (name.to_string(), None)),
+        }
+    }
+
+    /// Every name it can play, its own first.
+    pub fn names(&self) -> Vec<String> {
+        self.captions.keys().cloned().chain(SOUNDS.iter().map(|s| s.0.to_string())).collect()
+    }
+
+    /// The plain error for a name it can't play.
+    pub fn unknown(name: &str) -> String {
+        format!("there's no sound called \"{name}\" (sound.names() lists them, or make one of your own in potluck.toml as [sounds.{name}])")
+    }
+}
+
+/// One of a creation's own sounds as it is now in the library, by
+/// "creation/name".
+pub fn own_recipe(lib: &crate::creations::Library, key: &str) -> Option<Recipe> {
+    let (id, name) = key.split_once('/')?;
+    recipe(name, lib.list.get(id)?.manifest.sounds.get(name)?).ok()
 }
 
 // ---------- playing them ----------
@@ -465,9 +814,35 @@ impl Decodable for Synth {
     }
 }
 
-/// Every sound, made once.
+/// Every sound, made once: the game's at start, and creations' own the
+/// first time each plays (again if its recipe changed).
 #[derive(Resource, Default)]
-pub struct Sounds(pub std::collections::HashMap<&'static str, Handle<Synth>>);
+pub struct Sounds {
+    pub game: std::collections::HashMap<&'static str, Handle<Synth>>,
+    own: std::collections::HashMap<String, (Recipe, Handle<Synth>)>,
+}
+
+impl Sounds {
+    /// The sound to play for `name`: one of the game's, or a creation's own
+    /// ("creation/name") as the library has it now.
+    fn get(&mut self, name: &str, lib: Option<&crate::creations::Library>, assets: &mut Assets<Synth>) -> Option<Handle<Synth>> {
+        if let Some(h) = self.game.get(name) {
+            return Some(h.clone());
+        }
+        let r = own_recipe(lib?, name)?;
+        if let Some((made, h)) = self.own.get(name) {
+            if *made == r {
+                return Some(h.clone());
+            }
+        }
+        if self.own.len() >= 256 {
+            self.own.clear();
+        }
+        let h = assets.add(Synth(make_own(&r, name).into()));
+        self.own.insert(name.to_string(), (r, h.clone()));
+        Some(h)
+    }
+}
 
 /// Plays sounds where there's a speaker: called from `sim` when the app
 /// has Bevy's audio (the game, not the server).
@@ -477,7 +852,7 @@ pub fn add(app: &mut App) {
 
 fn make(mut sounds: ResMut<Sounds>, mut assets: ResMut<Assets<Synth>>) {
     for (name, _) in SOUNDS {
-        sounds.0.insert(name, assets.add(Synth(synth(name).into())));
+        sounds.game.insert(name, assets.add(Synth(synth(name).into())));
     }
 }
 
@@ -492,7 +867,9 @@ fn listen(mut commands: Commands, cams: Query<Entity, (With<MainCamera>, Without
 fn play(
     mut commands: Commands,
     mut heard: ResMut<Heard>,
-    sounds: Res<Sounds>,
+    mut sounds: ResMut<Sounds>,
+    mut assets: ResMut<Assets<Synth>>,
+    lib: Option<Res<crate::creations::Library>>,
     settings: Res<Settings>,
     time: Res<Time>,
     mut me: Option<ResMut<Me>>,
@@ -509,7 +886,7 @@ fn play(
     let ears = cam.single().ok().map(|c| (c.translation(), c.right()));
     let mut room = AT_ONCE.saturating_sub(playing.iter().count());
     for p in list {
-        let Some(h) = sounds.0.get(p.name.as_str()) else { continue };
+        let Some(h) = sounds.get(&p.name, lib.as_deref(), &mut assets) else { continue };
         let at = p.at.map(Vec3::from_array);
         if let (Some(at), Some((ear, _))) = (at, ears) {
             if at.distance(ear) > HEARD_WITHIN {
@@ -547,7 +924,7 @@ fn play(
         room -= 1;
         let volume = (p.volume.clamp(0.0, 1.0) * settings.volume.clamp(0.0, 1.0)).max(0.0);
         commands.spawn((
-            AudioPlayer::<Synth>(h.clone()),
+            AudioPlayer::<Synth>(h),
             PlaybackSettings {
                 mode: PlaybackMode::Despawn,
                 volume: Volume::Linear(volume),

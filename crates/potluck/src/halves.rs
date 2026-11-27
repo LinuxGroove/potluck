@@ -26,7 +26,7 @@ const LOAD_BUDGET: Duration = Duration::from_millis(300);
 /// What `@potluck/world` does only on the host, where the world is.
 const HOST_ONLY: &[&str] = &[
     "creature", "block", "set_block", "top", "find_block", "find_light", "players", "nearest_player", "spawn", "creatures", "say", "on", "pockets", "has", "take",
-    "give", "hurt", "heal", "healing",
+    "give", "hurt", "heal", "healing", "held", "digging", "kind",
 ];
 
 /// What a half asked for since it was last looked at.
@@ -93,6 +93,7 @@ fn host_only(what: &str) -> mlua::Error {
 
 impl Running {
     fn load(creation: &Creation, file: &str, me: PlayerInfo) -> Result<Running, String> {
+        let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT).map_err(|e| e.to_string())?;
         let deadline = Arc::new(Mutex::new(Instant::now() + LOAD_BUDGET));
@@ -239,12 +240,11 @@ impl Running {
             // sound: heard by this player only
             let sound = lua.create_table()?;
             let play = {
-                let o = out.clone();
+                let (o, own) = (out.clone(), own.clone());
                 move |name: String, opts: Option<Table>| -> mlua::Result<bool> {
-                    if crate::sound::caption_of(&name).is_none() {
-                        return Err(bad(format!("there's no sound called \"{name}\" (sound.names() lists them)")));
-                    }
+                    let (name, own_caption) = own.resolve(&name).ok_or_else(|| bad(crate::sound::Own::unknown(&name)))?;
                     let (at, volume, pitch, caption) = script::sound_options(opts)?;
+                    let caption = caption.or(own_caption);
                     let mut o = o.lock().unwrap();
                     if o.sound_budget < 1.0 {
                         return Ok(false);
@@ -264,7 +264,7 @@ impl Running {
                     play(name, opts)
                 })?,
             )?;
-            sound.set("names", lua.create_function(|_, ()| Ok(crate::sound::SOUNDS.iter().map(|s| s.0).collect::<Vec<_>>()))?)?;
+            sound.set("names", lua.create_function(move |_, ()| Ok(own.names()))?)?;
             // require: these four, or another of the creation's files
             let files = creation.files.clone();
             let cache = lua.create_table()?;

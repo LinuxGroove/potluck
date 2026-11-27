@@ -16,14 +16,14 @@ use crate::script::{KnobValue, Scripts};
 use crate::settings::Settings;
 use crate::textures::BlockAtlas;
 
+pub mod draw;
+pub use draw::draw_menu;
+
 pub const INK: Color = Color::srgb(0.98, 0.96, 0.9);
 pub const DIM: Color = Color::srgba(0.98, 0.96, 0.9, 0.62);
 pub const MINT: Color = Color::srgb(0.37, 0.88, 0.78);
 pub const GOLD: Color = Color::srgb(1.0, 0.77, 0.36);
 pub const RED: Color = Color::srgb(1.0, 0.45, 0.42);
-const PANEL: Color = Color::srgba(0.07, 0.09, 0.12, 0.86);
-const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.06);
-const PICK: Color = Color::srgba(0.37, 0.88, 0.78, 0.22);
 
 pub const SWATCHES: &[&str] = &[
     "#4f7a3a", "#6fa64a", "#2f5d50", "#3a6fb0", "#5fe0c8", "#b18cff", "#ff7fa0", "#e84a4a", "#ffc35c", "#f0e0b0", "#8a7a52", "#3b2a1c", "#f5f5f5", "#2a2a2e",
@@ -60,6 +60,14 @@ pub enum Screen {
     Controls,
     /// A creation's question (`ui.ask`), with its choices.
     Panel,
+    /// The whole map, with its list on the right (`map`).
+    Map,
+    /// One waypoint, on the map.
+    Waypoint(u32),
+    /// A place someone shared in chat, by the line's id, on the map.
+    Shared(u64),
+    /// Saying something, and the last lines (`chat`).
+    Chat,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +133,39 @@ pub enum Act {
     /// An answer to the creation's question on the screen: a choice from 0,
     /// or None for Close.
     Answer(Option<u32>),
+    OpenMap,
+    /// Go to the spot picked on the map.
+    MapGo,
+    /// The map back on where you are.
+    MapHome,
+    /// The map's list of waypoints, a page further.
+    MapPage,
+    /// A waypoint where you stand, or at the spot picked on the map.
+    MarkHere,
+    MarkCursor,
+    /// The minimap nearer, further or off.
+    MinimapZoom,
+    OpenWaypoint(u32),
+    GoWaypoint(u32),
+    RenameWaypoint(u32, String),
+    RecolourWaypoint(u32),
+    /// Show a waypoint on the minimap and over the world, or not.
+    ShowWaypoint(u32),
+    /// Share a waypoint in chat, for others' maps.
+    ShareWaypoint(u32),
+    DeleteWaypoint(u32),
+    /// A place shared in chat, by the line's id: look at it, keep it as a
+    /// waypoint, go there.
+    OpenShared(u64),
+    KeepShared(u64),
+    GoShared(u64),
+    /// Go to a friend in this world.
+    GoPlayer(u32),
+    OpenChat,
+    /// Say something in chat.
+    Say(String),
+    /// Share where you are in chat.
+    SharePlace,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +180,15 @@ pub enum Kind {
     Big,
     /// A QR code of the label, for a phone's camera.
     Qr,
+    /// A small button that sits in a row with the ones beside it.
+    Chip(Act),
+    /// A line of chat: the label is who said it, in their colour.
+    Line { color: [u8; 3], words: String },
+    /// A creation on the Creations sheet, as a card with its picture; the
+    /// act is what A does (Look inside).
+    Card(Act),
+    /// One of a few choices, turned with left and right (the act moves it on).
+    Choice { act: Act, value: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -147,16 +197,22 @@ pub struct Item {
     pub kind: Kind,
 }
 
-fn button(label: impl Into<String>, act: Act) -> Item {
+pub fn button(label: impl Into<String>, act: Act) -> Item {
     Item { label: label.into(), kind: Kind::Button(act) }
 }
-fn note(label: impl Into<String>) -> Item {
+pub fn note(label: impl Into<String>) -> Item {
     Item { label: label.into(), kind: Kind::Note }
+}
+pub fn toggle(label: impl Into<String>, key: &str, value: bool) -> Item {
+    Item { label: label.into(), kind: Kind::Toggle { key: key.into(), value } }
+}
+pub fn field(label: impl Into<String>, key: &str, value: String) -> Item {
+    Item { label: label.into(), kind: Kind::Field { key: key.into(), value } }
 }
 
 impl Item {
     fn selectable(&self) -> bool {
-        !matches!(self.kind, Kind::Note | Kind::Big | Kind::Qr)
+        !matches!(self.kind, Kind::Note | Kind::Big | Kind::Qr | Kind::Line { .. })
     }
 }
 
@@ -194,6 +250,22 @@ pub struct Focus {
     pub pin_misses: Vec<std::time::Instant>,
     /// The creation's question on the Panel screen.
     pub panel: Option<crate::script::Panel>,
+    /// What Settings says under the dev bridge: its address, or why it
+    /// couldn't start.
+    pub bridge: Option<String>,
+    /// The keyboard on the screen, when a pad is typing into a field.
+    pub keyboard: Option<crate::keyboard::Keys>,
+    /// The title and items of the screens other modules make: the map's
+    /// (`map::fill`) and chat's (`chat::fill`).
+    pub made: (String, Vec<Item>),
+    /// The page of Settings open (`SETTINGS_PAGES`).
+    pub settings_page: usize,
+    /// The shelf of Creations open (`shelves`).
+    pub shelf: usize,
+    /// How many cards a row of the Creations sheet holds, as last drawn.
+    pub cols: usize,
+    /// The first item drawn, when a menu is taller than the window.
+    first: usize,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -219,6 +291,13 @@ impl Default for Focus {
             parents_open: false,
             pin_misses: vec![],
             panel: None,
+            bridge: None,
+            keyboard: None,
+            made: (String::new(), vec![]),
+            settings_page: 0,
+            shelf: 0,
+            cols: 4,
+            first: 0,
             qr: None,
         }
     }
@@ -232,6 +311,38 @@ impl Focus {
         self.screen = s;
         self.sel = 0;
         self.scroll = 0;
+    }
+    /// The page open on a screen with pages, to change.
+    fn page_mut(&mut self) -> Option<&mut usize> {
+        match self.screen {
+            Screen::Settings => Some(&mut self.settings_page),
+            Screen::Library => Some(&mut self.shelf),
+            _ => None,
+        }
+    }
+}
+
+/// Settings' pages, by what they're about.
+pub const SETTINGS_PAGES: &[&str] = &["You", "Controls", "Picture and sound", "Online", "Family"];
+
+/// The shelves of the Creations sheet: what's in this world only in one.
+pub fn shelves(in_world: bool) -> &'static [&'static str] {
+    if in_world {
+        &["Everything", "In this world", "Made by me", "From friends", "Made by Potluck"]
+    } else {
+        &["Everything", "Made by me", "From friends", "Made by Potluck"]
+    }
+}
+
+/// A screen's pages (LB and RB, or Tab), and the one open.
+pub fn pages(focus: &Focus, info: &WorldInfo) -> Option<(&'static [&'static str], usize)> {
+    match focus.screen {
+        Screen::Settings => Some((SETTINGS_PAGES, focus.settings_page.min(SETTINGS_PAGES.len() - 1))),
+        Screen::Library => {
+            let list = shelves(info.in_world);
+            Some((list, focus.shelf.min(list.len() - 1)))
+        }
+        _ => None,
     }
 }
 
@@ -293,8 +404,13 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             ],
         ),
         Screen::Playing => (String::new(), vec![]),
+        Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => focus.made.clone(),
         Screen::Pause => {
-            let mut v = vec![note(info.line.clone()), button("Back to the world", Act::Resume), button("Creations in this world", Act::OpenLibrary), button("Load a creation from a code", Act::OpenCode)];
+            let mut v = vec![note(info.line.clone()), button("Back to the world", Act::Resume), button("Map", Act::OpenMap)];
+            if settings.chat {
+                v.push(button("Chat", Act::OpenChat));
+            }
+            v.extend([button("Creations in this world", Act::OpenLibrary), button("Load a creation from a code", Act::OpenCode)]);
             v.push(button("The market", Act::Market("/".into(), "The market".into())));
             if let Some(j) = &focus.jam {
                 v.push(button(format!("This week's jam: {}", j.theme), Act::Market(format!("/jams/{}", j.slug), j.theme.clone())));
@@ -306,7 +422,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Inside(id) => {
             let Some(c) = lib.list.get(id) else { return ("Gone".into(), vec![button("Back", Act::Back)]) };
             let m = &c.manifest;
-            let mut v = vec![note(format!("{} by {}", cap(&m.kind), m.by))];
+            let mut v = vec![note(format!("{} by {}", kind_name(&m.kind), m.by))];
             if !m.about.is_empty() {
                 v.push(note(m.about.clone()));
             }
@@ -504,6 +620,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 v.push(Item { label: "Under 13: shares by code, with friends, and plays on all-ages servers".into(), kind: Kind::Toggle { key: "young".into(), value: settings.young } });
                 v.push(Item { label: "Can share creations".into(), kind: Kind::Toggle { key: "sharing".into(), value: settings.sharing } });
                 v.push(Item { label: "Can join servers from the market's list".into(), kind: Kind::Toggle { key: "servers".into(), value: settings.servers } });
+                v.push(toggle("Can chat in a world", "chat", settings.chat));
                 let pin = focus.fields.get("newpin").cloned().unwrap_or_default();
                 let label = if settings.parent_pin.is_empty() { "A PIN, so only you can change these" } else { "A new PIN" };
                 v.push(Item { label: label.into(), kind: Kind::Field { key: "newpin".into(), value: pin.clone() } });
@@ -588,21 +705,36 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             if let Some(j) = focus.jam.as_ref().filter(|_| !settings.young) {
                 v.push(note(format!("This week's jam is \u{201c}{}\u{201d}. Make something for it, share it to Everyone and enter it from Share.", j.theme)));
             }
-            let add = |title: &str, f: &dyn Fn(&crate::creations::Creation) -> bool, v: &mut Vec<Item>| {
-                let list: Vec<_> = lib.list.values().filter(|c| f(c)).collect();
-                if list.is_empty() {
-                    return;
-                }
-                v.push(note(title.to_string()));
-                for c in list {
-                    let running = if lib.running.contains(&c.id) { "  ·  in this world" } else { "" };
-                    v.push(button(format!("{} by {}{running}", c.manifest.name, c.manifest.by), Act::Inside(c.id.clone())));
-                }
+            let shelf = pages(focus, info).map(|(list, n)| list[n]).unwrap_or("Everything");
+            let mut list: Vec<&crate::creations::Creation> = lib
+                .list
+                .values()
+                .filter(|c| match shelf {
+                    "In this world" => lib.running.contains(&c.id),
+                    "Made by me" => c.origin == Origin::Mine,
+                    "From friends" => matches!(c.origin, Origin::Friend(_) | Origin::Code(_)),
+                    "Made by Potluck" => c.origin == Origin::Base,
+                    _ => true,
+                })
+                .collect();
+            // mine first, then friends', then Potluck's, what's here before the rest
+            let rank = |c: &crate::creations::Creation| match c.origin {
+                Origin::Mine => 0,
+                Origin::Base => 2,
+                _ => 1,
             };
-            add("Made by me", &|c| c.origin == Origin::Mine, &mut v);
-            add("From friends and codes", &|c| matches!(c.origin, Origin::Friend(_) | Origin::Code(_)), &mut v);
-            add("Made by Potluck", &|c| c.origin == Origin::Base, &mut v);
-            v.push(button("Back", Act::Back));
+            list.sort_by_key(|c| (rank(c), !lib.running.contains(&c.id), c.manifest.name.to_lowercase()));
+            for c in &list {
+                v.push(Item { label: c.manifest.name.clone(), kind: Kind::Card(Act::Inside(c.id.clone())) });
+            }
+            if list.is_empty() {
+                v.push(note(match shelf {
+                    "In this world" => "Nothing from here runs in this world yet. Choose one on another shelf and bring it in.",
+                    "Made by me" => "Nothing yet. Look inside any creation and Remix it to make one of your own.",
+                    "From friends" => "Nothing yet. When a friend gives you a code, load it from Load a creation from a code.",
+                    _ => "Nothing here yet.",
+                }));
+            }
             ("Creations".into(), v)
         }
         Screen::Controls => {
@@ -648,31 +780,70 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             (p.title.clone(), v)
         }
         Screen::Settings => {
-            let v = vec![
-                Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: focus.fields.get("name").cloned().unwrap_or_else(|| settings.name.clone()) } },
-                Item { label: "Mouse speed".into(), kind: Kind::Slider { key: "mouse".into(), value: settings.mouse_sensitivity as f64, min: 0.2, max: 3.0 } },
-                Item { label: "Stick speed".into(), kind: Kind::Slider { key: "stick".into(), value: settings.stick_sensitivity as f64, min: 0.2, max: 3.0 } },
-                Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
-                Item { label: "Full screen (F11)".into(), kind: Kind::Toggle { key: "fullscreen".into(), value: settings.fullscreen } },
-                Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
-                Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
-                Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
-                Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
-                Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
-                button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
-                button("Creations' buttons", Act::OpenControls),
-                button("Link a device", Act::OpenDevices),
-                button("Parent settings", Act::OpenParents),
-                Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
-                Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
-                button("Back", Act::Back),
-            ];
+            let field_of = |key: &str, now: &str| focus.fields.get(key).cloned().unwrap_or_else(|| now.to_string());
+            let mut v = match SETTINGS_PAGES[focus.settings_page.min(SETTINGS_PAGES.len() - 1)] {
+                "You" => vec![
+                    Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: field_of("name", &settings.name) } },
+                    Item { label: "Survival".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
+                    note("Health, and blocks that run out. Off, you build with everything."),
+                    button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
+                    button("Link a device", Act::OpenDevices),
+                ],
+                "Controls" => vec![
+                    Item { label: "Mouse speed".into(), kind: Kind::Slider { key: "mouse".into(), value: settings.mouse_sensitivity as f64, min: 0.2, max: 3.0 } },
+                    Item { label: "Stick speed".into(), kind: Kind::Slider { key: "stick".into(), value: settings.stick_sensitivity as f64, min: 0.2, max: 3.0 } },
+                    Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
+                    button("Creations' buttons", Act::OpenControls),
+                ],
+                "Picture and sound" => vec![
+                    Item { label: "Lighting".into(), kind: Kind::Choice { act: Act::Lighting, value: cap(&settings.lighting) } },
+                    note("Low for handhelds and laptops, High and Ultra for graphics cards. Takes effect after a restart."),
+                    Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
+                    Item { label: "Full screen (F11)".into(), kind: Kind::Toggle { key: "fullscreen".into(), value: settings.fullscreen } },
+                    Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
+                    Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
+                ],
+                "Online" => vec![
+                    Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: field_of("server", &settings.server) } },
+                    Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: field_of("market", &settings.market) } },
+                    Item { label: "Dev bridge for coding helpers on this computer".into(), kind: Kind::Toggle { key: "bridge".into(), value: settings.dev_bridge } },
+                ],
+                _ => {
+                    let on = |b: bool| if b { "on" } else { "off" };
+                    vec![
+                        note(format!(
+                            "{}. Sharing creations is {}, servers from the market's list are {} and chat is {}.",
+                            if settings.young { "Set for a player under 13" } else { "Set for a player 13 or older" },
+                            on(settings.sharing),
+                            on(settings.servers),
+                            on(settings.chat)
+                        )),
+                        button("Parent settings", Act::OpenParents),
+                        note(if settings.parent_pin.is_empty() { "A parent can set a PIN there, so only they can change these." } else { "Locked with a parent's PIN." }),
+                    ]
+                }
+            };
+            // where a coding helper finds the bridge, under its switch
+            if let Some(n) = focus.bridge.clone().filter(|_| settings.dev_bridge) {
+                if let Some(at) = v.iter().position(|i| matches!(&i.kind, Kind::Toggle { key, .. } if key == "bridge")) {
+                    v.insert(at + 1, note(n));
+                }
+            }
+            v.push(button("Back", Act::Back));
             ("Settings".into(), v)
         }
     }
 }
 
-fn cap(s: &str) -> String {
+/// What a creation's kind is called on the screen.
+pub fn kind_name(kind: &str) -> String {
+    match kind {
+        "game" => "Mini game".into(),
+        k => cap(k),
+    }
+}
+
+pub(crate) fn cap(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
@@ -681,7 +852,7 @@ fn cap(s: &str) -> String {
 }
 
 /// An address without its https://, as people say it.
-fn host(url: &str) -> &str {
+pub(crate) fn host(url: &str) -> &str {
     url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/')
 }
 
@@ -731,6 +902,7 @@ pub fn menu_input(
     mut acts: ResMut<Acts>,
     mut lib_mut: ResMut<crate::KnobEdits>,
     buttons: Query<(&Interaction, &MenuButton), Changed<Interaction>>,
+    clicks: Query<(&Interaction, Option<&MenuTab>, Option<&MenuPrompt>), (Changed<Interaction>, Or<(With<MenuTab>, With<MenuPrompt>)>)>,
     time: Res<Time>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut last_cursor: Local<Option<Vec2>>,
@@ -741,7 +913,7 @@ pub fn menu_input(
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
     let moved = cursor.is_some() && cursor != *last_cursor;
     *last_cursor = cursor;
-    if focus.playing() {
+    if focus.playing() || focus.keyboard.is_some() {
         return;
     }
     // the next button or key for a creation's action
@@ -768,9 +940,42 @@ pub fn menu_input(
         }
         return;
     }
+    // a page's tab or a prompt at the bottom, clicked
+    let mut tab = None;
+    let mut prompt = None;
+    for (int, t, p) in &clicks {
+        if *int == Interaction::Pressed {
+            tab = t.map(|t| t.0).or(tab);
+            prompt = p.copied().or(prompt);
+        }
+    }
+    // pages: RB and LB, Tab, or a click on one
+    if let Some((list, now)) = pages(&focus, &info) {
+        let step = c.page + (prompt == Some(MenuPrompt::Page)) as i32;
+        let mut to = (now as i32 + step).rem_euclid(list.len() as i32) as usize;
+        if let Some(t) = tab {
+            to = t.min(list.len() - 1);
+        }
+        if to != now {
+            heard.click();
+            if let Some(p) = focus.page_mut() {
+                *p = to;
+            }
+            focus.sel = 0;
+            focus.first = 0;
+            // the first thing you can choose on it, not a note
+            let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+            focus.sel = items.iter().position(|i| i.selectable()).unwrap_or(0);
+            return;
+        }
+    }
     let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
     let selectable: Vec<usize> = items.iter().enumerate().filter(|(_, i)| i.selectable()).map(|(n, _)| n).collect();
     if selectable.is_empty() {
+        // an empty shelf still goes back
+        if c.back || prompt == Some(MenuPrompt::Back) {
+            acts.0.push(Act::Back);
+        }
         return;
     }
     let mut pos = selectable.iter().position(|&i| i == focus.sel).unwrap_or(0);
@@ -793,11 +998,22 @@ pub fn menu_input(
             Interaction::None => {}
         }
     }
-    if c.down {
-        pos = (pos + 1) % selectable.len();
-    }
-    if c.up {
-        pos = (pos + selectable.len() - 1) % selectable.len();
+    // small buttons side by side: left and right go along them too
+    let chip = matches!(items.get(focus.sel).map(|i| &i.kind), Some(Kind::Chip(_)));
+    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_))) {
+        // cards in rows: left and right along a row, up and down a row at a time
+        let cols = focus.cols.max(1) as i32;
+        let last = selectable.len() as i32 - 1;
+        let mut p = pos as i32;
+        p += c.right as i32 - c.left as i32 + (c.down as i32 - c.up as i32) * cols;
+        pos = if c.down && p > last && (pos as i32) / cols < last / cols { last } else { p.clamp(0, last) } as usize;
+    } else {
+        if c.down || chip && c.right {
+            pos = (pos + 1) % selectable.len();
+        }
+        if c.up || chip && c.left {
+            pos = (pos + selectable.len() - 1) % selectable.len();
+        }
     }
     focus.sel = selectable[pos];
     // scrolling the code in Look inside
@@ -806,10 +1022,28 @@ pub fn menu_input(
     }
     let item = items[focus.sel].clone();
     let step = (c.right as i32 - c.left as i32) as f64;
-    let accept = c.accept || clicked;
+    let accept = c.accept || clicked || prompt == Some(MenuPrompt::Accept);
+    let interact = c.interact || prompt == Some(MenuPrompt::Interact);
     match &item.kind {
-        Kind::Button(act) => {
+        Kind::Button(act) | Kind::Chip(act) => {
             if accept {
+                heard.click();
+                acts.0.push(act.clone());
+            }
+        }
+        Kind::Card(act) => {
+            if accept {
+                heard.click();
+                acts.0.push(act.clone());
+            }
+            // X or F brings it into this world, or takes it out
+            if let (Act::Inside(id), true, true) = (act, interact, info.in_world) {
+                heard.click();
+                acts.0.push(if lib.running.contains(id) { Act::Stop(id.clone()) } else { Act::Run(id.clone()) });
+            }
+        }
+        Kind::Choice { act, .. } => {
+            if accept || step != 0.0 {
                 heard.click();
                 acts.0.push(act.clone());
             }
@@ -854,43 +1088,77 @@ pub fn menu_input(
                 changed = true;
             }
             if changed {
-                let v: String = v.chars().take(64).collect();
-                focus.fields.insert(key.clone(), v.clone());
-                match key.as_str() {
-                    "name" => settings.name = v.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == ' ').take(20).collect(),
-                    "server" => settings.server = v,
-                    "market" => settings.market = v,
-                    _ => {}
-                }
+                let v: String = v.chars().take(crate::keyboard::max_len(key)).collect();
+                set_field(&mut focus, &mut settings, key, &v);
             }
-            if c.accept {
+            if c.accept && c.pad && !clicked {
+                // a pad types on the keyboard on the screen
+                crate::keyboard::open(&mut focus, key, &item.label);
+                heard.click();
+            } else if c.accept {
                 // Enter in a field does the button after it
-                if let Some(Item { kind: Kind::Button(a), .. }) = items.get(focus.sel + 1) {
-                    let mut a = a.clone();
-                    let v = focus.fields.get(key).cloned().unwrap_or_default();
-                    match &mut a {
-                        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) | Act::UnlockParents(s) | Act::SetPin(s) => *s = v,
-                        _ => {}
-                    }
+                let v = focus.fields.get(key).cloned().unwrap_or_else(|| value.clone());
+                if let Some(a) = crate::keyboard::after(&items, key, &v) {
                     acts.0.push(a);
                 }
             }
         }
         _ => {}
     }
-    if c.back && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
+    if (c.back || prompt == Some(MenuPrompt::Back)) && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
         let back = match &focus.screen {
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
             Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
             Screen::Panel => Some(Act::Answer(None)),
+            Screen::Map | Screen::Chat => Some(Act::Resume),
+            Screen::Waypoint(_) | Screen::Shared(_) => Some(Act::OpenMap),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {
             acts.0.push(a);
         }
     }
+}
+
+/// What a text field says now, and the setting it is, if it's one.
+pub fn set_field(focus: &mut Focus, settings: &mut Settings, key: &str, v: &str) {
+    focus.fields.insert(key.to_string(), v.to_string());
+    match key {
+        "name" => settings.name = v.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == ' ').take(20).collect(),
+        "server" => settings.server = v.to_string(),
+        "market" => settings.market = v.to_string(),
+        _ => {}
+    }
+}
+
+/// A field's button with what the field says in it (Enter in a field).
+pub fn with_value(mut a: Act, v: &str) -> Act {
+    match &mut a {
+        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) | Act::UnlockParents(s) | Act::SetPin(s) | Act::Say(s) | Act::RenameWaypoint(_, s) => *s = v.to_string(),
+        _ => {}
+    }
+    a
+}
+
+/// The play keys a menu saw this frame don't act in the world too, when
+/// the menu closes (Esc that leaves the pause menu doesn't open it again).
+pub fn menu_owns(focus: Res<Focus>, mut c: ResMut<Controls>) {
+    if focus.playing() {
+        return;
+    }
+    c.pause = false;
+    c.jump_pressed = false;
+    c.interact = false;
+    c.look_inside = false;
+    c.share = false;
+    c.place_pressed = false;
+    c.break_pressed = false;
+    c.map = false;
+    c.mark = false;
+    c.minimap = false;
+    c.chat = false;
 }
 
 fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, edits: &mut crate::KnobEdits) {
@@ -907,6 +1175,10 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("volume", KnobValue::Number(n)) => settings.volume = n.clamp(0.0, 1.0) as f32,
         ("subtitles", KnobValue::Toggle(b)) => settings.subtitles = b,
         ("fullscreen", KnobValue::Toggle(b)) => settings.fullscreen = b,
+        ("bridge", KnobValue::Toggle(b)) => settings.dev_bridge = b,
+        ("minimap_turns", KnobValue::Toggle(b)) => settings.minimap_turns = b,
+        ("waypoint_labels", KnobValue::Toggle(b)) => settings.waypoint_labels = b,
+        ("chat", KnobValue::Toggle(b)) if focus.parents_open => settings.chat = b,
         // a parent's, once unlocked
         ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
         ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,
@@ -924,199 +1196,17 @@ pub struct MenuRoot;
 #[derive(Component)]
 pub struct MenuButton(pub usize);
 
-pub fn draw_menu(
-    mut commands: Commands,
-    mut focus: ResMut<Focus>,
-    lib: Res<Library>,
-    scripts: Res<Scripts>,
-    settings: Res<Settings>,
-    info: Res<WorldInfo>,
-    fonts: Res<Fonts>,
-    roots: Query<Entity, With<MenuRoot>>,
-    mut images: ResMut<Assets<Image>>,
-    halves: Res<crate::halves::Halves>,
-) {
-    let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
-    if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
-        if focus.qr.as_ref().map(|q| &q.0) != Some(&url) {
-            focus.qr = qr_image(&url).map(|img| (url, images.add(img)));
-        }
-    }
-    let qr = focus.qr.as_ref().map(|q| q.1.clone());
-    let side = match &focus.screen {
-        Screen::Inside(id) => lib.list.get(id).map(|c| {
-            let src = c.files.get(&c.manifest.main).cloned().unwrap_or_default();
-            let vm = scripts.vms.get(id);
-            let mut log: Vec<String> = vm.map(|v| v.log.clone()).unwrap_or_default();
-            let half = halves.list.get(id);
-            // what its client half printed on this game, too
-            log.extend(half.iter().flat_map(|h| h.log.iter().map(|l| format!("client: {l}"))));
-            let log: Vec<String> = log.iter().rev().take(6).rev().cloned().collect();
-            let err = vm.and_then(|v| v.error.clone()).or_else(|| half.and_then(|h| h.error.as_ref()).map(|e| format!("Its client half stopped: {e}")));
-            let ms = vm.map(|v| v.load_ms).unwrap_or(0.0);
-            (c.manifest.main.clone(), src, log, err, ms)
-        }),
-        _ => None,
-    };
-    let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}", focus.screen, focus.sel, focus.scroll, side);
-    if sig == focus.sig {
-        return;
-    }
-    focus.sig = sig;
-    focus.items = items.clone();
-    for e in &roots {
-        commands.entity(e).despawn();
-    }
-    if focus.playing() {
-        return;
-    }
-    let title_screen = focus.screen == Screen::Title;
-    let ui = fonts.ui.clone();
-    let tf = fonts.title.clone();
-    let sel = focus.sel;
-    let scroll = focus.scroll;
-    commands
-        .spawn((
-            MenuRoot,
-            Node {
-                width: percent(100),
-                height: percent(100),
-                position_type: PositionType::Absolute,
-                justify_content: if title_screen { JustifyContent::FlexStart } else { JustifyContent::Center },
-                align_items: AlignItems::Center,
-                padding: UiRect::all(px(40)),
-                column_gap: px(24),
-                ..default()
-            },
-            BackgroundColor(if title_screen { Color::NONE } else { Color::srgba(0.0, 0.0, 0.0, 0.35) }),
-            GlobalZIndex(10),
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    width: px(if side.is_some() { 400 } else { 520 }),
-                    padding: UiRect::all(px(26)),
-                    row_gap: px(10),
-                    margin: if title_screen { UiRect::left(px(60)) } else { UiRect::ZERO },
-                    border_radius: BorderRadius::all(px(18)),
-                    ..default()
-                },
-                BackgroundColor(PANEL),
-            ))
-            .with_children(|p| {
-                if !title.is_empty() {
-                    p.spawn((Text::new(title.clone()), TextFont { font: tf.clone().into(), font_size: FontSize::Px(if title_screen { 64.0 } else { 34.0 }), weight: FontWeight(600), ..default() }, TextColor(if title_screen { GOLD } else { INK })));
-                }
-                for (i, item) in items.iter().enumerate() {
-                    let picked = i == sel;
-                    match &item.kind {
-                        Kind::Note => {
-                            if !item.label.is_empty() {
-                                p.spawn((Text::new(item.label.clone()), TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() }, TextColor(DIM)));
-                            }
-                        }
-                        Kind::Qr => {
-                            if let Some(h) = &qr {
-                                p.spawn((ImageNode::new(h.clone()), Node { width: px(300), height: px(300), align_self: AlignSelf::Center, margin: UiRect::vertical(px(6)), border_radius: BorderRadius::all(px(10)), ..default() }));
-                            }
-                        }
-                        Kind::Big => {
-                            p.spawn((Text::new(item.label.clone()), TextFont { font: tf.clone().into(), font_size: FontSize::Px(60.0), weight: FontWeight(600), ..default() }, TextColor(MINT)));
-                        }
-                        _ => {
-                            // how full a slider's bar is (drawn, since the fonts have no block characters)
-                            let bar = match &item.kind {
-                                Kind::Slider { value, min, max, .. } => Some(((value - min) / (max - min)).clamp(0.0, 1.0) as f32),
-                                _ => None,
-                            };
-                            let (label, right) = match &item.kind {
-                                Kind::Slider { value, .. } => (item.label.clone(), trim_num(*value)),
-                                Kind::Toggle { value, .. } => (item.label.clone(), if *value { "On".into() } else { "Off".into() }),
-                                Kind::Swatch { value, .. } => (item.label.clone(), format!("< {value} >")),
-                                // a PIN shows as dots
-                                Kind::Field { key, value } if key.ends_with("pin") => (item.label.clone(), format!("{}{}", "\u{2022}".repeat(value.chars().count()), if picked { "|" } else { "" })),
-                                Kind::Field { value, .. } => (item.label.clone(), format!("{value}{}", if picked { "|" } else { "" })),
-                                _ => (item.label.clone(), String::new()),
-                            };
-                            let swatch = if let Kind::Swatch { value, .. } = &item.kind { crate::script::parse_color(value) } else { None };
-                            p.spawn((
-                                Interaction::default(),
-                                MenuButton(i),
-                                Node {
-                                    padding: UiRect::axes(px(16), px(11)),
-                                    justify_content: JustifyContent::SpaceBetween,
-                                    align_items: AlignItems::Center,
-                                    column_gap: px(12),
-                                    border_radius: BorderRadius::all(px(12)),
-                                    border: UiRect::all(px(2)),
-                                    ..default()
-                                },
-                                BorderColor::all(if picked { MINT } else { Color::NONE }),
-                                BackgroundColor(if picked { PICK } else { CARD }),
-                            ))
-                            .with_children(|b| {
-                                b.spawn((Text::new(label), TextFont { font: ui.clone().into(), font_size: FontSize::Px(19.0), ..default() }, TextColor(INK)));
-                                if let Some(col) = swatch {
-                                    b.spawn((Node { width: px(56), height: px(22), border_radius: BorderRadius::all(px(6)), ..default() }, BackgroundColor(col)));
-                                }
-                                if let Some(f) = bar {
-                                    b.spawn((
-                                        Node { width: px(170), height: px(8), margin: UiRect::left(Val::Auto), border_radius: BorderRadius::all(px(4)), ..default() },
-                                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)),
-                                    ))
-                                    .with_child((Node { width: percent(f * 100.0), height: percent(100), border_radius: BorderRadius::all(px(4)), ..default() }, BackgroundColor(MINT)));
-                                }
-                                if !right.is_empty() {
-                                    let mut t = b.spawn((Text::new(right), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(MINT)));
-                                    if bar.is_some() {
-                                        // numbers take the same room, so the bars line up
-                                        t.insert((Node { min_width: px(40), ..default() }, TextLayout::justify(Justify::Right)));
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
-                if !title_screen {
-                    p.spawn((Text::new("Up and down to choose · A or Enter to pick · B or Esc to go back"), TextFont { font: ui.clone().into(), font_size: FontSize::Px(12.0), ..default() }, TextColor(DIM)));
-                }
-            });
-            // Look inside: the code, the log and any error
-            if let Some((file, src, log, err, ms)) = side {
-                root.spawn((
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        width: px(720),
-                        max_height: percent(92),
-                        padding: UiRect::all(px(20)),
-                        row_gap: px(6),
-                        border_radius: BorderRadius::all(px(18)),
-                        overflow: Overflow::clip(),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.04, 0.05, 0.07, 0.92)),
-                ))
-                .with_children(|p| {
-                    p.spawn((Text::new(format!("{file}  ·  loaded in {ms:.0} ms  ·  wheel or right stick to scroll")), TextFont { font: ui.clone().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
-                    let lines: Vec<&str> = src.lines().collect();
-                    let start = (scroll as usize).min(lines.len().saturating_sub(1));
-                    let shown: String = lines.iter().enumerate().skip(start).take(30).map(|(n, l)| format!("{:>3}  {}\n", n + 1, l.replace('\t', "    "))).collect();
-                    p.spawn((Text::new(shown), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(14.0), ..default() }, TextColor(Color::srgb(0.85, 0.9, 0.86))));
-                    if let Some(e) = err {
-                        p.spawn((Text::new(format!("Problem: {e}")), TextFont { font: ui.clone().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(RED)));
-                    }
-                    if !log.is_empty() {
-                        p.spawn((Text::new(format!("Log\n{}", log.join("\n"))), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
-                    }
-                });
-            }
-        });
-}
+/// One of a screen's pages, to click.
+#[derive(Component)]
+pub struct MenuTab(pub usize);
 
-fn trim_num(v: f64) -> String {
-    let s = format!("{v:.2}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
+/// A prompt at the bottom of a menu, which does what it says when clicked.
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub enum MenuPrompt {
+    Accept,
+    Back,
+    Page,
+    Interact,
 }
 
 // ---------- the HUD ----------
@@ -1151,7 +1241,7 @@ pub struct Crosshair;
 pub struct LabelText(usize);
 /// Where creations' lines go (`ui.show`): an index into `script::PLACES`.
 #[derive(Component)]
-pub struct PieceText(usize);
+pub struct PieceText(pub usize);
 /// Subtitles for sounds, bottom right.
 #[derive(Component)]
 pub struct CaptionText;
@@ -1175,12 +1265,14 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                 TextColor(DIM),
                 Node { position_type: PositionType::Absolute, left: px(18), top: px(14), ..default() },
             ));
-            // over menus too, so a share code shows while Look inside is open
+            // over menus too (shown when the rest of the HUD hides), so a
+            // share code shows while Look inside is open
             h.spawn((
                 ToastBox,
                 Node { position_type: PositionType::Absolute, top: px(40), width: percent(100), padding: UiRect::horizontal(percent(15)), justify_content: JustifyContent::Center, ..default() },
                 GlobalZIndex(30),
                 Pickable::IGNORE,
+                Visibility::Visible,
             ))
             .with_child((
                 ToastText,
@@ -1307,7 +1399,8 @@ pub fn update_hud(
     )>,
     cam: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
-    let show = focus.screen != Screen::Title && info.in_world;
+    // menus that cover the world hide the hotbar and the crosshair too
+    let show = focus.screen != Screen::Title && info.in_world && !draw::blurs(&focus.screen);
     for mut v in &mut hud {
         *v = if show { Visibility::Inherited } else { Visibility::Hidden };
     }

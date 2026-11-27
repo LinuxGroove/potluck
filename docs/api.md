@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.7")
+local world = require("@potluck/world@0.12")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,22 +17,23 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.7"
+world = "0.12"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.7 | Blocks and lights, creatures, players, their health (and how fast it comes back) and the blocks they carry, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.12 | Blocks (the game's and the creation's own, drawn in `potluck.toml`) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
-| `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
+| `@potluck/sound` | 0.2 | The game's sounds and the creation's own (made from numbers in `potluck.toml`), somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
+| `@potluck/test` | 0.2 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
-Every module planned for the API is here. Still to come in later minor versions: sounds of a creation's own, from its files (`sound`), and more of the API in client halves (`net`).
+Every module planned for the API is here. Still to come in later minor versions: more of the API in client halves (`net`).
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -71,16 +72,21 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Each tick (ten a second): its timers, world events and every creature's handlers together | 15 ms |
 | Creatures at once | 64 |
 | Kinds of creature | 16 |
+| A body | 64 boxes (a Blockbench model's cubes past 64 are left out), each up to 6 blocks a side and within 8 blocks of the creature's middle |
 | Timers waiting at once | 64 |
 | Shortest timer | 0.1 s, the length of a tick |
 | World event, input and message handlers (`world.on`, `input.on`, `net.on`) | 32 |
 | Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
 | Lines on screens (`ui.show`) | 8 at once (different ids, meters among them), each up to 60 letters |
 | Meters (`ui.meter`) | 3 on a screen, from every creation together |
-| Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds, until they use one of its creatures or a block it hears `block_used` for |
+| Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 8 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds, until they use one of its creatures or a block it hears `block_used` for |
 | Sounds | 10 a second; heard within 40 blocks |
+| Blocks of its own (`[blocks]`) | 16, each with up to 24 colours, pictures 8 to 64 pixels square and up to 16 boxes; 128 from every creation in a world together, and as many pictures as the block atlas holds |
+| Sounds of its own (`[sounds]`) | 16, each up to 3 seconds, with up to 3 layers besides the first and 32 notes a layer |
 | Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
+| Flying (`flies`, `creature:climb`) | -4 to 4 blocks a second, eased into; no higher than 24 blocks over the world's highest blocks |
+| Digging speeds (`world.digging`) | 0 to 10 times as fast for each kind of block, every creation's multiplied and kept to that |
 | Looking for blocks (`world.find_block`, `world.find_light`) | 16 blocks away |
 | Block events (`block_placed`, `block_broken`, `block_used`) | 64 heard a tick; past 512 waiting, the rest are dropped |
 | Messages to client halves (`net.send`) | 30 a second from a creation, 10 a second from each player's half; a topic of 32 letters and a value of 4 KB as JSON |
@@ -97,6 +103,11 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.12**: blocks of a creation's own, `[blocks.name]` in `potluck.toml`: pictures drawn in letters with a colour for each, a shape (solid, see-through, a plant, or boxes in sixteenths), how hard it is to break, its kind, and light and glow. Every block function takes their names; a world keeps their ids for as long as it lasts, and sends them to everyone who joins.
+- **0.11**: `world.model`, a Blockbench model (a `.bbmodel` in the creation's folder) as the list of boxes a body is, 16 pixels to a block, drawn with the model's texture (a part's `texture`; its `color` tints it), with `head`, `leg` and `glow` from its cubes' and groups' names; and `body = "file.bbmodel"` for `world.creature` as short for it. Creations may carry `.bbmodel` files.
+- **0.10**: `behaviours` for `world.creature`, what a creature does with no code: `wander`, `follow_food`, `follow_when_used`, `flee_when_hit`, `hop_when_hit`, `chatter` and `sound`. They act before its own handlers, which have the last word.
+- **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields, and still counting toward the `count` of the kind it came as). `world.spawn` puts a creature wider than a block that's set down beside a wall just clear of it.
+- **0.8**: `world.held` (what's in a player's hand), `world.kind` (what a block is made of) and `world.digging` (a thing held breaks some kinds of block faster, 0 to 10 times; creations' speeds multiply). Tools and swords are things to hold, never put down: `world.set_block` with one is an error.
 - **0.7**: `down_to` for `world.hurt`, the least health a hurt leaves (0 to 20).
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
 - **0.5**: `world.on` for `"block_placed"`, `"block_broken"` and `"block_used"`: a player put down, broke or used (Interact on) a block, with the player, the middle of the block and its name.
@@ -116,6 +127,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/sound`
 
 - **0.1**: the first version: `sound.play`, `sound.play_for` and `sound.names`, with the game's own sounds.
+- **0.2**: sounds of the creation's own, made from numbers in `potluck.toml` (`[sounds.moo]`: a wave, a pitch or notes, a length, how it rises and fades, wobble, pulse, filters, and up to 3 layers). `play`, `play_for`, `names` and behaviours' `sound` find them first. Client halves play them too.
 
 ### `@potluck/ui`
 
@@ -133,3 +145,8 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/tweak`
 
 - **0.1**: the first version.
+
+### `@potluck/test`
+
+- **0.1**: the first version: `test.case`, `check` and `same`; `wait`; `player` and `move`; what players do (`place`, `dig`, `use_block`, `use`, `hit`, `ride`, `get_off`, `press`, `release`, `answer`, `hold`); and looking (`kind`, `creature`, `health`, `shown`, `asked`).
+- **0.2**: `test.heard(name)`, how many times the creation played a sound since the case began.
