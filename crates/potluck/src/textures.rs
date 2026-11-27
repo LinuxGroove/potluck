@@ -69,6 +69,11 @@ impl BlockAtlas {
         *self.tiles.get(name).unwrap_or(&0)
     }
 
+    /// Whether a tile of this name was drawn.
+    pub fn has(&self, name: &str) -> bool {
+        self.tiles.contains_key(name)
+    }
+
     /// The UV rectangle of a tile: `(u0, v0, u1, v1)`, inside its gutter.
     pub fn uv(tile: u16) -> [f32; 4] {
         let (tx, ty) = ((tile as usize % GRID) as f32, (tile as usize / GRID) as f32);

@@ -11,7 +11,7 @@ use bevy::tasks::ComputeTaskPool;
 
 use std::f32::consts::{FRAC_PI_4, PI};
 
-use crate::blocks::{self, Shape, AIR, BIRCH_LEAVES, BUSH, FERN, GRASS, LEAVES, PINE, WATER};
+use crate::blocks::{self, BlockId, Shape, AIR, BIRCH_LEAVES, BUSH, CARROTS, FERN, GRASS, LEAVES, PINE, WATER, WHEAT};
 use crate::noise::{fbm, hash2, smooth, vnoise};
 use crate::textures::BlockAtlas;
 use crate::world::{Voxels, CHUNK};
@@ -194,9 +194,13 @@ impl MeshData {
 
     /// A quad with a colour at each corner.
     fn quad_tinted(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], tint: [[f32; 4]; 4], flip: bool) {
-        let base = self.pos.len() as u32;
         let [u0, v0, u1, v1] = rect;
-        let uvs = [[u0, v1], [u1, v1], [u1, v0], [u0, v0]];
+        self.quad_uv(corners, n, [[u0, v1], [u1, v1], [u1, v0], [u0, v0]], tint, flip);
+    }
+
+    /// A quad with its own UVs at each corner (corner 0 to 1 runs along u).
+    fn quad_uv(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], uvs: [[f32; 2]; 4], tint: [[f32; 4]; 4], flip: bool) {
+        let base = self.pos.len() as u32;
         let t = Vec3::from(corners[1]) - Vec3::from(corners[0]);
         let b = Vec3::from(corners[3]) - Vec3::from(corners[0]);
         let t = t.normalize_or_zero();
@@ -380,6 +384,55 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
     }
 }
 
+/// A model's boxes (`blocks::Cuboid`). Each face shows the part of its
+/// texture it covers, as if the box were cut from a full block, so faces
+/// line up across boxes; faces against a full block are left out. Corners
+/// darken toward the floor, since models get no corner shading of their own.
+fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, id: BlockId) {
+    let def = blocks::block(id);
+    let next = |d: usize| {
+        let s = blocks::SIDES[d];
+        w.get(x + s[0], y + s[1], z + s[2])
+    };
+    let o = Vec3::new(x as f32, y as f32, z as f32);
+    for b in def.model {
+        if !b.when.holds(id, next) {
+            continue;
+        }
+        let lo = Vec3::from(b.from.map(|v| v as f32 / 16.0));
+        let hi = Vec3::from(b.to.map(|v| v as f32 / 16.0));
+        let layer = if b.glow { 4 } else { 0 };
+        for f in &FACES {
+            let axis = (0..3).find(|&i| f.n[i] != 0).unwrap();
+            let out = if f.n[axis] > 0 { hi[axis] >= 1.0 } else { lo[axis] <= 0.0 };
+            if out && blocks::is_opaque(w.get(x + f.n[0], y + f.n[1], z + f.n[2])) {
+                continue;
+            }
+            let name = if b.tex[f.s].is_empty() { def.faces[f.s] } else { b.tex[f.s] };
+            let [u0, v0, u1, v1] = BlockAtlas::uv(atlas.tile(name));
+            // where each corner is in the block, and the UV a full block's
+            // face would have there (corner k of a full face has these)
+            let unit = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+            let local = f.c.map(|c| Vec3::new([lo.x, hi.x][c[0] as usize], [lo.y, hi.y][c[1] as usize], [lo.z, hi.z][c[2] as usize]));
+            let uvs = local.map(|p| {
+                let mut uv = [0.0f32; 2];
+                for (k, c) in f.c.iter().enumerate() {
+                    let wgt: f32 = (0..3).filter(|&i| i != axis).map(|i| if c[i] == 1 { p[i] } else { 1.0 - p[i] }).product();
+                    uv[0] += wgt * unit[k][0];
+                    uv[1] += wgt * unit[k][1];
+                }
+                [u0 + (u1 - u0) * uv[0], v0 + (v1 - v0) * uv[1]]
+            });
+            let down = if f.n[1] < 0 { 0.6 } else { 1.0 };
+            let tint = local.map(|p| {
+                let l = if b.glow { 1.0 } else { down * (0.62 + 0.38 * p.y) };
+                [l, l, l, 1.0]
+            });
+            layers[layer].quad_uv(local.map(|p| (o + p).into()), f.n.map(|v| v as f32), uvs, tint, false);
+        }
+    }
+}
+
 /// Leaf fins: two sheets of leaves standing out of a leaf block's open face,
 /// crossed and turned at random, so a canopy's outline is ragged clumps of
 /// leaves rather than the edge of a cube.
@@ -454,6 +507,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             false,
                         );
                     }
+                    Shape::Model => model(&mut layers, w, atlas, x, y, z, id),
                     Shape::Cross => {
                         varies = true;
                         let rect = BlockAtlas::uv(atlas.tile(def.faces[1]));
@@ -469,6 +523,21 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                         let (cx, cz) = (fx + 0.5 + ox, fz + 0.5 + oz);
                         // darker where the stems meet the ground
                         let shade = [0.7, 0.7, 1.0, 1.0];
+                        if matches!(id, WHEAT | CARROTS) {
+                            // crops grow in rows: four sheets in a #, square to the field
+                            let tall = if id == WHEAT { 0.95 + h * 0.15 } else { 0.55 + h * 0.1 };
+                            let up = [0.0, 1.0, 0.0];
+                            for k in 0..4 {
+                                let at = if k % 2 == 0 { 0.25 } else { 0.75 };
+                                let (a, b) = if k < 2 { ([fx + at, fy, fz], [fx + at, fy, fz + 1.0]) } else { ([fx, fy, fz + at], [fx + 1.0, fy, fz + at]) };
+                                let q = [a, b, [b[0], fy + tall, b[2]], [a[0], fy + tall, a[2]]];
+                                layers[3].quad(q, up, rect, shade, false);
+                                layers[3].sway_top(WIND * tall * 0.05);
+                                layers[3].quad([q[1], q[0], q[3], q[2]], up, rect, shade, false);
+                                layers[3].sway_top(WIND * tall * 0.05);
+                            }
+                            continue;
+                        }
                         let sway = WIND * tall * if id == BUSH { 0.035 } else if id == FERN { 0.06 } else { 0.1 };
                         for k in 0..sheets {
                             let ang = a0 + k as f32 * PI / sheets as f32;

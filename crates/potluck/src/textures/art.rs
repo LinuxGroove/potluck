@@ -12,6 +12,8 @@
 use bevy::math::Vec2;
 
 use super::{hex, Tex, ART};
+
+mod props;
 use crate::noise::{seed_of, Rng};
 
 const N: i32 = ART as i32;
@@ -688,4 +690,7 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
         ("wool_yellow", wool("wool_yellow", WOOL_YELLOW)),
         ("bedrock", bedrock()),
     ]
+    .into_iter()
+    .chain(props::tiles())
+    .collect()
 }

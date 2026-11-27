@@ -380,6 +380,52 @@ fn far_chunks_keep_fewer_tufts_and_keep_still() {
     assert_eq!(Detail::of(IVec3::new(2, 1, 2), at + Vec3::new(300.0, 0.0, 0.0), Some(Detail::Near)), Detail::Distant);
 }
 
+#[test]
+fn every_block_has_its_textures() {
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    for b in crate::blocks::BLOCKS.iter().skip(1) {
+        for name in b.faces.iter().chain(b.model.iter().flat_map(|c| c.tex.iter())).filter(|n| !n.is_empty()) {
+            assert!(atlas.has(name), "{} has no {name} texture", b.name);
+        }
+    }
+}
+
+#[test]
+fn models_are_boxes_that_join_their_neighbours() {
+    use crate::blocks::*;
+    use crate::mesh::{Detail, COVER};
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let quads = |w: &Voxels, layer: usize| {
+        let m = crate::mesh::mesh_chunk(w, &atlas, IVec3::ZERO, crate::mesh::Cover::default(), Detail::Near);
+        m.layers.into_iter().nth(layer).unwrap().into_mesh(false).count_vertices() / 4
+    };
+    // two columns share a shaft: no capital and base where they meet, only
+    // at the foot and the top
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), COLUMN);
+    w.set(IVec3::new(4, 5, 4), COLUMN);
+    let m = crate::mesh::mesh_chunk(&w, &atlas, IVec3::ZERO, crate::mesh::Cover::default(), Detail::Near);
+    let mesh = m.layers.into_iter().next().unwrap().into_mesh(false);
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!() };
+    let wide: Vec<f32> = pos.iter().filter(|p| (p[0] - (4.0 + 1.0 / 16.0)).abs() < 1e-4).map(|p| p[1]).collect();
+    assert!(!wide.is_empty() && wide.iter().all(|y| *y <= 4.0 + 3.0 / 16.0 + 1e-4 || *y >= 5.0 + 13.0 / 16.0 - 1e-4), "{wide:?}");
+    // a candle's wax is solid, its flame glows on its own
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), CANDLE);
+    assert_eq!(quads(&w, 4), 6, "the flame is one box");
+    assert!(quads(&w, 0) > 0);
+    assert_eq!(quads(&w, COVER), 0);
+    assert!(!is_solid(CANDLE) && is_solid(TABLE) && !is_opaque(TABLE));
+    // a fence reaches for the fence beside it and not elsewhere
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), FENCE);
+    let post = quads(&w, 0);
+    w.set(IVec3::new(5, 4, 4), FENCE);
+    assert_eq!(quads(&w, 0), post * 2 + 4 * 6, "two posts, a pair of rails each toward the other");
+}
+
 // ---------- the market, from the game ----------
 
 #[test]

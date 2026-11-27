@@ -150,6 +150,8 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
     let glow = StandardMaterial {
         emissive_texture: Some(atlas.glow.clone()),
         emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * if rt.0 { 2400.0 } else { 600.0 },
+        // a flame's box shows only the flame
+        alpha_mode: AlphaMode::Mask(0.5),
         ..solid.clone()
     };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
@@ -411,7 +413,19 @@ pub fn sky(
     let _ = PI;
 }
 
-/// Real lights for the lanterns nearest the player; the rest just glow.
+/// How bright a glowing block's light is (a lantern's is 1), how high in the
+/// block it sits and its colour.
+fn lamp(id: crate::blocks::BlockId) -> (f32, f32, Color) {
+    use crate::blocks::*;
+    match id {
+        CANDLE => (0.22, 0.6, Color::srgb(1.0, 0.74, 0.42)),
+        BRAZIER => (1.6, 0.9, Color::srgb(1.0, 0.6, 0.28)),
+        _ => (1.0, 0.5, Color::srgb(1.0, 0.78, 0.48)),
+    }
+}
+
+/// Real lights for the lanterns, candles and braziers nearest the player;
+/// the rest just glow.
 pub fn lanterns(
     mut commands: Commands,
     voxels: Res<Voxels>,
@@ -433,13 +447,16 @@ pub fn lanterns(
     let lumens = 40_000.0 + 260_000.0 * night;
     let mut have: Vec<_> = lights.iter_mut().collect();
     for (i, p) in near.iter().enumerate() {
-        let at = p.as_vec3() + Vec3::splat(0.5);
+        let (k, high, color) = lamp(voxels.at(*p));
+        let at = p.as_vec3() + Vec3::new(0.5, high, 0.5);
         if let Some((_, t, l)) = have.get_mut(i) {
             t.translation = at;
-            l.intensity = lumens;
+            l.intensity = lumens * k;
+            l.color = color;
+            l.range = 14.0 * k.sqrt().max(0.5);
         } else {
             commands.spawn((
-                PointLight { intensity: lumens, range: 14.0, color: Color::srgb(1.0, 0.78, 0.48), shadow_maps_enabled: false, ..default() },
+                PointLight { intensity: lumens * k, range: 14.0 * k.sqrt().max(0.5), color, shadow_maps_enabled: false, ..default() },
                 Transform::from_translation(at),
                 LanternLight,
             ));
