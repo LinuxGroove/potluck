@@ -324,3 +324,19 @@ fn every_baked_block_texture_is_read() {
     assert_eq!(maps.len(), crate::textures::BAKED.len(), "some baked block textures couldn't be read");
     assert!(size.is_power_of_two() && size >= crate::textures::TILE);
 }
+
+#[test]
+fn grass_grows_tufts_that_sway_and_hangs_over_edges() {
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    let (x, z) = (world::START.x as i32, world::START.z as i32);
+    let c = IVec3::new(x, w.top(x, z), z) / world::CHUNK;
+    let thick = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), true);
+    let bare = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover { density: 0.0, shadows: false }, true);
+    let cover = thick.layers.into_iter().nth(crate::mesh::COVER).unwrap();
+    let lips = bare.layers.into_iter().nth(crate::mesh::COVER).unwrap();
+    assert!(!lips.is_empty(), "grass hangs over the edges of terraces even with no tufts");
+    assert!(cover.into_mesh(false).has_morph_targets(), "tufts sway in the wind");
+    assert!(!lips.into_mesh(false).has_morph_targets(), "grass lips don't");
+}

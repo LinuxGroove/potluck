@@ -34,6 +34,8 @@ pub const FLOWER_WHITE: BlockId = 25;
 pub const FLOWER_VIOLET: BlockId = 26;
 pub const GLASS: BlockId = 27;
 pub const BEDROCK: BlockId = 28;
+pub const FERN: BlockId = 29;
+pub const BUSH: BlockId = 30;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shape {
@@ -92,6 +94,8 @@ pub static BLOCKS: &[Block] = &[
     b("Violet flower", ["flower_violet", "flower_violet", "flower_violet"], Shape::Cross, 0.0),
     b("Glass", ["glass", "glass", "glass"], Shape::Cutout, 0.3),
     b("Bedrock", ["bedrock", "bedrock", "bedrock"], Shape::Solid, -1.0),
+    b("Fern", ["fern", "fern", "fern"], Shape::Cross, 0.0),
+    b("Bush", ["bush", "bush", "bush"], Shape::Cross, 0.1),
 ];
 
 pub fn block(id: BlockId) -> &'static Block {

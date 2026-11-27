@@ -34,8 +34,10 @@ const ROUGH: f32 = 0.92;
 // pub const BAKED: &[(&str, &[u8])]: each baked map's file name and PNG
 include!(concat!(env!("OUT_DIR"), "/baked_blocks.rs"));
 
-/// One drawn texture: colours with alpha, and a height for the normal map.
+/// One drawn texture: colours with alpha, and a height for the normal map,
+/// `size` px square.
 struct Tex {
+    size: usize,
     rgba: Vec<[f32; 4]>,
     height: Vec<f32>,
     bump: f32,
@@ -105,7 +107,187 @@ fn make(name: &str, bump: f32, mut f: impl FnMut(f32, f32, &mut Rng) -> ([f32; 4
             height.push(h);
         }
     }
-    Tex { rgba, height, bump, glow: false }
+    Tex { size: TILE, rgba, height, bump, glow: false }
+}
+
+/// New art is drawn at 64 px (the stylised look Ken picked) by stamping
+/// shapes: blades, leaves, petals. Row 0 is the top of a plant.
+const ART: usize = 64;
+
+struct Canvas {
+    rgba: Vec<[f32; 4]>,
+    height: Vec<f32>,
+}
+
+impl Canvas {
+    fn new() -> Self {
+        Canvas { rgba: vec![[0.0; 4]; ART * ART], height: vec![0.0; ART * ART] }
+    }
+
+    /// Fills the texels whose middles are within `r` of `(x, y)`.
+    fn dot(&mut self, x: f32, y: f32, r: f32, c: [f32; 3], h: f32) {
+        let (x0, x1) = ((x - r).floor().max(0.0) as usize, ((x + r).ceil() as usize).min(ART - 1));
+        let (y0, y1) = ((y - r).floor().max(0.0) as usize, ((y + r).ceil() as usize).min(ART - 1));
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let (dx, dy) = (px as f32 + 0.5 - x, py as f32 + 0.5 - y);
+                if dx * dx + dy * dy <= r * r {
+                    self.rgba[py * ART + px] = [c[0], c[1], c[2], 255.0];
+                    self.height[py * ART + px] = h;
+                }
+            }
+        }
+    }
+
+    /// A curved stroke from `a` to `b` bending through `m`, thinning from
+    /// `r0` to `r1`, its colour going from `c0` to `c1`.
+    fn stroke(&mut self, a: Vec2, m: Vec2, b: Vec2, (r0, r1): (f32, f32), c0: [f32; 3], c1: [f32; 3]) {
+        let steps = ((a.distance(m) + m.distance(b)) * 3.0) as usize + 2;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let p = a.lerp(m, t).lerp(m.lerp(b, t), t);
+            let c = [c0[0] + (c1[0] - c0[0]) * t, c0[1] + (c1[1] - c0[1]) * t, c0[2] + (c1[2] - c0[2]) * t];
+            self.dot(p.x, p.y, r0 + (r1 - r0) * t, c, 0.3 + 0.7 * t);
+        }
+    }
+
+    fn tex(self, bump: f32) -> Tex {
+        Tex { size: ART, rgba: self.rgba, height: self.height, bump, glow: false }
+    }
+}
+
+fn shade(c: [f32; 3], k: f32) -> [f32; 3] {
+    [c[0] * k, c[1] * k, c[2] * k]
+}
+
+/// Grass blades from the bottom edge: `n` of them, `tall` (min, max) px.
+fn blades(cv: &mut Canvas, r: &mut Rng, n: usize, tall: (f32, f32), pal: &[u32]) -> Vec<Vec2> {
+    let mut tips = Vec::new();
+    for _ in 0..n {
+        let bx = 3.0 + r.next() * 58.0;
+        let h = tall.0 + (tall.1 - tall.0) * r.next().powf(1.4);
+        let lean = (r.next() - 0.5) * 22.0 * (h / tall.1);
+        let a = Vec2::new(bx, 64.5);
+        let b = Vec2::new(bx + lean, 64.0 - h);
+        let m = Vec2::new(bx + lean * 0.15, 64.0 - h * 0.55);
+        let k = 0.85 + r.next() * 0.3;
+        cv.stroke(a, m, b, (1.35 + r.next() * 0.4, 0.45), shade(ramp(pal, 0.1), k), shade(ramp(pal, 0.75 + r.next() * 0.25), k));
+        tips.push(b);
+    }
+    tips
+}
+
+fn tuft(name: &str, n: usize, tall: (f32, f32), flowers: usize, seeds: usize) -> Tex {
+    let mut r = Rng::new(seed_of(name));
+    let mut cv = Canvas::new();
+    let tips = blades(&mut cv, &mut r, n, tall, TUFT);
+    for tip in tips.iter().take(seeds) {
+        // a seed head: a little oval of straw at the blade's tip
+        for i in 0..5 {
+            let c = ramp(&[0xa88d4c, 0xc9b77a, 0xe0d29a], 0.3 + r.next() * 0.6);
+            cv.dot(tip.x, tip.y + i as f32 * 1.2, 1.3, c, 1.0);
+        }
+    }
+    let petals = [0xf6d24a, 0xf2efe6, 0xe88ab0, 0x9fbdf2, 0xf08a5c];
+    for tip in tips.iter().rev().take(flowers) {
+        let c = hex(petals[(r.next() * petals.len() as f32) as usize % petals.len()]);
+        for k in 0..5 {
+            let a = k as f32 * 1.2566 + r.next() * 0.3;
+            cv.dot(tip.x + a.cos() * 2.0, tip.y + a.sin() * 2.0, 1.4, shade(c, 0.9 + r.next() * 0.15), 1.0);
+        }
+        cv.dot(tip.x, tip.y, 1.0, hex(0xf0b93a), 1.0);
+    }
+    cv.tex(1.0)
+}
+
+/// Leaves for a leaf block: little pointed leaves, each with a dark edge on
+/// its lower side, lighter towards the top, with gaps to see the leaves
+/// behind through. `n` leaves `len` px long; pine needles are thin.
+fn leaf_art(name: &str, pal: &[u32], n: usize, len: (f32, f32), thin: bool) -> Tex {
+    let mut r = Rng::new(seed_of(name));
+    let mut cv = Canvas::new();
+    let w = if thin { (0.9, 0.35) } else { (2.0, 0.5) };
+    for _ in 0..n {
+        let p = Vec2::new(r.next() * 64.0, r.next() * 64.0);
+        let d = Vec2::from_angle(if thin { -1.2 + r.next() * 0.6 } else { r.next() * std::f32::consts::TAU }) * (len.0 + (len.1 - len.0) * r.next()) * 0.5;
+        let bend = Vec2::new(-d.y, d.x) * (r.next() - 0.5) * 0.5;
+        let light = (0.2 + 0.65 * r.next() + (32.0 - p.y) / 160.0).clamp(0.0, 1.0);
+        let off = Vec2::new(0.8, 1.0);
+        cv.stroke(p - d + off, p + bend + off, p + d + off, w, shade(ramp(pal, 0.0), 0.7), shade(ramp(pal, 0.05), 0.7));
+        cv.stroke(p - d, p + bend, p + d, w, ramp(pal, light * 0.85), ramp(pal, light));
+    }
+    cv.tex(2.0)
+}
+
+/// Grass hanging over the top edge of a block's side, and down a little way.
+fn grass_lip() -> Tex {
+    let mut r = Rng::new(seed_of("grass_lip"));
+    let mut cv = Canvas::new();
+    for x in 0..ART {
+        for y in 0..3 {
+            cv.dot(x as f32 + 0.5, y as f32 + 0.5, 0.6, ramp(GRASS, 0.55 + r.next() * 0.2), 1.0);
+        }
+    }
+    for _ in 0..70 {
+        let x = r.next() * 64.0;
+        let len = 4.0 + 22.0 * r.next().powf(1.8);
+        let sway = (r.next() - 0.5) * 6.0;
+        let a = Vec2::new(x, 1.0);
+        let b = Vec2::new(x + sway, 1.0 + len);
+        cv.stroke(a, a.lerp(b, 0.5) + Vec2::new(sway * 0.3, 0.0), b, (1.5, 0.5), ramp(GRASS, 0.6), ramp(GRASS, 0.25 + r.next() * 0.2));
+    }
+    cv.tex(1.0)
+}
+
+/// A fern: fronds arching out from the middle, with leaflets down each side.
+fn fern() -> Tex {
+    let mut r = Rng::new(seed_of("fern"));
+    let mut cv = Canvas::new();
+    for i in 0..7 {
+        let side = i as f32 / 6.0 * 2.0 - 1.0;
+        let a = Vec2::new(32.0 + side * 3.0, 64.0);
+        let b = Vec2::new(32.0 + side * 30.0, 14.0 + side.abs() * 26.0 + r.next() * 6.0);
+        let m = Vec2::new(32.0 + side * 8.0, 6.0 + side.abs() * 8.0);
+        let k = 0.85 + r.next() * 0.3;
+        let steps = 22;
+        for j in 0..=steps {
+            let t = j as f32 / steps as f32;
+            let p = a.lerp(m, t).lerp(m.lerp(b, t), t);
+            let q = a.lerp(m, t + 0.02).lerp(m.lerp(b, t + 0.02), t + 0.02);
+            let along = (q - p).normalize_or_zero();
+            let across = Vec2::new(-along.y, along.x);
+            let len = 7.0 * (1.0 - t).powf(0.6) * t.powf(0.3) + 1.0;
+            let c = shade(ramp(LEAF, 0.35 + t * 0.5), k);
+            cv.dot(p.x, p.y, 0.9, shade(c, 0.8), 0.5);
+            if j > 2 {
+                for s in [-1.0, 1.0] {
+                    let tip = p + across * len * s + along * len * 0.5;
+                    cv.stroke(p, p.lerp(tip, 0.5) + along, tip, (1.2, 0.5), c, shade(c, 1.1));
+                }
+            }
+        }
+    }
+    cv.tex(1.5)
+}
+
+/// A bush: a dome of small leaves, darker underneath and inside.
+fn bush() -> Tex {
+    let mut r = Rng::new(seed_of("bush"));
+    let mut cv = Canvas::new();
+    for i in 0..420 {
+        // later leaves land on top, so the outside ones come last
+        let out = (i as f32 / 420.0).sqrt();
+        let ang = r.next() * std::f32::consts::TAU;
+        let (x, y) = (32.0 + ang.cos() * 29.0 * out, 38.0 + ang.sin() * 25.0 * out);
+        if y > 63.0 {
+            continue;
+        }
+        let light = (0.25 + out * 0.45 + (38.0 - y) / 70.0 + (r.next() - 0.5) * 0.25).clamp(0.0, 1.0);
+        let dir = Vec2::from_angle(r.next() * std::f32::consts::TAU) * 3.0;
+        let p = Vec2::new(x, y);
+        cv.stroke(p - dir, p, p + dir, (1.6, 0.8), ramp(LEAF, light * 0.8), ramp(LEAF, light));
+    }
+    cv.tex(2.0)
 }
 
 /// Like [`make`], with the height taken from the colour's brightness.
@@ -117,6 +299,9 @@ fn make_lum(name: &str, bump: f32, mut f: impl FnMut(f32, f32, &mut Rng) -> [f32
 }
 
 const GRASS: &[u32] = &[0x2a5a24, 0x376f2a, 0x4a8731, 0x5f9c39, 0x78b146];
+/// Ground cover, a little lighter than the ground so the tips catch the sun
+/// (the mesh tints each tuft, lush or dry, see `mesh::ground_cover`).
+const TUFT: &[u32] = &[0x274f20, 0x3a7429, 0x559336, 0x76b047, 0x9bc860];
 const DIRT: &[u32] = &[0x4a3020, 0x664330, 0x7d563b, 0x936948];
 const STONE: &[u32] = &[0x55595f, 0x6b7077, 0x80868c, 0x979ca1, 0xaeb2b5];
 const SAND: &[u32] = &[0xb19d6b, 0xbfac7a, 0xcab989, 0xd3c59b];
@@ -304,13 +489,25 @@ fn draw_all() -> Vec<(&'static str, Tex)> {
             NONE
         })));
     }
+    // ground cover and undergrowth, at 64 px
+    t.push(("tuft", tuft("tuft", 34, (16.0, 46.0), 0, 0)));
+    t.push(("tuft_tall", tuft("tuft_tall", 22, (30.0, 62.0), 0, 6)));
+    t.push(("tuft_flowers", tuft("tuft_flowers", 26, (18.0, 50.0), 7, 0)));
+    t.push(("grass_lip", grass_lip()));
+    t.push(("fern", fern()));
+    t.push(("bush", bush()));
+    // leaves at 64 px, in place of the baked ones (see `build`)
+    t.retain(|(n, _)| !matches!(*n, "leaves" | "pine" | "birch_leaves"));
+    t.push(("leaves", leaf_art("leaves", LEAF, 330, (5.0, 8.0), false)));
+    t.push(("birch_leaves", leaf_art("birch_leaves", BIRCH, 360, (4.0, 6.0), false)));
+    t.push(("pine", leaf_art("pine", PINE, 700, (6.0, 10.0), true)));
     t
 }
 
 fn normal_of(t: &Tex) -> Vec<[f32; 4]> {
-    let n = TILE as i32;
+    let n = t.size as i32;
     let h = |x: i32, y: i32| t.height[(y.rem_euclid(n) * n + x.rem_euclid(n)) as usize];
-    let mut out = Vec::with_capacity(TILE * TILE);
+    let mut out = Vec::with_capacity(t.size * t.size);
     for y in 0..n {
         for x in 0..n {
             let dx = (h(x + 1, y) - h(x - 1, y)) * t.bump;
@@ -407,10 +604,37 @@ struct Maps {
     rough: Vec<[f32; 4]>,
 }
 
-/// A drawn tile's texels, scaled up to `full` px by repeating them.
-fn upscale(src: &[[f32; 4]], full: usize) -> Vec<[f32; 4]> {
-    let k = full / TILE;
-    (0..full * full).map(|i| src[(i / full / k) * TILE + (i % full) / k]).collect()
+/// A drawn tile's texels (`n` px square) at `full` px: repeated to scale up,
+/// averaged to scale down.
+fn resample(src: &[[f32; 4]], n: usize, full: usize) -> Vec<[f32; 4]> {
+    if full >= n {
+        let k = full / n;
+        return (0..full * full).map(|i| src[(i / full / k) * n + (i % full) / k]).collect();
+    }
+    let k = n / full;
+    (0..full * full)
+        .map(|i| {
+            let (x, y) = (i % full, i / full);
+            let (mut c, mut a) = ([0.0f32; 4], 0.0);
+            for sy in 0..k {
+                for sx in 0..k {
+                    let p = src[(y * k + sy) * n + x * k + sx];
+                    let w = p[3] / 255.0;
+                    for j in 0..3 {
+                        c[j] += p[j] * w;
+                    }
+                    a += w;
+                }
+            }
+            if a > 0.0 {
+                for v in c.iter_mut().take(3) {
+                    *v /= a;
+                }
+            }
+            c[3] = a / (k * k) as f32 * 255.0;
+            c
+        })
+        .collect()
 }
 
 /// The baked maps in `BAKED`, decoded: name (with its `_n`, `_r` or `_a`) to
@@ -448,7 +672,9 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
     let (baked, full) = baked();
     let maps: Vec<Maps> = drawn
         .iter()
-        .map(|(name, t)| match baked.get(*name).filter(|_| !t.glow) {
+        // bakes take the place of the old 32 px drawings, but not of glowing
+        // tiles or of the 64 px art in the style Ken picked
+        .map(|(name, t)| match baked.get(*name).filter(|_| !t.glow && t.size < ART) {
             Some(color) => {
                 let mut color = color.clone();
                 // leaves: the see-through map sets alpha
@@ -464,11 +690,11 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
                     .unwrap_or_else(|| vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full]);
                 Maps { color, normal, rough }
             }
-            None => Maps { color: upscale(&t.rgba, full), normal: upscale(&normal_of(t), full), rough: vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full] },
+            None => Maps { color: resample(&t.rgba, t.size, full), normal: resample(&normal_of(t), t.size, full), rough: vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full] },
         })
         .collect();
     if full > TILE {
-        info!("Block textures at {full} px ({} baked)", drawn.iter().filter(|(n, t)| !t.glow && baked.contains_key(*n)).count());
+        info!("Block textures at {full} px ({} baked)", drawn.iter().filter(|(n, t)| !t.glow && t.size < ART && baked.contains_key(*n)).count());
     }
     // Glowing tiles go at the far end of the atlas with empty tiles beside
     // them: past the smallest mip, a far face's edge can still reach its

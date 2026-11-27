@@ -166,7 +166,11 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
         cull_mode: None,
         ..default()
     };
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow)] }
+    // under water, the corners of drawn blocks darken with depth (`mesh::UNDERWATER`);
+    // ray traced meshes carry no colours, so there the material takes the
+    // colour of a block or two of water instead of showing bare sand
+    let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)] }
 }
 
 /// The open sea round the island, out past the far end of the view: a ring of
@@ -262,26 +266,33 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         air.ground_albedo = Vec3::new(0.02, 0.07, 0.11);
         commands.spawn(air);
     }
+    // for measuring what High costs: POTLUCK_HIGH_OFF=ssao,contact,haze,taa,shadowmap
+    let off = std::env::var("POTLUCK_HIGH_OFF").unwrap_or_default();
+    let on = |what: &str| !off.split(',').any(|o| o.trim() == what);
     if high {
         // TAA in place of MSAA: SSAO and contact shadows need it, and it
         // smooths the shadow filter and the haze's ray marching too
-        commands.entity(cam).insert((
-            Msaa::Off,
-            TemporalAntiAliasing::default(),
-            ShadowFilteringMethod::Temporal,
-            ScreenSpaceAmbientOcclusion {
+        if on("taa") {
+            commands.entity(cam).insert((Msaa::Off, TemporalAntiAliasing::default(), ShadowFilteringMethod::Temporal));
+        }
+        if on("ssao") {
+            commands.entity(cam).insert(ScreenSpaceAmbientOcclusion {
                 quality_level: if ultra { ScreenSpaceAmbientOcclusionQualityLevel::Ultra } else { ScreenSpaceAmbientOcclusionQualityLevel::High },
                 ..default()
-            },
-            ContactShadows::default(),
-            VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 128 } else { 64 } },
-        ));
-        commands.spawn((
-            FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
-            Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
-            Haze,
-        ));
-        commands.insert_resource(DirectionalLightShadowMap { size: if ultra { 8192 } else { 4096 } });
+            });
+        }
+        if on("contact") {
+            commands.entity(cam).insert(ContactShadows::default());
+        }
+        if on("haze") {
+            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 128 } else { 64 } });
+            commands.spawn((
+                FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
+                Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
+                Haze,
+            ));
+        }
+        commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 2048 } else if ultra { 8192 } else { 4096 } });
     }
     let cascades = CascadeShadowConfigBuilder {
         num_cascades: if medium { 4 } else { 2 },
@@ -306,13 +317,13 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         ));
     }
     let mut sun = commands.spawn((
-        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high, illuminance: lux::RAW_SUNLIGHT, ..default() },
+        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high && on("contact"), illuminance: lux::RAW_SUNLIGHT, ..default() },
         cascades,
         SunDisk::EARTH,
         Transform::default(),
         Sun,
     ));
-    if high {
+    if high && on("haze") {
         sun.insert(VolumetricLight);
     }
     commands.insert_resource(ClearColor(Color::srgb(0.5, 0.68, 0.9)));
