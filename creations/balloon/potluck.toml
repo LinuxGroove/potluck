@@ -11,7 +11,7 @@ world = "0.9"
 tweak = "0.1"
 input = "0.1"
 ui = "0.1"
-sound = "0.1"
+sound = "0.2"
 store = "0.1"
 
 [actions.burner]
@@ -23,3 +23,24 @@ keys = "Space"
 name = "Vent"
 pad = "X"
 keys = "F"
+
+# the burner's roar: a flickering rush of noise over a low rumble
+[sounds.burner]
+caption = "A burner roars"
+wave = "noise"
+pitch = [1400, 700]
+length = 1.1
+attack = 0.06
+decay = 0.7
+pulse = [13, 0.3]
+highpass = 150
+
+[[sounds.burner.layers]]
+wave = "saw"
+pitch = [62, 55]
+length = 1.0
+attack = 0.08
+decay = 0.6
+wobble = [9, 3]
+lowpass = 260
+gain = 0.6

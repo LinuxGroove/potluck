@@ -11,7 +11,7 @@ local world = require("@potluck/world@0.9")
 local tweak = require("@potluck/tweak")
 local input = require("@potluck/input@0.1")
 local ui = require("@potluck/ui@0.1")
-local sound = require("@potluck/sound@0.1")
+local sound = require("@potluck/sound@0.2")
 local store = require("@potluck/store")
 
 local knobs = tweak {
@@ -150,7 +150,7 @@ local function save()
 end
 
 local function roar(self)
-	sound.play("whoosh", { at = self, pitch = 0.55, volume = 0.6, caption = "A burner roars" })
+	sound.play("burner", { at = self, volume = 0.6 })
 end
 
 -- ---- filling up ----

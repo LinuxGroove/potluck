@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 10), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1), ("test", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 11), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -943,7 +943,84 @@ pub(crate) fn from_json(lua: &Lua, j: &serde_json::Value) -> mlua::Result<Value>
 
 const RESERVED: &[&str] = &["id", "position", "rider", "kind"];
 
-fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
+/// A part's `texture` from `world.model`: which model, texture and
+/// rectangles, and how far its colour is from the model's, as a tint.
+fn painted(t: &Table, color: Color) -> mlua::Result<crate::creatures::Painted> {
+    let file: String = t.get::<Option<String>>("file")?.ok_or_else(|| bad("a part's texture needs the model's file"))?;
+    let own = t.get::<Option<String>>("color")?.and_then(|c| parse_color(&c)).unwrap_or(color).to_srgba();
+    let now = color.to_srgba();
+    let tint = |a: f32, b: f32| if b < 0.02 { a.max(0.02) / 0.02 } else { a / b }.clamp(0.0, 4.0);
+    let mut faces = [None; 6];
+    if let Some(fs) = t.get::<Option<Table>>("faces")? {
+        for (i, name) in crate::creatures::FACES.iter().enumerate() {
+            if let Some(r) = fs.get::<Option<Vec<f32>>>(*name)? {
+                if r.len() == 4 {
+                    faces[i] = Some([r[0], r[1], r[2], r[3]].map(|x| x.clamp(0.0, 1.0)));
+                }
+            }
+        }
+    }
+    Ok(crate::creatures::Painted {
+        file,
+        texture: t.get::<Option<u32>>("index")?.unwrap_or(0),
+        faces,
+        tint: [tint(now.red, own.red), tint(now.green, own.green), tint(now.blue, own.blue)],
+        stamp: t.get::<Option<u32>>("stamp")?.unwrap_or(0),
+    })
+}
+
+/// `world.model(file, scale)`: a Blockbench model in the creation's folder as
+/// a body, the same list of boxes `world.creature`'s `body` takes, so code can
+/// change it before using it. What was left out goes to the log.
+fn model_body(lua: &Lua, models: &BTreeMap<String, String>, file: &str, scale: f32) -> mlua::Result<Table> {
+    let file = file.trim_start_matches("./");
+    if !file.ends_with(".bbmodel") {
+        return Err(bad(format!("world.model reads Blockbench models (.bbmodel), not {file}")));
+    }
+    let text = models.get(file).ok_or_else(|| bad(format!("there's no file called {file} in this creation")))?;
+    let (parts, notes) = crate::model::read(file, text, scale).map_err(bad)?;
+    if !notes.is_empty() {
+        let print: mlua::Function = lua.globals().get("print")?;
+        for n in notes {
+            print.call::<()>(n)?;
+        }
+    }
+    let stamp = crate::model::stamp(text);
+    let body = lua.create_table()?;
+    for p in parts {
+        let t = lua.create_table()?;
+        t.set(1, p.name)?;
+        t.set("size", vector(p.size))?;
+        t.set("at", vector(p.at))?;
+        let color = format!("#{:02x}{:02x}{:02x}", p.color[0], p.color[1], p.color[2]);
+        t.set("color", color.as_str())?;
+        // where its picture is in the model, for the games that draw it
+        if let Some((index, faces)) = p.picture {
+            let pic = lua.create_table()?;
+            pic.set("file", file)?;
+            pic.set("index", index)?;
+            pic.set("color", color.as_str())?;
+            pic.set("stamp", stamp)?;
+            let fs = lua.create_table()?;
+            for (name, rect) in crate::creatures::FACES.iter().zip(faces) {
+                if let Some(r) = rect {
+                    fs.set(*name, lua.create_sequence_from(r)?)?;
+                }
+            }
+            pic.set("faces", fs)?;
+            t.set("texture", pic)?;
+        }
+        for (key, on) in [("head", p.head), ("leg", p.leg), ("glow", p.glow)] {
+            if on {
+                t.set(key, true)?;
+            }
+        }
+        body.push(t)?;
+    }
+    Ok(body)
+}
+
+fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
     let name: String = def.get::<Option<String>>("name")?.ok_or_else(|| bad("a creature needs a name"))?;
     let mut parts = Vec::new();
     if let Some(body) = def.get::<Option<Table>>("body")? {
@@ -954,7 +1031,12 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
             let at = vec_of(&part.get::<Value>("at")?).unwrap_or(Vec3::ZERO).clamp(Vec3::splat(-8.0), Vec3::splat(8.0));
             let color = part.get::<Option<String>>("color")?.and_then(|c| parse_color(&c)).unwrap_or(Color::srgb(0.6, 0.6, 0.6));
             let glow = part.get::<Option<bool>>("glow")?.unwrap_or(false);
+            let paint = match part.get::<Option<Table>>("texture")? {
+                Some(t) => Some(Box::new(painted(&t, color)?)),
+                None => None,
+            };
             parts.push(Part {
+                paint,
                 name: pname,
                 size,
                 at,
@@ -963,7 +1045,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
                 head: part.get::<Option<bool>>("head")?.unwrap_or(false),
                 glow,
             });
-            if parts.len() >= 64 {
+            if parts.len() >= crate::model::MAX_PARTS {
                 break;
             }
         }
@@ -1002,7 +1084,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
         home,
         parts,
         behaviours: match def.get::<Option<Table>>("behaviours")? {
-            Some(t) => Some(crate::behaviours::parse(&t)?),
+            Some(t) => Some(crate::behaviours::parse(&t, own)?),
             None => None,
         },
     })
@@ -1056,6 +1138,7 @@ impl Vm {
             }
             Ok(VmState::Continue)
         });
+        let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
         let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, note_budget: NOTES_A_SECOND, ..default() }));
         let setup = || -> mlua::Result<(Table, Table, Table, Table)> {
@@ -1064,14 +1147,27 @@ impl Vm {
             let base = lua.create_table()?;
             let base_mt = lua.create_table()?;
             base_mt.set("__index", base.clone())?;
+            // world 0.11: Blockbench models as bodies
+            let models: Arc<BTreeMap<String, String>> = Arc::new(creation.files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).map(|(n, t)| (n.clone(), t.clone())).collect());
+            {
+                let models = models.clone();
+                world.set("model", lua.create_function(move |lua, (file, scale): (String, Option<f32>)| model_body(lua, &models, &file, scale.unwrap_or(1.0)))?)?;
+            }
             // world.creature: define a kind of creature
             {
                 let st = state.clone();
                 let base_mt = base_mt.clone();
+                let own = own.clone();
+                let models = models.clone();
                 world.set(
                     "creature",
-                    lua.create_function(move |_, def: Table| {
-                        let kind = parse_kind(&def)?;
+                    lua.create_function(move |lua, def: Table| {
+                        // body = "frog.bbmodel" is short for world.model("frog.bbmodel")
+                        if let Value::String(file) = def.get::<Value>("body")? {
+                            let body = model_body(lua, &models, &file.to_str()?, 1.0)?;
+                            def.set("body", body)?;
+                        }
+                        let kind = parse_kind(&def, &own)?;
                         def.set_metatable(Some(base_mt.clone()))?;
                         let mut s = st.lock().unwrap();
                         if s.kinds.iter().any(|(k, _)| k.name == kind.name) {
@@ -1448,14 +1544,14 @@ impl Vm {
                     })?,
                 )?;
             }
-            // sound 0.1: the game's sounds, by name, somewhere or for one player
+            // sound 0.1: the game's sounds, by name, somewhere or for one
+            // player; 0.2: and the creation's own, from potluck.toml
             let sound = lua.create_table()?;
             {
                 let options = sound_options;
-                let queue = |sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
-                    if crate::sound::caption_of(&name).is_none() {
-                        return Err(bad(format!("there's no sound called \"{name}\" (sound.names() lists them)")));
-                    }
+                let queue = move |own: &crate::sound::Own, sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
+                    let (name, own_caption) = own.resolve(&name).ok_or_else(|| bad(crate::sound::Own::unknown(&name)))?;
+                    let caption = caption.or(own_caption);
                     let mut w = w.lock().unwrap();
                     if w.sound_budget < 1.0 {
                         // too many at once: this one's skipped
@@ -1465,20 +1561,21 @@ impl Vm {
                     sh.lock().unwrap().sounds.push((who, crate::sound::Play { name, at, volume, pitch, caption }));
                     Ok(true)
                 };
-                let (sh, w) = (shared.clone(), waiting.clone());
+                let (sh, w, o) = (shared.clone(), waiting.clone(), own.clone());
                 sound.set(
                     "play",
-                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&sh, &w, None, name, options(opts)?))?,
+                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&o, &sh, &w, None, name, options(opts)?))?,
                 )?;
-                let (sh, w) = (shared.clone(), waiting.clone());
+                let (sh, w, o) = (shared.clone(), waiting.clone(), own.clone());
                 sound.set(
                     "play_for",
                     lua.create_function(move |_, (player, name, opts): (Value, String, Option<Table>)| {
                         let pid = pid_of(&player)?;
-                        queue(&sh, &w, Some(pid), name, options(opts)?)
+                        queue(&o, &sh, &w, Some(pid), name, options(opts)?)
                     })?,
                 )?;
-                sound.set("names", lua.create_function(|_, ()| Ok(crate::sound::SOUNDS.iter().map(|s| s.0).collect::<Vec<_>>()))?)?;
+                let o = own.clone();
+                sound.set("names", lua.create_function(move |_, ()| Ok(o.names()))?)?;
             }
             // net 0.1: messages to and from the creation's client half
             let net = lua.create_table()?;

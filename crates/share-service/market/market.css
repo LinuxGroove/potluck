@@ -129,3 +129,6 @@ pre.mono { white-space: pre-wrap; word-break: break-all; font-size: 13px; backgr
 .jam h2 { margin: 6px 0 4px; font-size: 26px; }
 .jam form { margin-top: 10px; }
 select { font: inherit; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+.inlist { list-style: none; padding: 0; margin: 0; font-size: 14px; }
+.inlist li { padding: 3px 0; }
+.model img.texture { image-rendering: pixelated; width: 256px; max-width: 100%; border-radius: 8px; background: repeating-conic-gradient(var(--chip) 0 25%, var(--card) 0 50%) 0 0 / 16px 16px; }

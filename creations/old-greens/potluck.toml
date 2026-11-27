@@ -1,0 +1,42 @@
+name = "Old Greens"
+by = "Potluck"
+kind = "world"
+about = "Three old greens lie in ruins around the island: one by the shore, one deep in the woods and one up on the heights. Each hearth has gone cold. Bring it a lantern and something from round about (sand, logs or stone) and use it to light it again, and it gives you something back. Light all three and the whole island hears of it."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.5"
+tweak = "0.1"
+ui = "0.1"
+sound = "0.2"
+store = "0.1"
+
+# a hearth catching: a rising chord over a rush of flame
+[sounds.relight]
+caption = "An Old Green is lit"
+wave = "triangle"
+notes = ["G4", "C5", "E5", "G5", "C6"]
+each = 0.13
+attack = 0.01
+decay = 0.25
+lowpass = 3500
+
+[[sounds.relight.layers]]
+wave = "noise"
+pitch = [400, 2200]
+length = 0.8
+attack = 0.3
+decay = 0.35
+gain = 0.45
+
+# a cold hearth, when you use it without what it wants
+[sounds.cold]
+caption = "The hearth is cold"
+wave = "sine"
+pitch = [180, 120]
+length = 0.5
+attack = 0.03
+decay = 0.2
+wobble = [6, 4]

@@ -6,25 +6,27 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 | File | What |
 |---|---|
-| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.3"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.1"` for sounds, `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
+| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.3"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.2"` for sounds (and `[sounds]` of its own), `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
 | `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder. It runs on the world's host, the only place the world changes |
 | `client.luau` | Only if it has a client half (`client = "client.luau"` in potluck.toml): code that runs on each player's own game, for what only they see. See `@potluck/net` |
+| `*.bbmodel` | Blockbench models, for creatures' bodies (`world.model`). Make them in Blockbench (any format; save the project, File > Save Model, with the texture kept inside it) |
 | `test.luau` | Only if it has tests of its own: cases that play in a world of their own, to check it does what it should. See `@potluck/test` |
 | `types/potluck.d.luau` | The API's types, for editors and AI helpers. Don't edit it: the game writes it |
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.10")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.10. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.11")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.11. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.10
+### `@potluck/world` 0.11
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
 - `world.creature(def)` defines a kind of creature and returns it, to add handlers to. `def` has:
   - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
-  - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z.
+  - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z. Or (new in 0.11) the name of a Blockbench model in the creation's folder, `body = "hedgehog.bbmodel"`: see `world.model`.
   - `size = { w, h, d }`: the box it bumps into things with (worked out from the body if left out)
   - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
+- `world.model(file, scale?)` (new in 0.11) reads a Blockbench model (a `.bbmodel` file in the creation's folder, saved from Blockbench) into the list of boxes a `body` is, so code can change it first (`part.color = knobs.fur`). Each cube is a part: 16 pixels to a block (`scale` 0.1 to 4 changes that), drawn with its faces' pictures from the model's texture, as Blockbench shows them. Its `color` is the colour most of its faces show (or its marker colour if it has no texture): change it and the picture takes on the new colour, keeping its detail. Its `texture` says where its picture is in the model; set it to nil to paint the part in its colour instead, like a part you write yourself. `head = true` if its name or a group it's in says "head", `leg = true` for "leg" and `glow = true` for "glow". The front is Blockbench's north (negative z). Bodies are upright boxes, so a turned cube is drawn upright and meshes are left out; the log says so. 64 cubes at most.
 - `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
 - `world.top(x, z)` is the height of the highest solid block. `world.find_block(pos, radius, name)` is the nearest block of that name within `radius` (up to 16), or nil.
 - `world.players()` is a list of players; `world.nearest_player(pos, radius?)` is the nearest one, or nil. A player is `{ id, name, position }`.
@@ -188,7 +190,7 @@ local Woolly = world.creature {
 - `flee_when_hit`: how far it runs from whoever hit it, straight away from them, at nearly twice its speed (true for 6, up to 16).
 - `hop_when_hit`: how high it hops when hit, as `self:hop` has it (true for 0.6, up to 3).
 - `chatter`: lines it says now and then (every 10 to 35 seconds) and when it's used, one at random, 80 letters each.
-- `sound`: one of the game's sounds (`sound.names()`), with its chatter, and when it's used or hit. It needn't `require` `@potluck/sound`.
+- `sound`: one of the game's sounds or the creation's own (`sound.names()`), with its chatter, and when it's used or hit. It needn't `require` `@potluck/sound`.
 - Behaviours act first, each tick and when it's used or hit, and then its own handlers run, so its code has the last word: a `tick` that calls `self:walk_to` takes it somewhere else, and a `hit` that calls `self:say` says something else. A creature being ridden doesn't follow anyone. Kinds that `become` one another can share one table of behaviours, or have their own.
 
 ### `@potluck/tweak` 0.1
@@ -284,12 +286,12 @@ end)
 - The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it (using one of its creatures, or a block it hears `block_used` for, lets it ask at once).
 - Lines and questions go when the creation stops, and a reload takes its questions away (its lines stay until it shows them again). A player who leaves takes theirs with them, and their `fn` isn't called.
 
-### `@potluck/sound` 0.1
+### `@potluck/sound` 0.2
 
-The game's sounds, by name. Every one is made by the game, so there's nothing to add to the creation's files.
+The game's sounds by name, and sounds of the creation's own. Every one is made from numbers on each player's game, so there are no sound files.
 
 ```luau
-local sound = require("@potluck/sound")
+local sound = require("@potluck/sound@0.2")
 sound.play("quack", { at = self })                         -- from a creature, for anyone near
 sound.play("chime", { at = world.spot("green"), volume = 0.5 })
 sound.play("fanfare")                                      -- nowhere in particular: everyone hears it
@@ -302,6 +304,46 @@ for _, name in sound.names() do print(name) end
 - A sound somewhere reaches players within 40 blocks, fading with distance. `sound.play_for(player, name, opts?)` plays it to one player only.
 - A creation plays at most 10 sounds a second; past that, `play` skips the sound and returns false.
 - Players who turn on **Subtitles for sounds** read each sound's caption, and which side it came from, so pick a caption that says what made it (`"Mossback hums"`).
+
+#### Sounds of its own (0.2)
+
+A creation makes its own sounds in `potluck.toml`, one table each, and plays them by name like the game's. Its own come first, so `[sounds.quack]` plays instead of the game's quack for this creation only.
+
+```toml
+[sounds.moo]
+caption = "Moo"            # what subtitles say (left out: the name, "Moo")
+wave = "saw"               # sine, triangle, saw, square or noise
+pitch = [220, 160]         # Hz, sliding from the first to the second (or one number)
+length = 0.9               # seconds, up to 3
+attack = 0.08              # seconds to full loudness
+decay = 0.35               # seconds for it to fade to a third (left out: a third of its length)
+wobble = [5, 12]           # vibrato: times a second, and Hz up and down
+pulse = [7, 0.3]           # tremolo: times a second, and how much quieter (0 to 1)
+lowpass = 1600             # takes the edge off: only what's below this many Hz
+# highpass = 200           # only what's above this many Hz
+
+[[sounds.moo.layers]]      # up to 3 more layers, mixed in
+wave = "noise"             # for noise, pitch is how bright it is
+pitch = 900
+length = 0.3
+at = 0.05                  # seconds after the start
+gain = 0.3                 # how loud against the rest (0 to 2)
+
+[sounds.tada]
+wave = "square"
+notes = ["C5", "E5", "G5", "-", "C6"]   # one after another; "-" is a rest, and numbers are Hz
+each = 0.12                # seconds a note (0.15 if left out); the length is notes times each
+lowpass = 3000
+```
+
+```luau
+sound.play("moo", { at = self })
+sound.play_for(player, "tada")
+```
+
+- Names are small letters, numbers and `_`, up to 24. A creation has 16 sounds of its own at most, each up to 3 seconds, with up to 3 layers and 32 notes a layer. Numbers out of range are brought into it.
+- Every sound is made as loud as the game's own, so set how loud it plays with `volume`. A sound is made once on each game and again only when its table changes, so tweak it, save, and play it again to hear the difference.
+- A table that can't be read (`piitch`, a wave that isn't one) stops the creation loading, and Look inside says which and why. The market checks them too.
 
 ### `@potluck/net` 0.1
 
@@ -357,13 +399,13 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.1
+### `@potluck/test` 0.2
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
 ```luau
-local test = require("@potluck/test@0.1")
-local world = require("@potluck/world@0.10")
+local test = require("@potluck/test@0.2")
+local world = require("@potluck/world@0.11")
 
 test.case("a basket put down fills up into a balloon", function()
 	local p = test.player("Ada")                    -- on the Green
@@ -386,7 +428,7 @@ end)
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
 - What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), and `test.hold(player, block)` for what's in their hand (nil for nothing). Placing, digging, using a block, pressing and answering pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
-- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, and `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil.
+- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2).
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
 

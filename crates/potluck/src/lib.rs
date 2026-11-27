@@ -18,8 +18,10 @@ pub mod keyboard;
 pub mod map;
 pub mod memory;
 pub mod mesh;
+pub mod model;
 pub mod net;
 pub mod noise;
+pub mod photos;
 pub mod player;
 pub mod render;
 pub mod script;
@@ -65,6 +67,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<sound::Heard>()
         .init_resource::<halves::Halves>()
         .init_resource::<chat::Chat>()
+        .init_resource::<photos::Photos>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)

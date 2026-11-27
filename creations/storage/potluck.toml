@@ -1,0 +1,14 @@
+name = "Storage"
+by = "Potluck"
+kind = "mod"
+about = "Crates and barrels keep what you put in them, in survival: use one holding something to put it in, or to take things out. Make a crate or a barrel at a workbench."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.8"
+tweak = "0.1"
+ui = "0.1"
+sound = "0.1"
+store = "0.1"

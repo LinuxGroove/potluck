@@ -1069,10 +1069,25 @@ fn every_base_creation_runs_and_answers_players() {
     scripts.set_day(0.0);
     scripts.set_pockets(7, true, &[], 0);
     run(&mut scripts, &mut voxels, &mut herd, 2.0);
+    // the Old Greens build their three ruins once; what's counted below is what changes after
+    let built = |scripts: &Scripts| {
+        let shared = scripts.shared.lock().unwrap();
+        // the store keeps a Luau list as {"#1": .., "#2": ..}
+        let sites: Vec<serde_json::Value> = shared.store.get("old-greens", "sites").and_then(|s| s.as_object()).map(|o| o.values().cloned().collect()).unwrap_or_default();
+        sites.len() == 3 && sites.iter().all(|s| s["built"] == serde_json::Value::Bool(true))
+    };
+    for _ in 0..30 {
+        if built(&scripts) {
+            break;
+        }
+        run(&mut scripts, &mut voxels, &mut herd, 1.0);
+    }
+    assert!(built(&scripts), "the Old Greens build their ruins");
+    voxels.changes.clear();
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
     // everything but the Gloomlings (only near survival players at night) and mods with no bodies
-    // (and balloons, which only come from a basket put down)
-    for c in base.iter().filter(|c| c.id != "gloomlings" && c.id != "balloon" && c.manifest.kind != "mod") {
+    // (and balloons, which only come from a basket put down, and the Old Greens, which only build)
+    for c in base.iter().filter(|c| !["gloomlings", "balloon", "old-greens"].contains(&c.id.as_str()) && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -1696,6 +1711,261 @@ end)
     assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
 
+/// A Blockbench model is a body (world 0.11): its cubes are parts, sized 16
+/// pixels to a block, coloured from its texture, with head and leg from its
+/// groups' names; what can't be a part is said in the log.
+#[test]
+fn a_blockbench_model_is_a_body() {
+    use crate::model::{read, MAX_PARTS};
+    home();
+    // a red pixel picture, 2 by 2, for a texture
+    let png = {
+        let mut img = image::RgbaImage::new(2, 2);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([200, 30, 30, 255]);
+        }
+        img.put_pixel(1, 1, image::Rgba([10, 10, 200, 255]));
+        let mut bytes = std::io::Cursor::new(vec![]);
+        img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+    };
+    let model = format!(
+        r#"{{
+        "resolution": {{"width": 16, "height": 16}},
+        "elements": [
+            {{"name": "body", "from": [-4, 2, -4], "to": [4, 10, 4], "uuid": "b", "color": 3,
+              "faces": {{"north": {{"uv": [0, 0, 16, 16], "texture": 0}}, "up": {{"uv": [0, 0, 8, 8], "texture": 0}}}}}},
+            {{"name": "snout", "from": [-1, 6, -8], "to": [1, 8, -4], "uuid": "s", "rotation": [0, 22.5, 0], "inflate": 0.5, "color": 1}},
+            {{"name": "paw", "from": [-3, 0, -3], "to": [-1, 2, -1], "uuid": "p"}},
+            {{"name": "tail", "type": "mesh", "uuid": "t"}},
+            {{"name": "ghost", "from": [0, 0, 0], "to": [1, 1, 1], "uuid": "g"}}
+        ],
+        "outliner": [
+            "b",
+            {{"uuid": "h", "children": ["s"]}},
+            {{"name": "Front legs", "children": ["p"]}},
+            {{"name": "hidden", "visibility": false, "children": ["g"]}}
+        ],
+        "groups": [{{"uuid": "h", "name": "Head"}}],
+        "textures": [{{"name": "skin", "uv_width": 16, "uv_height": 16, "source": "data:image/png;base64,{png}"}}]
+    }}"#
+    );
+    let (parts, notes) = read("m.bbmodel", &model, 1.0).unwrap();
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["body", "snout", "paw"], "cubes only, and nothing hidden");
+    let (body, snout, paw) = (&parts[0], &parts[1], &parts[2]);
+    assert_eq!((body.size, body.at), (Vec3::splat(0.5), Vec3::new(0.0, 0.375, 0.0)), "16 pixels to a block, at its middle");
+    assert_eq!(body.color, [200, 30, 30], "the most common colour on its faces");
+    assert!(snout.head && !snout.leg && paw.leg && !paw.head && !body.head, "head and legs from the groups' names, new and old style");
+    assert_eq!(snout.size, Vec3::new(3.0, 3.0, 5.0) / 16.0, "inflate grows it on every side");
+    assert_eq!((snout.color, paw.color), ([0xf2, 0xd1, 0x5b], [0x89, 0xc6, 0xe8]), "no texture: its marker colour");
+    assert!(notes.iter().any(|n| n.contains("1 turned cubes are drawn upright")) && notes.iter().any(|n| n.contains("1 meshes are left out")), "{notes:?}");
+    // the body's picture: its faces' rectangles on the texture, 0 to 1 across it
+    let (tex, faces) = body.picture.expect("the body has a picture");
+    assert_eq!((tex, faces[3], faces[4], faces[0]), (0, Some([0.0, 0.0, 1.0, 1.0]), Some([0.0, 0.0, 0.5, 0.5]), None), "north and up, nothing east");
+    assert!(snout.picture.is_none() && paw.picture.is_none(), "no faces, no picture");
+    // drawn: only the faces it has, each showing its rectangle as seen from outside
+    let mesh = crate::creatures::painted_mesh(Vec3::splat(2.0), &[None, None, None, Some([0.25, 0.5, 0.75, 1.0]), None, None], true);
+    let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION).and_then(|a| a.as_float3()).unwrap();
+    let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else { panic!("no UVs") };
+    assert_eq!(pos.len(), 4, "one face");
+    // seen from the north (looking south), its top left is east and up
+    let top_left = pos.iter().position(|p| p[0] > 0.0 && p[1] > 0.0).unwrap();
+    let bottom_right = pos.iter().position(|p| p[0] < 0.0 && p[1] < 0.0).unwrap();
+    assert_eq!((uv[top_left], uv[bottom_right]), ([0.25, 0.5], [0.75, 1.0]));
+    let (big, _) = read("m.bbmodel", &model, 2.0).unwrap();
+    assert_eq!(big[0].size, Vec3::ONE, "scaled");
+    // mistakes, in plain words
+    assert!(read("m.bbmodel", "{ nope", 1.0).unwrap_err().starts_with("m.bbmodel isn't a Blockbench model"));
+    assert!(read("m.bbmodel", "{}", 1.0).unwrap_err().contains("has no cubes"));
+    assert!(read("m.bbmodel", r#"{"elements": [{"type": "mesh"}]}"#, 1.0).unwrap_err().contains("no cubes in it to make a body"));
+    let many: Vec<String> = (0..70).map(|i| format!(r#"{{"name": "c{i}", "from": [0, 0, 0], "to": [1, 1, 1]}}"#)).collect();
+    let (parts, notes) = read("m.bbmodel", &format!(r#"{{"elements": [{}]}}"#, many.join(",")), 1.0).unwrap();
+    assert!(parts.len() == MAX_PARTS && notes.iter().any(|n| n.contains("6 are left out")), "{notes:?}");
+
+    // in a creation: body = "file" is short for world.model, and code can change the parts first
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let mut c = creation(
+        r##"
+local world = require("@potluck/world@0.11")
+local body = world.model("models/m.bbmodel")
+body[1].color = "#00ff00"
+world.creature { name = "Changed", count = 1, home = "paddock", body = body }
+world.creature { name = "Plain", count = 1, home = "paddock", body = "models/m.bbmodel" }
+for _, bad in { "models/none.bbmodel", "main.luau" } do
+    local ok, err = pcall(world.model, bad)
+    print(err)
+end
+"##,
+    );
+    c.files.insert("models/m.bbmodel".into(), model.clone());
+    scripts.start(&c, &mut herd).unwrap();
+    let mut voxels = world();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let of = |kind: &str| herd.bodies.values().find(|b| b.kind == kind).unwrap_or_else(|| panic!("a {kind}"));
+    let (changed, plain) = (of("Changed"), of("Plain"));
+    assert_eq!(plain.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["body", "snout", "paw"]);
+    assert!(plain.parts[1].head && plain.parts[2].leg && (plain.parts[0].color[0] - 200.0 / 255.0).abs() < 0.01, "{:?}", plain.parts);
+    assert!(changed.parts[0].color[1] > 0.99 && changed.parts[0].color[0] < 0.01, "the code's colour: {:?}", changed.parts[0].color);
+    // the picture goes with the part, with how far the code moved its colour
+    let pic = plain.parts[0].paint.as_ref().expect("a model's part keeps its picture");
+    assert_eq!((pic.file.as_str(), pic.texture, pic.stamp, pic.faces[3]), ("models/m.bbmodel", 0, crate::model::stamp(&model), Some([0.0, 0.0, 1.0, 1.0])));
+    assert!(pic.tint.iter().all(|t| (t - 1.0).abs() < 0.01), "as the model has it: {:?}", pic.tint);
+    let tint = changed.parts[0].paint.as_ref().unwrap().tint;
+    assert!(tint[0] < 0.01 && tint[1] == 4.0 && tint[2] < 0.01, "red to green: {tint:?}");
+    assert!(plain.parts[1].paint.is_none());
+    // and between games, as part of a body's look
+    let json = serde_json::to_string(&plain.parts).unwrap();
+    assert_eq!(serde_json::from_str::<Vec<creatures::Part>>(&json).unwrap(), plain.parts);
+    assert!(!serde_json::to_string(&plain.parts[1]).unwrap().contains("paint"), "nothing extra for a part with no picture");
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("drawn upright"), "notes go to the log: {log}");
+    assert!(log.contains("there's no file called models/none.bbmodel") && log.contains("reads Blockbench models (.bbmodel), not main.luau"), "{log}");
+}
+
+/// sound 0.2: a creation's own sounds, made from numbers in its
+/// potluck.toml, the same on every game; played by name before the game's,
+/// by behaviours too; and mistakes in them say what's wrong.
+#[test]
+fn a_creation_makes_sounds_of_its_own() {
+    use crate::sound::{make_own, note, own_recipe, recipe, Own, OWN_LONGEST, RATE, SOUNDS};
+    home();
+    let sounds = r#"
+[sounds.moo]
+wave = "saw"
+pitch = [220, 160]
+length = 0.9
+attack = 0.08
+wobble = [5, 12]
+pulse = [7, 0.3]
+lowpass = 1600
+
+[[sounds.moo.layers]]
+wave = "noise"
+pitch = 900
+length = 0.3
+at = 0.05
+gain = 0.3
+
+[sounds.tada]
+wave = "square"
+notes = ["C5", "E5", "G5", "-", "C6"]
+each = 0.12
+
+[sounds.quack]
+caption = "A duck of its own"
+wave = "triangle"
+pitch = 300
+length = 9
+"#;
+    let with = |toml: &str, code: &str| {
+        let mut c = creation(code);
+        let text = format!("{}\n[needs]\nsound = \"0.2\"\n{toml}", c.files["potluck.toml"]);
+        c.manifest = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        c.files.insert("potluck.toml".into(), text);
+        c
+    };
+    // notes by name
+    assert_eq!(note("A4"), Some(440.0));
+    assert!((note("C5").unwrap() - 523.25).abs() < 0.01 && (note("F#4").unwrap() - 369.99).abs() < 0.01 && (note("Bb3").unwrap() - 233.08).abs() < 0.01);
+    assert_eq!((note("-"), note("H2"), note("C12")), (Some(0.0), None, None));
+
+    // they're made the same every time, as loud as the game's, never too long
+    let c = with(sounds, "");
+    for (name, v) in &c.manifest.sounds {
+        let r = recipe(name, v).unwrap();
+        let key = format!("test/{name}");
+        let s = make_own(&r, &key);
+        let peak = s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(!s.is_empty() && s.len() <= (OWN_LONGEST * RATE as f32) as usize && peak > 0.2 && peak <= 0.8001 && s.iter().all(|x| x.is_finite()), "{name}: {} samples, peak {peak}", s.len());
+        assert_eq!(s, make_own(&r, &key), "{name} is the same every time");
+    }
+    let tada = recipe("tada", &c.manifest.sounds["tada"]).unwrap();
+    assert_eq!((tada.caption.as_str(), tada.layer.notes.len()), ("Tada", 5), "its caption is its name when it gives none");
+    assert!((make_own(&tada, "test/tada").len() as f32 / RATE as f32 - 0.6).abs() < 0.01, "five notes of 0.12 s");
+    assert_eq!(recipe("quack", &c.manifest.sounds["quack"]).unwrap().layer.length, OWN_LONGEST, "too long is brought down to the most");
+    // they're kept through a remix, which writes potluck.toml again
+    let again: Manifest = toml::from_str(&toml::to_string_pretty(&c.manifest).unwrap()).unwrap();
+    assert_eq!(again.sounds, c.manifest.sounds);
+
+    // played by name, its own first, as "creation/name" with its caption
+    let code = r##"
+local world = require("@potluck/world@0.10")
+local sound = require("@potluck/sound@0.2")
+local Cow = world.creature {
+	name = "Cow", count = 1, home = "paddock",
+	behaviours = { wander = false, chatter = { "Moo." }, sound = "moo" },
+	body = { { "body", size = { 1, 1, 1.4 }, at = { 0, 0.6, 0 }, color = "#ffffff" } },
+}
+world.on("player_joined", function(p)
+	sound.play("moo", { at = vector.create(0, 40, 0) })
+	sound.play_for(p, "tada")
+	sound.play("quack")
+	sound.play("chime", { caption = "Ding dong" })
+end)
+local names = sound.names()
+print(names[1] .. " " .. names[2] .. " " .. names[3] .. " " .. #names)
+print(pcall(sound.play, "trumpet"))
+"##;
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(1.0, 40.0, 0.0) }];
+    scripts.start(&with(sounds, code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains(&format!("moo quack tada {}", 3 + SOUNDS.len())), "its own first: {log}");
+    assert!(log.contains("false") && log.contains("[sounds.trumpet]"), "an unknown sound says where to make one: {log}");
+    let heard: Vec<(String, Option<String>)> = scripts.sound_changes().into_iter().map(|(_, p)| (p.name, p.caption)).collect();
+    let says = |n: &str, c: Option<&str>| (n.to_string(), c.map(String::from));
+    for want in [says("test/moo", Some("Moo")), says("test/tada", Some("Tada")), says("test/quack", Some("A duck of its own")), says("chime", Some("Ding dong"))] {
+        assert!(heard.contains(&want), "{want:?} in {heard:?}");
+    }
+    // behaviours make them too, heard by whoever's near the cow
+    let cow = herd.bodies.values().find(|b| b.creation == "test").unwrap();
+    let (cow, by) = (cow.id, cow.pos);
+    scripts.players[0].pos = by + Vec3::new(1.5, 0.0, 0.0);
+    let ada = scripts.players[0].clone();
+    scripts.event(&mut voxels, &mut herd, cow, "used", &ada);
+    assert!(scripts.sound_changes().iter().any(|(_, p)| p.name == "test/moo" && p.caption.as_deref() == Some("Moo")), "the cow moos when it's patted");
+
+    // every game makes them from the library, as they are now
+    let mut lib = Library::default();
+    let mut c = with(sounds, code);
+    lib.list.insert("test".into(), c.clone());
+    let moo = own_recipe(&lib, "test/moo").expect("the cow's moo");
+    assert_eq!(moo.layers.len(), 1);
+    assert!(own_recipe(&lib, "test/nope").is_none() && own_recipe(&lib, "chime").is_none() && own_recipe(&lib, "other/moo").is_none());
+    c.manifest.sounds.insert("moo".into(), serde_json::json!({ "wave": "sine", "pitch": 300 }));
+    lib.list.insert("test".into(), c);
+    assert_ne!(own_recipe(&lib, "test/moo").unwrap(), moo, "a changed recipe is made again");
+    assert!(Own::of("test", &BTreeMap::new()).unwrap().resolve("moo").is_none());
+
+    // mistakes say what's wrong, and it doesn't start
+    let too_many: String = (0..17).map(|i| format!("[sounds.s{i}]\npitch = 300\n")).collect();
+    for (bad, says) in [
+        ("[sounds.moo]\npiitch = 200\n", "there's no \"piitch\""),
+        ("[sounds.moo]\nwave = \"hum\"\n", "wave is one of sine, triangle, saw, square, noise"),
+        ("[sounds.moo]\npitch = \"high\"\n", "pitch is a number of Hz, or [from, to]"),
+        ("[sounds.moo]\nnotes = [\"H2\"]\n", "notes are names like"),
+        ("[sounds.Moo]\npitch = 200\n", "lowercase letters"),
+        ("[sounds.moo]\n[[sounds.moo.layers]]\ncaption = \"no\"\n", "sounds.moo.layers[1]: there's no \"caption\""),
+        (too_many.as_str(), "16 sounds of its own at most"),
+    ] {
+        let mut herd = Herd::default();
+        let mut scripts = Scripts::default();
+        let e = scripts.start(&with(bad, BOX), &mut herd).err().unwrap_or_default();
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    let mut herd = Herd::default();
+    let e = Scripts::default().start(&with("", &BOX.replace("count = 1,", "count = 1, behaviours = { sound = \"moo\" },")), &mut herd).err().unwrap_or_default();
+    assert!(e.contains("no sound called \"moo\""), "{e}");
+}
+
 /// Writes every sound as a WAV to listen to, and all of them in a row:
 /// `POTLUCK_SOUNDS=DIR cargo test --workspace -- --ignored write_the_sounds`.
 #[test]
@@ -1730,6 +2000,17 @@ fn write_the_sounds() {
         std::fs::write(dir.join(format!("{name}.wav")), wav(&v)).unwrap();
         all.extend_from_slice(&v);
         all.extend(std::iter::repeat_n(0.0, crate::sound::RATE as usize / 3));
+    }
+    // and the base creations' own
+    home();
+    for c in Library::load().list.values().filter(|c| c.origin == Origin::Base) {
+        for (name, v) in &c.manifest.sounds {
+            let key = format!("{}/{name}", c.id);
+            let s = crate::sound::make_own(&crate::sound::recipe(name, v).unwrap(), &key);
+            std::fs::write(dir.join(format!("{}-{name}.wav", c.id)), wav(&s)).unwrap();
+            all.extend_from_slice(&s);
+            all.extend(std::iter::repeat_n(0.0, crate::sound::RATE as usize / 3));
+        }
     }
     std::fs::write(dir.join("all.wav"), wav(&all)).unwrap();
 }
@@ -3282,7 +3563,7 @@ fn gnomes_tell_survival_players_how_to_get_by() {
     let (a, b) = (asked(&scripts, 7).unwrap(), asked(&scripts, 8).unwrap());
     assert_eq!(a.choices.last().map(String::as_str), Some("Getting by"), "{:?}", a.choices);
     assert_eq!(b.choices.last().map(String::as_str), Some("Playing together"), "{:?}", b.choices);
-    scripts.answer(7, a.ask, Some(3));
+    scripts.answer(7, a.ask, Some(a.choices.len() as u32 - 1));
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let topic = asked(&scripts, 7).unwrap();
     assert!(topic.text.contains("workbench") && topic.text.ends_with("can't bear light."), "{}", topic.text);
@@ -3887,6 +4168,104 @@ fn a_pad_opens_the_keyboard_on_a_field_and_esc_from_a_menu_goes_back_to_playing(
 }
 
 #[test]
+fn a_picture_of_a_creation_is_kept_only_with_something_in_it() {
+    let (w, h) = (100usize, 50usize);
+    let sky: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 160, 210, 255]).collect();
+    assert!(!crate::photos::worth_keeping(&sky), "a flat sky isn't worth keeping");
+    assert!(!crate::photos::worth_keeping(&[]), "nor is nothing");
+    // a creature in the middle of the sky
+    let mut shot = sky.clone();
+    for y in 10..40 {
+        for x in 30..70 {
+            shot[(y * w + x) * 4..(y * w + x) * 4 + 3].copy_from_slice(&[60, 90, 40]);
+        }
+    }
+    assert!(crate::photos::worth_keeping(&shot), "a creature against the sky is");
+}
+
+#[test]
+fn settings_come_in_pages_and_creations_on_shelves_of_cards() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::input::Controls;
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, pages, Act, Acts, Focus, Kind, Screen, WorldInfo, SETTINGS_PAGES};
+    home();
+    let lib = Library::load();
+    let scripts = Scripts::default();
+    let settings = Settings::default();
+    let info = WorldInfo { in_world: true, ..Default::default() };
+    let mut focus = Focus::default();
+    focus.go(Screen::Settings);
+    // every setting is on one page or another, and only one
+    let mut found = vec![];
+    for n in 0..SETTINGS_PAGES.len() {
+        focus.settings_page = n;
+        let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+        assert_eq!(title, "Settings");
+        assert!(items.iter().any(|i| i.kind == Kind::Button(Act::Back)), "{} goes back", SETTINGS_PAGES[n]);
+        for i in items {
+            match i.kind {
+                Kind::Slider { key, .. } | Kind::Toggle { key, .. } | Kind::Field { key, .. } => found.push(key),
+                Kind::Choice { act, .. } | Kind::Button(act) => found.push(format!("{act:?}")),
+                _ => {}
+            }
+        }
+    }
+    for k in ["name", "survival", "mouse", "stick", "invert", "fov", "fullscreen", "volume", "subtitles", "Lighting", "server", "market", "bridge", "OpenControls", "OpenDevices", "OpenParents", "Market"] {
+        assert_eq!(found.iter().filter(|f| f.as_str() == k || f.starts_with(&format!("{k}("))).count(), 1, "{k} on one page: {found:?}");
+    }
+
+    // shelves: what's in this world only in one
+    focus.go(Screen::Library);
+    let (shelves, _) = pages(&focus, &info).unwrap();
+    assert!(shelves.contains(&"In this world"));
+    assert!(!pages(&focus, &WorldInfo::default()).unwrap().0.contains(&"In this world"), "only in a world");
+    focus.shelf = shelves.iter().position(|s| *s == "Made by Potluck").unwrap();
+    let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+    let cards: Vec<String> = items.iter().filter_map(|i| if let Kind::Card(Act::Inside(id)) = &i.kind { Some(id.clone()) } else { None }).collect();
+    assert!(cards.contains(&"mossback".to_string()), "{cards:?}");
+    assert!(cards.iter().all(|id| lib.list[id].origin == Origin::Base));
+
+    // LB and RB (or Tab) turn the pages; cards go along rows and down columns
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    app.world_mut().resource_mut::<Library>().running.clear();
+    let press = |app: &mut App, f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        app.insert_resource(c);
+        app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    };
+    app.world_mut().resource_mut::<Focus>().go(Screen::Settings);
+    press(&mut app, &|c| c.page = 1);
+    assert_eq!(app.world().resource::<Focus>().settings_page, 1);
+    press(&mut app, &|c| c.page = -1);
+    press(&mut app, &|c| c.page = -1);
+    assert_eq!(app.world().resource::<Focus>().settings_page, SETTINGS_PAGES.len() - 1, "round from the first to the last");
+    app.world_mut().resource_mut::<Focus>().go(Screen::Library);
+    app.world_mut().resource_mut::<Focus>().cols = 4;
+    press(&mut app, &|c| c.down = true);
+    press(&mut app, &|c| c.right = true);
+    let f = app.world().resource::<Focus>();
+    let (_, items) = menu_items(f, app.world().resource::<Library>(), app.world().resource::<Scripts>(), app.world().resource::<Settings>(), &info);
+    let first = items.iter().position(|i| matches!(i.kind, Kind::Card(_))).unwrap();
+    assert_eq!(f.sel, first + 5, "a row down and one along");
+    let Kind::Card(Act::Inside(id)) = items[f.sel].kind.clone() else { panic!("a card") };
+    // X brings it in; A looks inside
+    press(&mut app, &|c| c.interact = true);
+    press(&mut app, &|c| c.accept = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Run(id.clone()), Act::Inside(id)]);
+    // an empty shelf still goes back
+    app.world_mut().resource_mut::<Acts>().0.clear();
+    app.world_mut().resource_mut::<Focus>().shelf = 1;
+    press(&mut app, &|c| c.back = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Back]);
+}
+
+#[test]
 fn the_maps_chats_and_keyboards_systems_ask_for_what_they_can_have_together() {
     // two queries that could reach the same thing mutably stop the game at
     // its start (Bevy's B0001), so each system is put together here
@@ -3915,6 +4294,8 @@ fn the_maps_chats_and_keyboards_systems_ask_for_what_they_can_have_together() {
     check(crate::waypoints::spawn_fade);
     check(crate::ui::draw_menu);
     check(crate::ui::menu_input);
+    check(crate::photos::take);
+    check(crate::render::menu_blur);
     check(crate::ui::update_hud);
 }
 

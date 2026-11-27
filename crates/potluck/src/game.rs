@@ -841,6 +841,8 @@ pub fn do_acts(
                 net.leave();
                 *voxels = crate::world::generate(voxels.seed);
                 herd.bodies.clear();
+                // what creations kept was the old world's, which is gone
+                scripts.shared.lock().unwrap().store = Default::default();
                 start_world(&mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
                 me.respawn(&voxels, None);
                 info.in_world = false;
