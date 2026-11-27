@@ -64,9 +64,18 @@ fn name(h: &HeaderMap) -> String {
     h.get("x-potluck-name").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
 }
 
+/// Whether the game says its player is under 13, when it says.
+fn young(h: &HeaderMap) -> Option<bool> {
+    match h.get("x-potluck-young").and_then(|v| v.to_str().ok()) {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    }
+}
+
 pub async fn who(app: &App, h: &HeaderMap) -> R<Account> {
     match bearer(h) {
-        Some(t) => app.game_account(&t, &name(h)).await,
+        Some(t) => app.game_account(&t, &name(h), young(h)).await,
         None => Err(Fail { status: 401, message: "sign in to the game server first".into() }),
     }
 }
@@ -84,7 +93,7 @@ async fn me(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
     let (device, _) = app.game_device(&bearer(&h).unwrap_or_default()).await?;
     Ok(Json(json!({
         "handle": a.handle, "name": a.name, "beta": a.beta || !app.cfg.invite_only, "moderator": a.moderator, "trusted": a.trusted,
-        "linked": device != a.user_id,
+        "linked": device != a.user_id, "young": a.young,
         "url": format!("{}/@{}", app.cfg.public_url, a.handle),
         "about": a.about, "avatar": format!("{}/avatar/{}.svg", app.cfg.public_url, a.handle), "named_on_web": a.named_on_web,
     })))
@@ -131,6 +140,7 @@ async fn load(State(app): State<Shared>, h: HeaderMap, Path(code): Path<String>,
     Ok(Json(json!({
         "manifest": v.manifest, "signature": v.signature, "key": codes::public_key(&app.key),
         "listing": c.listing, "latest": c.latest, "state": v.state, "url": app.url(&c),
+        "all_ages": c.all_ages && v.n == c.latest,
     })))
 }
 
@@ -291,7 +301,7 @@ async fn servers(State(app): State<Shared>) -> R<Json<Value>> {
         .map(|s| {
             json!({
                 "name": s.name, "about": s.about, "address": s.address, "players": s.players, "max_players": s.max_players,
-                "join": s.join, "version": s.version,
+                "join": s.join, "version": s.version, "all_ages": s.all_ages,
                 "creations": s.creations.iter().filter_map(|c| c["name"].as_str()).collect::<Vec<_>>(),
             })
         })

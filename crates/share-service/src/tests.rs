@@ -70,18 +70,23 @@ async fn start() -> Option<Market> {
 struct Player {
     token: String,
     name: String,
+    /// The game says its player is under 13.
+    young: bool,
 }
 
 impl Market {
     fn player(&self, who: &str) -> Player {
         let name = format!("{who} {}", self.run);
-        Player { token: format!("dev:{who}-{}:{name}", self.run), name }
+        Player { token: format!("dev:{who}-{}:{name}", self.run), name, young: false }
     }
 
     async fn call(&self, p: Option<&Player>, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut r = self.http.request(method.parse().unwrap(), format!("{}{path}", self.url));
         if let Some(p) = p {
             r = r.bearer_auth(&p.token).header("x-potluck-name", &p.name);
+            if p.young {
+                r = r.header("x-potluck-young", "1");
+            }
         }
         if let Some(b) = body {
             r = r.json(&b);
@@ -353,4 +358,64 @@ async fn keep_identity_puts_the_makers_name_back() {
     assert_eq!(crate::market::local_path("/c/ABCD2345"), Some("/c/ABCD2345"));
     assert_eq!(crate::market::local_path("//evil.example"), None);
     assert_eq!(crate::market::local_path("https://evil.example"), None);
+}
+
+/// Younger players share by code, send no suggestions to strangers and have
+/// no line about them on their profile. A moderator checks a creation for
+/// all ages, Explore's filter finds it (and the base game), and a new
+/// version starts without the mark.
+#[tokio::test]
+async fn younger_players_and_checked_for_all_ages() {
+    let Some(m) = start().await else { return };
+    m.app.seed_base().await.expect("the base creations");
+    let (_, base) = m.call(None, "GET", "/api/base", None).await;
+    let moss = base["mossback"]["code"].as_str().unwrap().to_string();
+    let kid = Player { young: true, ..m.player("Kid") };
+    m.app.db().execute("UPDATE accounts SET beta = 1 WHERE user_id = ?1", [format!("dev-Kid-{}", m.run)]).unwrap();
+    let (_, me) = m.call(Some(&kid), "GET", "/api/me", None).await;
+    assert_eq!(me["young"], true, "{me}");
+
+    let files = mossback_with(&format!("Kid's mossy {}", m.run), &kid.name, "\n-- it naps a lot\n");
+    let (status, s) = m.call(Some(&kid), "POST", "/api/share", Some(json!({ "files": files, "visibility": "everyone", "from": { "base": "mossback", "version": 1 } }))).await;
+    assert_eq!(status, 200, "{s}");
+    let kid_code = s["code"].as_str().unwrap().to_string();
+    assert_eq!(s["listing"], "unlisted", "by code, for friends");
+    assert!(s["message"].as_str().unwrap().contains("Younger players share by code"), "{s}");
+    let (status, v) = m.call(Some(&kid), "POST", &format!("/api/c/{kid_code}/suggest"), Some(json!({ "title": "Naps" }))).await;
+    assert_eq!(status, 403, "no suggestions to strangers: {v}");
+
+    let (cookie, _) = m.web_session(&kid, "/me/profile").await;
+    let res = m.form("/me/profile", &cookie, &[("name", "Kid"), ("about", "I live on Elm Street")]).await;
+    assert_eq!(res.status().as_u16(), 303);
+    let row = db::account(&m.app.db(), &format!("dev-Kid-{}", m.run)).unwrap().unwrap();
+    assert_eq!(row.about, "", "no line about a younger player");
+
+    // Bo's creation, checked for all ages by Mo
+    let bo = m.player("Bo");
+    let mo = m.player("Mo");
+    m.call(Some(&bo), "GET", "/api/me", None).await;
+    m.call(Some(&mo), "GET", "/api/me", None).await;
+    m.app.db().execute("UPDATE accounts SET beta = 1 WHERE user_id = ?1", [format!("dev-Bo-{}", m.run)]).unwrap();
+    m.app.db().execute("UPDATE accounts SET moderator = 1 WHERE user_id = ?1", [format!("dev-Mo-{}", m.run)]).unwrap();
+    let mo_acct = db::account(&m.app.db(), &format!("dev-Mo-{}", m.run)).unwrap().unwrap();
+    let name = format!("Bo's gentle mossy {}", m.run);
+    let (_, s) = m.call(Some(&bo), "POST", "/api/share", Some(json!({ "files": mossback_with(&name, &bo.name, "\n-- gentle\n"), "visibility": "everyone", "from": { "base": "mossback", "version": 1 } }))).await;
+    let bo_code = s["code"].as_str().unwrap().to_string();
+    assert_eq!(s["listing"], "waiting", "{s}");
+    m.app.decide(&mo_acct, m.queue_item(&bo_code), "list_all", "sweet").unwrap();
+    let (_, v) = m.call(None, "GET", &format!("/api/c/{bo_code}"), None).await;
+    assert_eq!(v["all_ages"], true, "{v}");
+    let (_, page) = m.page(&format!("/?ages=all&q=gentle+{}", m.run), None).await;
+    assert!(page.contains(&codes::pretty(&bo_code)), "Explore's all-ages filter finds it");
+    let (_, page) = m.page("/?ages=all&kind=creature", None).await;
+    assert!(page.contains(&codes::pretty(&moss)), "and the base game");
+    let (_, page) = m.page(&format!("/?ages=all&q=Kid+{}", m.run), None).await;
+    assert!(!page.contains(&codes::pretty(&kid_code)));
+
+    // a new version starts without the mark until someone looks again
+    let (_, s) = m.call(Some(&bo), "POST", "/api/share", Some(json!({ "code": bo_code, "files": mossback_with(&name, &bo.name, "\n-- gentle\n-- and new\n"), "visibility": "everyone" }))).await;
+    assert_eq!(s["version"], 2, "{s}");
+    assert!(!db::creation_by_code(&m.app.db(), &bo_code).unwrap().unwrap().all_ages);
+    m.app.set_all_ages(&mo_acct, &bo_code, true).unwrap();
+    assert!(db::creation_by_code(&m.app.db(), &bo_code).unwrap().unwrap().all_ages);
 }

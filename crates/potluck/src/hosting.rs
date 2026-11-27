@@ -60,6 +60,9 @@ pub struct ServerConfig {
     pub beacon: bool,
     /// Show it in the market's server list. Needs `address` and `market_token`.
     pub list: bool,
+    /// A listed server is for players 13 and older unless this says it's
+    /// for all ages: then younger players may join too.
+    pub all_ages: bool,
     /// The address players use, as the server list gives it: wss://host or host:port.
     pub address: String,
     pub market: String,
@@ -90,6 +93,7 @@ impl Default for ServerConfig {
             build: true,
             beacon: true,
             list: false,
+            all_ages: false,
             address: String::new(),
             market: crate::share::DEFAULT_MARKET.into(),
             market_token: String::new(),
@@ -147,6 +151,8 @@ impl ServerConfig {
             address: self.address.clone(),
             links: self.links.clone(),
             market_key: None,
+            listed: self.list,
+            all_ages: self.all_ages,
         }
     }
 
@@ -171,11 +177,15 @@ pub struct Rules {
     pub links: BTreeMap<String, String>,
     /// The market's public key, to check passes with.
     pub market_key: Option<String>,
+    /// In the market's server list, where strangers find it.
+    pub listed: bool,
+    /// For all ages: younger players may join even though it's listed.
+    pub all_ages: bool,
 }
 
 impl Default for Rules {
     fn default() -> Self {
-        Rules { max_players: 16, join: Join::Anyone, allow: vec![], ban: vec![], bring: Bring::Anyone, build: true, address: String::new(), links: BTreeMap::new(), market_key: None }
+        Rules { max_players: 16, join: Join::Anyone, allow: vec![], ban: vec![], bring: Bring::Anyone, build: true, address: String::new(), links: BTreeMap::new(), market_key: None, listed: false, all_ages: false }
     }
 }
 
@@ -189,6 +199,9 @@ pub struct Pass {
     pub aud: String,
     /// Unix seconds.
     pub exp: i64,
+    /// Under 13, as their game told the market.
+    #[serde(default)]
+    pub young: bool,
 }
 
 pub fn now() -> i64 {
@@ -253,6 +266,10 @@ impl Rules {
             },
             _ => None,
         };
+        // a listed server is open to strangers: younger players only where it's for all ages
+        if pass.as_ref().is_some_and(|p| p.young) && self.listed && !self.all_ages {
+            return Err("This server is for players 13 and older. Servers marked All ages are open to everyone.".into());
+        }
         let handle = pass.as_ref().map(|p| p.handle.to_lowercase());
         if let Some(h) = &handle {
             if self.ban.contains(h) {

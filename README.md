@@ -41,6 +41,12 @@ There are no passwords and no emails. The game signs in to the LinuxGroove game 
 
 One account works on several devices. In **Settings**, **Link a device** shows a code on a device that's already yours; type it on the new one, on the same screen, and it plays as you, with your name, block head and what you've shared (servers go by it too). The market's **Your devices** page lists them, unlinks them, makes link codes and makes a **recovery code**: write it down, and if you lose every device it brings your account to a new one, once. A device that already shared things of its own can't be swallowed by another account; link the other way.
 
+### Younger players and parents
+
+The first time a player does something that reaches other people (sharing, the market, servers, joining a world), the game asks once who's playing: **Under 13** or **13 or older**. Playing alone never asks. Younger players share by code only, for friends; they can't send suggestions to other makers; their market profile has no line about them; and the server list shows only servers that say they're for all ages, while listed servers that don't turn them away (a friend's world always lets them in). **Settings, Parent settings** changes the age and can turn sharing or servers from the market's list off, behind a PIN of 4 to 8 numbers, kept only as a hash. A forgotten PIN can be cleared by deleting the `parent_pin` line from `settings.toml` in Potluck's folder.
+
+On the market, a moderator can mark a creation **Checked for all ages** (when they list it, or later on its page), and Explore has a filter for those. The base game's creations are checked for all ages, and a new version starts without the mark until someone looks again.
+
 The market's service is `potluck-share` ([crates/share-service](crates/share-service)): it keeps every creation as a git repository in [Forgejo](https://forgejo.org/) and its files by hash in a folder or S3, checks every version (size, the API it needs, that the code compiles, words), signs what it serves so the game knows a code brought what the market checked, and serves the web pages. [deploy/market](deploy/market) has its config and a compose file with Forgejo and Caddy; `deploy/market/test.sh` runs its tests against Forgejo in a container. `potluck-share check FOLDER` runs the market's checks on a creation before sharing it.
 
 ## potluck-server
@@ -59,7 +65,7 @@ With `domain` set, the snap runs Caddy in front of the world for automatic certi
 
 The rest of its settings are in `server.toml` in its data folder (`/var/snap/potluck-server/common/world/server.toml` in the snap), written on the first start with every setting explained ([packaging/server.toml](packaging/server.toml) is the same file):
 
-- **Who may join**: `join = "anyone"` who knows the address, `"signed-in"` players the market vouches for (the game asks the market for a pass naming this server's address, good for five minutes), or `"list"` for only the handles in `allow`; `ban` keeps handles out; `max_players` (50).
+- **Who may join**: `join = "anyone"` who knows the address, `"signed-in"` players the market vouches for (the game asks the market for a pass naming this server's address, good for five minutes), or `"list"` for only the handles in `allow`; `ban` keeps handles out; `max_players` (50). A listed server is for players 13 and older unless `all_ages = true`.
 - **What players may do**: `build` (place and break blocks) and `bring` (their own creations: `"anyone"`, `"signed-in"` or `"nobody"`).
 - **Creations it always runs**, by market code: `creations = ["ABCD2345", "WXYZ6789@3"]` (the newest version each start, or the one after `@`).
 - **The server list**: make a token on the market's **Your servers** page, then set `list = true`, `address` (what players type) and `market_token`. The server sends a heartbeat every minute; the market lists it once it has reached the server's status page at that address, and shows its creations' boards on their pages.

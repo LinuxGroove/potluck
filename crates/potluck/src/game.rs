@@ -311,9 +311,60 @@ pub fn do_acts(
     shares: Res<ShareJobs>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    let mut later = vec![];
     for act in std::mem::take(&mut acts.0) {
+        // the first time anything goes online, ask who's playing
+        if !settings.age_asked && goes_online(&act) {
+            focus.status.clear();
+            focus.go(Screen::Age(Box::new(act)));
+            continue;
+        }
         match act {
             Act::Resume => focus.go(Screen::Playing),
+            Act::SetAge(young) => {
+                settings.age_asked = true;
+                settings.young = young;
+                settings.save();
+                let back = if info.in_world { Screen::Pause } else { Screen::Title };
+                if let Screen::Age(next) = std::mem::replace(&mut focus.screen, back) {
+                    later.push(*next);
+                }
+            }
+            Act::OpenParents => {
+                focus.parents_open = settings.parent_pin.is_empty();
+                focus.fields.remove("pin");
+                focus.fields.remove("newpin");
+                focus.status.clear();
+                focus.go(Screen::Parents);
+            }
+            Act::UnlockParents(pin) => {
+                let now = std::time::Instant::now();
+                focus.pin_misses.retain(|t| now.duration_since(*t).as_secs() < 300);
+                focus.fields.remove("pin");
+                if focus.pin_misses.len() >= 5 {
+                    focus.status = "That's a lot of tries: wait a few minutes.".into();
+                } else if settings.pin_matches(&pin) {
+                    focus.parents_open = true;
+                    focus.status.clear();
+                } else {
+                    focus.pin_misses.push(now);
+                    focus.status = "That isn't the PIN.".into();
+                }
+            }
+            Act::SetPin(pin) => {
+                let pin = pin.trim().to_string();
+                if !focus.parents_open {
+                    continue;
+                }
+                if (4..=8).contains(&pin.len()) && pin.chars().all(|c| c.is_ascii_digit()) {
+                    settings.parent_pin = settings.pin_hash(&pin);
+                    settings.save();
+                    focus.fields.remove("newpin");
+                    focus.status = "PIN set. Only someone who knows it can change these now.".into();
+                } else {
+                    focus.status = "A PIN is 4 to 8 numbers.".into();
+                }
+            }
             Act::PlayAlone => {
                 info.in_world = true;
                 focus.go(Screen::Playing);
@@ -332,7 +383,9 @@ pub fn do_acts(
                 focus.servers.clear();
                 focus.status.clear();
                 focus.go(Screen::Servers);
-                shares.servers(&Who::of(&settings));
+                if settings.servers {
+                    shares.servers(&Who::of(&settings));
+                }
             }
             Act::OpenJoin => {
                 net.listen_lan();
@@ -364,6 +417,7 @@ pub fn do_acts(
             }
             Act::OpenLibrary => focus.go(Screen::Library),
             Act::OpenSettings => {
+                focus.parents_open = false;
                 focus.fields.insert("name".into(), settings.name.clone());
                 focus.fields.insert("server".into(), settings.server.clone());
                 focus.fields.insert("market".into(), settings.market.clone());
@@ -401,11 +455,18 @@ pub fn do_acts(
                 focus.go(Screen::Share(id));
             }
             Act::ShareTo(id, everyone) => {
-                if let Some(c) = lib.list.get(&id).filter(|c| c.editable()) {
+                // younger players share with friends, by code
+                let everyone = everyone && !settings.young;
+                if !settings.sharing {
+                    focus.status = "A parent turned sharing off.".into();
+                } else if let Some(c) = lib.list.get(&id).filter(|c| c.editable()) {
                     focus.status = "Sharing...".into();
                     let code = lib.marks.get(&id).filter(|m| m.version > 0).map(|m| m.code.clone());
                     shares.share(&Who::of(&settings), c.payload(), everyone, code, c.manifest.from.clone());
                 }
+            }
+            Act::Suggest(_) if settings.young || !settings.sharing => {
+                toasts.push("Younger players share with friends, by code");
             }
             Act::Suggest(id) => {
                 focus.status.clear();
@@ -530,6 +591,12 @@ pub fn do_acts(
             }
         }
     }
+    acts.0.extend(later);
+}
+
+/// Acts that reach other people: the first one asks who's playing.
+fn goes_online(act: &Act) -> bool {
+    matches!(act, Act::Share(_) | Act::ShareTo(..) | Act::Suggest(_) | Act::OpenServers | Act::JoinAddress(_) | Act::Market(..) | Act::OpenDevices)
 }
 
 /// The creations a fresh world starts with: the base game's.

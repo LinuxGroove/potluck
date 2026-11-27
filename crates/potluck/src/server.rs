@@ -271,7 +271,7 @@ fn list_on_market(time: Res<Time>, mut listing: ResMut<Listing>, net: Res<net::N
     let c = &listing.cfg;
     let body = serde_json::json!({
         "name": c.name, "about": c.about, "address": c.address, "players": players.len(), "max_players": c.max_players,
-        "join": c.join, "creations": creations, "version": share::version(), "protocol": net::PROTOCOL,
+        "join": c.join, "creations": creations, "version": share::version(), "protocol": net::PROTOCOL, "all_ages": c.all_ages,
     });
     // boards that changed since the market last heard, by creation code
     let boards: Vec<serde_json::Value> = {

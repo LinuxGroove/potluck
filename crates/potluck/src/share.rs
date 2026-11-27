@@ -115,6 +115,9 @@ pub struct Listed {
     pub creations: Vec<String>,
     #[serde(default)]
     pub join: String,
+    /// Open to players of every age, under 13 too.
+    #[serde(default)]
+    pub all_ages: bool,
 }
 
 /// Where to and as whom: the game server, the market, this device's id and
@@ -125,11 +128,14 @@ pub struct Who {
     pub market: String,
     pub device: String,
     pub name: String,
+    /// Under 13, as the player (or a parent) said: the market keeps them to
+    /// sharing by code, and their passes say so.
+    pub young: bool,
 }
 
 impl Who {
     pub fn of(s: &crate::settings::Settings) -> Who {
-        Who { server: s.server.clone(), market: s.market.clone(), device: s.device.clone(), name: s.name.clone() }
+        Who { server: s.server.clone(), market: s.market.clone(), device: s.device.clone(), name: s.name.clone(), young: s.young }
     }
 }
 
@@ -243,6 +249,8 @@ impl Fail {
 struct Market {
     agent: ureq::Agent,
     base: String,
+    /// Says the player is under 13 on every signed-in call.
+    young: bool,
 }
 
 impl Market {
@@ -251,13 +259,13 @@ impl Market {
         let res = if method == "GET" {
             let mut r = self.agent.get(&url);
             if let Some(t) = token {
-                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
+                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name).header("X-Potluck-Young", if self.young { "1" } else { "0" });
             }
             r.call()
         } else {
             let mut r = self.agent.post(&url).header("Content-Type", "application/json");
             if let Some(t) = token {
-                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
+                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name).header("X-Potluck-Young", if self.young { "1" } else { "0" });
             }
             r.send(body.map(|b| b.to_string()).unwrap_or_else(|| "{}".into()))
         };
@@ -466,11 +474,11 @@ pub struct MarketLink {
 impl MarketLink {
     pub fn new(market: &str, token: &str) -> MarketLink {
         let base = market.trim_end_matches('/').to_string();
-        let who = Who { server: String::new(), market: base.clone(), device: String::new(), name: String::new() };
+        let who = Who { server: String::new(), market: base.clone(), device: String::new(), name: String::new(), young: false };
         let ctx = Ctx {
             // no game server: a server loads what anyone may load
             server: Server { agent: agent(1), base: "http://0.0.0.0:9".into() },
-            market: Market { agent: agent(20), base: base.clone() },
+            market: Market { agent: agent(20), base: base.clone(), young: false },
             who,
             token: Default::default(),
         };
@@ -505,7 +513,7 @@ impl ShareJobs {
         let tx = self.tx.clone();
         let ctx = Ctx {
             server: Server { agent: agent(12), base: who.server.trim_end_matches('/').to_string() },
-            market: Market { agent: agent(30), base: who.market.trim_end_matches('/').to_string() },
+            market: Market { agent: agent(30), base: who.market.trim_end_matches('/').to_string(), young: who.young },
             who: who.clone(),
             token: self.token.clone(),
         };
@@ -669,7 +677,7 @@ impl ShareJobs {
         let tx = self.tx.clone();
         let ctx = Ctx {
             server: Server { agent: agent(5), base: who.server.trim_end_matches('/').to_string() },
-            market: Market { agent: agent(5), base: who.market.trim_end_matches('/').to_string() },
+            market: Market { agent: agent(5), base: who.market.trim_end_matches('/').to_string(), young: who.young },
             who,
             token: self.token.clone(),
         };

@@ -167,7 +167,8 @@ fn a_creation_cannot_reach_outside_the_sandbox() {
     scripts.start(&creation(&code), &mut herd).unwrap();
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
     let said: Vec<String> = herd.bodies.values().filter_map(|b| b.says.as_ref().map(|s| s.0.clone())).collect();
-    assert_eq!(said, vec!["sealed".to_string()], "no files, no programs, no loading code");
+    let vm = &scripts.vms["test"];
+    assert_eq!(said, vec!["sealed".to_string()], "no files, no programs, no loading code ({:?}, {:?})", vm.error, vm.log);
 }
 
 #[test]
@@ -557,7 +558,7 @@ fn a_remix_of_a_remix_is_suggested_and_merged_from_the_game() {
     let run = crate::settings::random_hex(5);
     let (market, _) = start_market(Some((&fj, &token)), &run);
     let server = fake_game_server();
-    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
+    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}"), young: false };
     let (ada, bo) = (who("Ada"), who("Bo"));
     let (ada_jobs, bo_jobs) = (ShareJobs::default(), ShareJobs::default());
     let mut lib = Library::load();
@@ -661,7 +662,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let run = crate::settings::random_hex(5);
     let (market, mkt) = start_market(None, &run);
     let server = fake_game_server();
-    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
+    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}"), young: false };
 
     // Riverbend: signed-in players only, at an address the passes name
     let port = free_port();
@@ -714,7 +715,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let ada = potluck_share::db::ensure_account(&mkt.db(), &format!("dev-ada-{run}"), &format!("Ada {run}")).unwrap();
     let (_, token) = mkt.add_server(&ada, "Riverbend").unwrap();
     let link = MarketLink::new(&market, &token);
-    let beat = serde_json::json!({ "name": "Riverbend", "about": "Rodeo nights", "address": address, "players": 1, "max_players": 50, "join": "signed-in", "creations": [{ "name": "Rodeo", "code": "ABCD2345" }], "version": "test" });
+    let beat = serde_json::json!({ "name": "Riverbend", "about": "Rodeo nights", "address": address, "players": 1, "max_players": 50, "join": "signed-in", "creations": [{ "name": "Rodeo", "code": "ABCD2345" }], "version": "test", "all_ages": true });
     let said = link.heartbeat(&beat).expect("the heartbeat");
     assert_eq!(said["listed"], true, "listed once the market reached its status page: {said}");
     assert!(MarketLink::new(&market, "not-a-token").heartbeat(&beat).is_err(), "only tokens the market made");
@@ -723,6 +724,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let Done::Servers(list) = done(&jobs, "the server list") else { panic!("not a list") };
     let listed = list.iter().find(|s| s.name == "Riverbend").expect("Riverbend is on the list");
     assert_eq!((listed.address.as_str(), listed.join.as_str(), listed.creations.clone()), (address.as_str(), "signed-in", vec!["Rodeo".to_string()]));
+    assert!(listed.all_ages, "it says it's for all ages");
 
     // a board kept on Riverbend shows on the creation's page
     let handle = bo.name.to_lowercase().replace(' ', "-");
@@ -762,7 +764,7 @@ fn another_device_plays_as_you_with_a_code() {
     let (market, mkt) = start_market(None, &run);
     let server = fake_game_server();
     // each device signs in to the game server as itself, with jobs of its own
-    let device = |id: &str, name: &str| (Who { server: server.clone(), market: market.clone(), device: format!("{id}-{run}"), name: format!("{name} {run}") }, ShareJobs::default());
+    let device = |id: &str, name: &str| (Who { server: server.clone(), market: market.clone(), device: format!("{id}-{run}"), name: format!("{name} {run}"), young: false }, ShareJobs::default());
     let (ada, deck, phone, bo, tablet) = (device("ada", "Ada"), device("adadeck", "Deck"), device("adaphone", "Phone"), device("bo", "Bo"), device("adatablet", "Tablet"));
     let account = |(w, jobs): &(Who, ShareJobs)| {
         jobs.account(w);
@@ -828,6 +830,116 @@ fn another_device_plays_as_you_with_a_code() {
     assert!(!account(&phone).linked);
     assert!(mkt.devices(&ada_row).unwrap().is_empty());
     assert_eq!(account(&ada).handle, first.handle, "the first device is always hers");
+}
+
+/// Younger players: the game tells the market, their passes say so, and a
+/// listed server turns them away unless it's for all ages (a friend's world
+/// never does). Their menus offer sharing by code only, suggestions not at
+/// all, and only all-ages servers; a parent can turn sharing and servers
+/// off, behind a PIN kept as a hash.
+#[test]
+fn younger_players_share_with_friends_and_play_where_its_for_all_ages() {
+    use crate::hosting::Rules;
+    use crate::settings::Settings;
+    use crate::share::{Done, Listed, MarketLink, ShareJobs, Who};
+    use crate::ui::{menu_items, Act, Focus, Kind, Screen, WorldInfo};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let server = fake_game_server();
+    let kid = Who { server: server.clone(), market: market.clone(), device: format!("kid-{run}"), name: format!("Kid {run}"), young: true };
+    let jobs = ShareJobs::default();
+    jobs.account(&kid);
+    let Done::Account(a) = done(&jobs, "the kid's account") else { panic!("not an account") };
+    assert!(potluck_share::db::account_by_handle(&mkt.db(), &a.handle).unwrap().unwrap().young, "the market knows");
+
+    let address = "ws://rodeo.example.org";
+    jobs.pass(&kid, address);
+    let Done::Pass { pass: Some(pass), .. } = done(&jobs, "the kid's pass") else { panic!("no pass") };
+    let key = MarketLink::new(&market, "").key().unwrap();
+    let mut rules = Rules { address: address.into(), market_key: Some(key), listed: true, ..Default::default() };
+    let why = rules.admit("Kid", Some(&pass), 0).expect_err("a listed server that isn't for all ages");
+    assert!(why.contains("13 and older"), "{why}");
+    rules.all_ages = true;
+    assert!(rules.admit("Kid", Some(&pass), 0).is_ok(), "an all-ages server");
+    rules.all_ages = false;
+    rules.listed = false;
+    assert!(rules.admit("Kid", Some(&pass), 0).is_ok(), "a friend's world");
+
+    // a parent unticks Under 13: the market hears on the next call
+    let older = Who { young: false, ..kid.clone() };
+    jobs.account(&older);
+    let Done::Account(_) = done(&jobs, "the account again") else { panic!("not an account") };
+    assert!(!potluck_share::db::account_by_handle(&mkt.db(), &a.handle).unwrap().unwrap().young);
+
+    // the menus
+    let mut lib = Library::load();
+    let id = lib.remix("mossback", "Kid").unwrap();
+    let scripts = Scripts::default();
+    let info = WorldInfo::default();
+    let mut settings = Settings { young: true, age_asked: true, ..Default::default() };
+    let mut focus = Focus::default();
+    let acts = |focus: &Focus, settings: &Settings| -> Vec<Act> {
+        menu_items(focus, &lib, &scripts, settings, &info).1.into_iter().filter_map(|i| if let Kind::Button(a) = i.kind { Some(a) } else { None }).collect()
+    };
+    focus.go(Screen::Share(id.clone()));
+    let share = acts(&focus, &settings);
+    assert!(share.contains(&Act::ShareTo(id.clone(), false)) && !share.contains(&Act::ShareTo(id.clone(), true)), "by code only: {share:?}");
+    focus.go(Screen::Inside(id.clone()));
+    assert!(!acts(&focus, &settings).contains(&Act::Suggest(id.clone())), "no suggestions to strangers");
+    settings.young = false;
+    assert!(acts(&focus, &settings).contains(&Act::Suggest(id.clone())), "older players suggest");
+    settings.sharing = false;
+    assert!(!acts(&focus, &settings).contains(&Act::Share(id.clone())), "a parent turned sharing off");
+    settings = Settings { young: true, ..Default::default() };
+    focus.servers = vec![Listed { name: "Rodeo".into(), address: "a".into(), all_ages: true, ..Default::default() }, Listed { name: "Late".into(), address: "b".into(), ..Default::default() }];
+    focus.go(Screen::Servers);
+    assert_eq!(acts(&focus, &settings), vec![Act::JoinAddress("a".into()), Act::Back], "only all-ages servers");
+    settings.servers = false;
+    assert_eq!(acts(&focus, &settings), vec![Act::Back]);
+
+    // the PIN is kept as a hash
+    settings.parent_pin = settings.pin_hash("2468");
+    assert!(!settings.parent_pin.contains("2468") && settings.pin_matches("2468") && !settings.pin_matches("1357"));
+    focus.go(Screen::Parents);
+    focus.parents_open = false;
+    assert!(acts(&focus, &settings).iter().any(|a| matches!(a, Act::UnlockParents(_))), "locked until the PIN");
+}
+
+/// The first time anything would go online, the game asks who's playing,
+/// then does what the player picked; it never asks again.
+#[test]
+fn the_age_question_comes_once_before_going_online() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{Act, Acts, Focus, Screen};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    let mut run = |app: &mut App, act: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(act);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+        // what an act asks for runs on the next frame
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+
+    // playing alone asks nothing
+    run(&mut app, Act::OpenSettings);
+    assert!(!matches!(app.world().resource::<Focus>().screen, Screen::Age(_)), "nothing online yet");
+
+    // the server list waits for the answer, then opens
+    run(&mut app, Act::OpenServers);
+    assert!(matches!(&app.world().resource::<Focus>().screen, Screen::Age(next) if **next == Act::OpenServers), "asked first");
+    run(&mut app, Act::SetAge(true));
+    let settings = app.world().resource::<Settings>();
+    assert!(settings.age_asked && settings.young);
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::Servers), "then the servers");
+
+    // and not again
+    run(&mut app, Act::OpenDevices);
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::Devices), "asked once");
 }
 
 /// `@potluck/game`: a creation keeps a board of each player's best and
