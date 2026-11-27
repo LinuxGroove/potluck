@@ -182,7 +182,7 @@ fn spawn_caption(mut commands: Commands, fonts: Res<ui::Fonts>) {
             p.spawn((
                 Caption,
                 Text::new(""),
-                TextFont { font: fonts.title.clone().into(), font_size: FontSize::Px(30.0), ..default() },
+                TextFont { font: fonts.lines.clone().into(), font_size: FontSize::Px(30.0), ..default() },
                 TextColor(Color::srgb(1.0, 0.95, 0.85)),
                 Node { padding: UiRect::axes(px(22), px(8)), border_radius: BorderRadius::all(px(14)), ..default() },
                 BackgroundColor(Color::srgba(0.07, 0.08, 0.1, 0.72)),

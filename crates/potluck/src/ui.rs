@@ -411,15 +411,28 @@ pub struct Acts(pub Vec<Act>);
 
 #[derive(Resource, Clone)]
 pub struct Fonts {
+    /// Small text: hints, descriptions, the HUD (Barlow Medium).
     pub ui: Handle<Font>,
-    pub title: Handle<Font>,
+    /// Menu lines, tabs and names (Barlow SemiBold).
+    pub lines: Handle<Font>,
+    /// Screen titles and the little capitals over them (Bungee, which is all capitals).
+    pub heading: Handle<Font>,
     pub code: Handle<Font>,
+    /// The game's name as a picture for the title screen: Bungee in the game's dirt and grass (tools/title.py).
+    pub logo: Handle<Image>,
 }
 
-pub fn fonts(mut fonts: ResMut<Assets<Font>>, mut commands: Commands) {
-    let ui = fonts.add(Font::from_bytes(include_bytes!("../../../assets/fonts/Montserrat-SemiBold.ttf").to_vec()));
-    let title = fonts.add(Font::from_bytes(include_bytes!("../../../assets/fonts/Fredoka.ttf").to_vec()));
-    commands.insert_resource(Fonts { ui, title, code: Handle::default() });
+pub fn fonts(mut fonts: ResMut<Assets<Font>>, mut images: ResMut<Assets<Image>>, mut commands: Commands) {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+    let ui = fonts.add(Font::from_bytes(include_bytes!("../../../assets/fonts/Barlow-Medium.ttf").to_vec()));
+    let lines = fonts.add(Font::from_bytes(include_bytes!("../../../assets/fonts/Barlow-SemiBold.ttf").to_vec()));
+    let heading = fonts.add(Font::from_bytes(include_bytes!("../../../assets/fonts/Bungee-Regular.ttf").to_vec()));
+    let png = include_bytes!("../../../assets/title/potluck.png");
+    let logo = Image::from_buffer(png, ImageType::Extension("png"), CompressedImageFormats::NONE, true, ImageSampler::linear(), RenderAssetUsages::RENDER_WORLD)
+        .map(|img| images.add(img))
+        .unwrap_or_default();
+    commands.insert_resource(Fonts { ui, lines, heading, code: Handle::default(), logo });
 }
 
 /// What the world shows in the top corner and the title.

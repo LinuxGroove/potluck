@@ -62,19 +62,34 @@ enum Rows {
     Small,
 }
 
+/// Sizes here are for the menus' first fonts; Bungee draws wider and Barlow a little smaller.
+const HEADING_SCALE: f32 = 0.9;
+const LINE_SCALE: f32 = 1.04;
+
 struct Ctx {
     s: f32,
     fonts: Fonts,
     qr: Option<Handle<Image>>,
     pad: bool,
+    /// The title picture's width over its height.
+    logo_aspect: f32,
 }
 
 impl Ctx {
     fn u(&self, v: f32) -> Val {
         px(v * self.s)
     }
+    /// Menu lines, tabs and names.
     fn round(&self, size: f32, weight: u16) -> TextFont {
-        TextFont { font: self.fonts.title.clone().into(), font_size: FontSize::Px(size * self.s), weight: FontWeight(weight), ..default() }
+        TextFont { font: self.fonts.lines.clone().into(), font_size: FontSize::Px(size * LINE_SCALE * self.s), weight: FontWeight(weight), ..default() }
+    }
+    /// Screen titles, names in big and the letters on cards, in Bungee's capitals.
+    fn heading(&self, size: f32) -> TextFont {
+        TextFont { font: self.fonts.heading.clone().into(), font_size: FontSize::Px(size * HEADING_SCALE * self.s), ..default() }
+    }
+    /// The little capitals over a title or on a badge.
+    fn kicker(&self, size: f32, spacing: f32) -> (TextFont, LetterSpacing) {
+        (TextFont { font: self.fonts.heading.clone().into(), font_size: FontSize::Px(size * self.s), ..default() }, LetterSpacing::Px(spacing * self.s))
     }
     fn plain(&self, size: f32) -> TextFont {
         TextFont { font: self.fonts.ui.clone().into(), font_size: FontSize::Px(size * self.s), ..default() }
@@ -233,7 +248,8 @@ pub fn draw_menu(
         Look::Map | Look::Chat => 1.0,
         _ => (win.y / 720.0).clamp(0.75, 2.5),
     };
-    let ctx = Ctx { s, fonts: fonts.clone(), qr: focus.qr.as_ref().map(|q| q.1.clone()), pad: controls.pad };
+    let logo_aspect = images.get(&fonts.logo).map(|i| i.width() as f32 / i.height().max(1) as f32).unwrap_or(4.0);
+    let ctx = Ctx { s, fonts: fonts.clone(), qr: focus.qr.as_ref().map(|q| q.1.clone()), pad: controls.pad, logo_aspect };
     let pages = pages(&focus, &info);
     let (kicker, sub, skip) = head_notes(&focus.screen, &items);
     let rows = if look == Look::Map || look == Look::Chat {
@@ -406,13 +422,14 @@ fn shade(wide: bool) -> BackgroundGradient {
 /// The head: a kicker, the title and a line under it.
 fn head(p: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, big: bool, size: f32) {
     if let Some(k) = &m.kicker {
-        p.spawn((Text::new(k.to_uppercase()), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s), Node { margin: UiRect::bottom(ctx.u(6.0)), ..default() }));
+        p.spawn((Text::new(k.to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT), Node { margin: UiRect::bottom(ctx.u(6.0)), ..default() }));
     }
     if !m.title.is_empty() {
         if big {
-            p.spawn((Text::new(m.title.clone()), ctx.round(96.0, 700), TextColor(GOLD), TextShadow { offset: Vec2::splat(5.0 * ctx.s), color: Color::srgba(0.24, 0.12, 0.0, 0.35) }));
+            // the game's name in dirt with grass on top (tools/title.py)
+            p.spawn((ImageNode::new(ctx.fonts.logo.clone()), Node { width: ctx.u(560.0), aspect_ratio: Some(ctx.logo_aspect), ..default() }));
         } else {
-            p.spawn((Text::new(m.title.clone()), ctx.round(size, 700), TextColor(INK), ctx.shadow(3.0, 0.28)));
+            p.spawn((Text::new(m.title.clone()), ctx.heading(size), TextColor(INK), ctx.shadow(3.0, 0.28)));
         }
     }
     if let Some(sub) = &m.sub {
@@ -501,11 +518,22 @@ fn tabs_across(p: &mut ChildSpawnerCommands, ctx: &Ctx, pages: &[&str], on: usiz
     });
 }
 
+/// "More above" or "More below" with a small chevron, drawn since the fonts have no arrows.
+fn more(p: &mut ChildSpawnerCommands, ctx: &Ctx, up: bool) {
+    p.spawn(Node { align_items: AlignItems::Center, column_gap: ctx.u(8.0), ..default() }).with_children(|r| {
+        let (b, z) = (ctx.u(1.5), Val::ZERO);
+        let border = if up { UiRect::new(b, z, b, z) } else { UiRect::new(z, b, z, b) };
+        let nudge = ctx.u(if up { 2.0 } else { -2.0 });
+        r.spawn((Node { width: ctx.u(6.0), height: ctx.u(6.0), border, margin: UiRect::new(ctx.u(2.0), z, nudge, z), ..default() }, UiTransform::from_rotation(Rot2::degrees(45.0)), BorderColor::all(FAINT)));
+        r.spawn((Text::new(if up { "More above" } else { "More below" }), ctx.plain(12.0), TextColor(FAINT)));
+    });
+}
+
 /// The list's rows, from the first that fits to the last, with "more" marks.
 fn list(p: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu) {
     let from = m.first.max(m.skip);
     if from > m.skip {
-        p.spawn((Text::new("\u{25b2} More above"), ctx.plain(12.0), TextColor(FAINT)));
+        more(p, ctx, true);
     }
     let mut i = from;
     while i < m.end {
@@ -526,7 +554,7 @@ fn list(p: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu) {
         i += 1;
     }
     if m.end < m.items.len() {
-        p.spawn((Text::new("\u{25bc} More below"), ctx.plain(12.0), TextColor(FAINT)));
+        more(p, ctx, false);
     }
 }
 
@@ -557,7 +585,7 @@ fn item(p: &mut ChildSpawnerCommands, ctx: &Ctx, i: usize, item: &Item, picked: 
             }
         }
         Kind::Big => {
-            p.spawn((Text::new(item.label.clone()), ctx.round(60.0, 700), TextColor(MINT), ctx.shadow(3.0, 0.3), Node { margin: UiRect::vertical(ctx.u(4.0)), ..default() }));
+            p.spawn((Text::new(item.label.clone()), ctx.heading(60.0), TextColor(MINT), ctx.shadow(3.0, 0.3), Node { margin: UiRect::vertical(ctx.u(4.0)), ..default() }));
         }
         Kind::Chip(_) => {
             p.spawn((
@@ -767,7 +795,7 @@ fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Libr
                         l.spawn(Node { column_gap: ctx.u(26.0), align_items: AlignItems::Center, margin: UiRect::bottom(ctx.u(14.0)), ..default() }).with_children(|w| {
                             item(w, ctx, q, &m.items[q], false, m.rows, false);
                             w.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, flex_shrink: 1.0, row_gap: ctx.u(8.0), ..default() }).with_children(|t| {
-                                t.spawn((Text::new("ON A PHONE"), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s)));
+                                t.spawn((Text::new("ON A PHONE"), ctx.kicker(12.5, 1.4), TextColor(MINT)));
                                 if let Some(n) = m.items.get(q + 1).filter(|i| i.kind == Kind::Note) {
                                     t.spawn((Text::new(n.label.clone()), ctx.plain(16.0), TextColor(SOFT)));
                                 }
@@ -824,7 +852,7 @@ fn inside(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, side: Side, scroll
 #[allow(clippy::too_many_arguments)]
 fn creations(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Library, photos: &crate::photos::Photos, grid: &Grid, cards: &[usize]) {
     sh.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, column_gap: ctx.u(20.0), flex_shrink: 0.0, ..default() }).with_children(|top| {
-        top.spawn((Text::new(m.title.clone()), ctx.round(36.0, 700), TextColor(INK), ctx.shadow(3.0, 0.28)));
+        top.spawn((Text::new(m.title.clone()), ctx.heading(36.0), TextColor(INK), ctx.shadow(3.0, 0.28)));
         if let Some((pages, on)) = m.pages {
             tabs_across(top, ctx, pages, on);
         }
@@ -866,7 +894,7 @@ fn creations(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, 
 fn block_sheet(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, lib: &Library, grid: &Grid, tiles: &[usize], atlas: Option<&BlockAtlas>) {
     let icon = |id: blocks::BlockId| atlas.and_then(|a| a.icons.get(blocks::block(id).faces[1]).cloned());
     sh.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, column_gap: ctx.u(20.0), flex_shrink: 0.0, ..default() }).with_children(|top| {
-        top.spawn((Text::new(m.title.clone()), ctx.round(36.0, 700), TextColor(INK), ctx.shadow(3.0, 0.28)));
+        top.spawn((Text::new(m.title.clone()), ctx.heading(36.0), TextColor(INK), ctx.shadow(3.0, 0.28)));
         if let Some((pages, on)) = m.pages {
             tabs_across(top, ctx, pages, on);
         }
@@ -935,8 +963,8 @@ fn block_sheet(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, lib: &Library
                 Some(c) => format!("From {c}"),
                 None => "Potluck's own".into(),
             };
-            d.spawn((Text::new(whose.to_uppercase()), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s)));
-            d.spawn((Text::new(b.name), ctx.round(30.0, 700), TextColor(INK)));
+            d.spawn((Text::new(whose.to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT)));
+            d.spawn((Text::new(b.name), ctx.heading(30.0), TextColor(INK)));
             d.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: ctx.u(6.0), row_gap: ctx.u(6.0), ..default() }).with_children(|f| {
                 for fact in facts {
                     f.spawn((Node { padding: UiRect::axes(ctx.u(8.0), ctx.u(4.0)), border_radius: BorderRadius::all(ctx.u(6.0)), ..default() }, BackgroundColor(white(0.08)))).with_child((Text::new(fact), ctx.plain(12.0), TextColor(SOFT)));
@@ -970,7 +998,7 @@ fn picture(p: &mut ChildSpawnerCommands, ctx: &Ctx, c: &crate::creations::Creati
             }
             None => {
                 let first: String = c.manifest.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
-                pic.spawn((Text::new(first), ctx.round(letter, 700), TextColor(Color::srgba(0.98, 0.96, 0.9, 0.85)), TextShadow { offset: Vec2::splat(4.0 * ctx.s), color: Color::srgba(0.0, 0.0, 0.0, 0.25) }));
+                pic.spawn((Text::new(first), ctx.heading(letter), TextColor(Color::srgba(0.98, 0.96, 0.9, 0.85)), TextShadow { offset: Vec2::splat(4.0 * ctx.s), color: Color::srgba(0.0, 0.0, 0.0, 0.25) }));
             }
         }
         if here {
@@ -978,7 +1006,7 @@ fn picture(p: &mut ChildSpawnerCommands, ctx: &Ctx, c: &crate::creations::Creati
                 Node { position_type: PositionType::Absolute, left: ctx.u(8.0), top: ctx.u(8.0), padding: UiRect::axes(ctx.u(7.0), ctx.u(3.0)), border_radius: BorderRadius::all(ctx.u(5.0)), ..default() },
                 BackgroundColor(MINT),
             ))
-            .with_child((Text::new("IN THIS WORLD"), ctx.plain(10.5), TextColor(Color::srgb(0.05, 0.16, 0.14)), LetterSpacing::Px(0.6 * ctx.s)));
+            .with_child((Text::new("IN THIS WORLD"), ctx.kicker(10.5, 0.6), TextColor(Color::srgb(0.05, 0.16, 0.14))));
         }
     });
 }
@@ -1012,8 +1040,8 @@ fn detail(body: &mut ChildSpawnerCommands, ctx: &Ctx, c: &crate::creations::Crea
     .with_children(|d| {
         picture(d, ctx, c, photo, false, 96.0);
         d.spawn(Node { flex_direction: FlexDirection::Column, padding: UiRect::all(ctx.u(18.0)), row_gap: ctx.u(10.0), ..default() }).with_children(|t| {
-            t.spawn((Text::new(format!("{} by {}", kind_name(&m.kind), m.by).to_uppercase()), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s)));
-            t.spawn((Text::new(m.name.clone()), ctx.round(30.0, 700), TextColor(INK)));
+            t.spawn((Text::new(format!("{} by {}", kind_name(&m.kind), m.by).to_uppercase()), ctx.kicker(12.5, 1.4), TextColor(MINT)));
+            t.spawn((Text::new(m.name.clone()), ctx.heading(30.0), TextColor(INK)));
             if !m.about.is_empty() {
                 t.spawn((Text::new(m.about.clone()), ctx.plain(15.0), TextColor(SOFT)));
             }
@@ -1052,7 +1080,7 @@ fn panel(commands: &mut Commands, ctx: &Ctx, m: &Menu, look: Look) {
         ))
         .with_children(|p| {
             if !m.title.is_empty() {
-                p.spawn((Text::new(m.title.clone()), ctx.round(34.0, 700), TextColor(INK), ctx.shadow(2.0, 0.28), Node { margin: UiRect::bottom(px(8)), ..default() }));
+                p.spawn((Text::new(m.title.clone()), ctx.heading(34.0), TextColor(INK), ctx.shadow(2.0, 0.28), Node { margin: UiRect::bottom(px(8)), ..default() }));
             }
             list(p, ctx, m);
             if !on_map {
