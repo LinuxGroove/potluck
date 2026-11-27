@@ -8,6 +8,7 @@ pub mod creatures;
 pub mod demo;
 pub mod game;
 pub mod green;
+pub mod halves;
 pub mod hosting;
 pub mod input;
 pub mod mesh;
@@ -54,9 +55,11 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<green::Green>()
         .init_resource::<hosting::TickTimes>()
         .init_resource::<sound::Heard>()
+        .init_resource::<halves::Halves>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
+        .add_systems(Update, halves::run.before(Sim))
         .add_systems(
             Update,
             (game::host_step, net::host_net, game::reloads, game::share_results).chain().in_set(Sim),

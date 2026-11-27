@@ -932,6 +932,7 @@ pub fn draw_menu(
     fonts: Res<Fonts>,
     roots: Query<Entity, With<MenuRoot>>,
     mut images: ResMut<Assets<Image>>,
+    halves: Res<crate::halves::Halves>,
 ) {
     let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
     if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
@@ -944,8 +945,12 @@ pub fn draw_menu(
         Screen::Inside(id) => lib.list.get(id).map(|c| {
             let src = c.files.get(&c.manifest.main).cloned().unwrap_or_default();
             let vm = scripts.vms.get(id);
-            let log: Vec<String> = vm.map(|v| v.log.iter().rev().take(6).rev().cloned().collect()).unwrap_or_default();
-            let err = vm.and_then(|v| v.error.clone());
+            let mut log: Vec<String> = vm.map(|v| v.log.clone()).unwrap_or_default();
+            let half = halves.list.get(id);
+            // what its client half printed on this game, too
+            log.extend(half.iter().flat_map(|h| h.log.iter().map(|l| format!("client: {l}"))));
+            let log: Vec<String> = log.iter().rev().take(6).rev().cloned().collect();
+            let err = vm.and_then(|v| v.error.clone()).or_else(|| half.and_then(|h| h.error.as_ref()).map(|e| format!("Its client half stopped: {e}")));
             let ms = vm.map(|v| v.load_ms).unwrap_or(0.0);
             (c.manifest.main.clone(), src, log, err, ms)
         }),

@@ -30,8 +30,9 @@ store = "0.1"
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.1 | Lines on players' screens, and questions with choices |
 | `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
+| `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
 
-Still to come, as its own module with its own version: `@potluck/net` (a creation's client half, for what only one player sees). Sounds of a creation's own, from its files, come with a later `sound`.
+Every module planned for the API is here. Still to come in later minor versions: sounds of a creation's own, from its files (`sound`), and more of the API in client halves (`net`).
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -72,14 +73,16 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Kinds of creature | 16 |
 | Timers waiting at once | 64 |
 | Shortest timer | 0.1 s, the length of a tick |
-| World event and input handlers (`world.on`, `input.on`) | 32 |
+| World event, input and message handlers (`world.on`, `input.on`, `net.on`) | 32 |
 | Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
 | Lines on screens (`ui.show`) | 8 at once (different ids), each up to 60 letters |
 | Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds |
 | Sounds | 10 a second; heard within 40 blocks |
+| Messages to client halves (`net.send`) | 30 a second from a creation, 10 a second from each player's half; a topic of 32 letters and a value of 4 KB as JSON |
+| A client half | 16 MB, 300 ms to load, and 4 ms of each frame on its player's game |
 | Boards | 16, of 100 players each |
 | Store | 64 KB, counted as JSON |
-| Messages | `world.say` 120 letters, a creature's `say` 80 |
+| Things said | `world.say` 120 letters, a creature's `say` 80 |
 
 A creation over a time limit stops with an error, and the world carries on. After about 30 errors close together it's paused, and Look inside says why.
 
@@ -95,6 +98,10 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/input`
 
 - **0.1**: the first version: `[actions]` in `potluck.toml`, and `input.on`, `input.held`, `input.focus` and `input.focused`.
+
+### `@potluck/net`
+
+- **0.1**: the first version: `client` in `potluck.toml` for a client half, and `net.send` and `net.on` in both halves, with `net.me` in the client half. A client half has `ui.show` and `ui.hide`, `sound.play` and `play_for`, and `world`'s timers, `time`, `random` and `spot`.
 
 ### `@potluck/sound`
 

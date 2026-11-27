@@ -3,11 +3,17 @@
 -- can: it bucks harder the longer you stay. Your longest ride goes on the
 -- board, and a new record is announced to everyone. Hit it to hear the
 -- best rides so far.
+--
+-- The clock at the bottom of the rider's screen is its client half
+-- (client.luau, named in potluck.toml), which runs on the rider's own
+-- game: this file tells it when a ride starts and how it ended, and it
+-- counts the seconds itself.
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
 local game = require("@potluck/game@0.1")
 local sound = require("@potluck/sound@0.1")
+local net = require("@potluck/net@0.1")
 
 local knobs = tweak {
 	fleece = { "#d8cfbf", label = "Fleece colour", order = 1 },
@@ -59,11 +65,14 @@ local function finish(ram)
 	end
 	local t = math.floor((world.time() - ram.started) * 10) / 10
 	if t < 0.5 then
+		net.send(who.id, "done", { time = t })
 		return
 	end
 	local best = game.board("longest ride", 1)[1]
+	local record = not best or t > best.value
 	game.score("longest ride", who.id, t)
-	if not best or t > best.value then
+	net.send(who.id, "done", { time = t, record = record })
+	if record then
 		world.say(who.name .. " rode the Rodeo Ram for " .. seconds(t) .. ". A new record!")
 	else
 		ram:say(seconds(t) .. "! Best is " .. seconds(best.value) .. ".")
@@ -99,6 +108,8 @@ function Ram:ridden(player)
 	self.rode = { id = player.id, name = player.name }
 	self.started = world.time()
 	self.buck_in = 1.5
+	local best = game.board("longest ride", 1)[1]
+	net.send(player, "ride", { best = best and best.value })
 	self:say("Hold on!")
 	sound.play("bleat", { at = self })
 end
