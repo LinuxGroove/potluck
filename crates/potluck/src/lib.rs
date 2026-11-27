@@ -2,6 +2,7 @@
 //! The game (`potluck`) and the dedicated server (`potluck-server`) share
 //! everything here; only the game draws.
 
+pub mod behaviours;
 pub mod blocks;
 pub mod bridge;
 pub mod chat;

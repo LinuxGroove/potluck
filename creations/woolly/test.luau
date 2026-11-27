@@ -4,7 +4,7 @@
 -- `potluck-server --test=woolly`.
 
 local test = require("@potluck/test@0.1")
-local world = require("@potluck/world@0.9")
+local world = require("@potluck/world@0.10")
 
 local function sheep(kind: string?): { any }
 	local all = {}
@@ -31,11 +31,28 @@ test.case("used, one follows you about", function()
 	local s = sheep("Woolly")[1]
 	test.move(p, s.position)
 	test.use(p, s)
-	test.same(test.creature(s.id).following, p.id, "who it follows")
 	local x, z = s.position.x + 8, s.position.z
 	p = test.move(p, vector.create(x, world.top(x, z) + 1, z))
 	test.wait(6)
 	test.check(far(test.creature(s.id).position, p.position) < 3.5, "it kept up")
+end)
+
+test.case("holding wheat, they come to you, and wander off when you put it away", function()
+	local p = test.player("Ada")
+	local s = sheep("Woolly")[1]
+	local x, z = s.position.x + 7, s.position.z
+	test.move(p, vector.create(x, world.top(x, z) + 1, z))
+	test.wait(2)
+	test.check(far(test.creature(s.id).position, p.position) > 4, "it came before the wheat came out")
+	test.hold(p, "Wheat")
+	test.wait(6)
+	test.check(far(test.creature(s.id).position, p.position) < 3.5, "it came for the wheat")
+	test.hold(p, nil)
+	local here = test.creature(s.id).position
+	x, z = here.x + 10, here.z
+	test.move(p, vector.create(x, world.top(x, z) + 1, z))
+	test.wait(5)
+	test.check(far(test.creature(s.id).position, p.position) > 4, "it went after them with no wheat")
 end)
 
 test.case("hit, one runs off", function()

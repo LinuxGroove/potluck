@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.9, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1, @potluck/test 0.1
+-- @potluck/world 0.10, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1, @potluck/test 0.1
 
 export type Position = vector | { number }
 
@@ -30,6 +30,18 @@ export type CreatureDef = {
 	rideable: boolean?,
 	seat: number?,
 	flies: boolean?,
+	behaviours: Behaviours?,
+}
+
+-- What a creature does by itself, with no code (world 0.10).
+export type Behaviours = {
+	wander: boolean?,
+	follow_food: (string | { string })?,
+	follow_when_used: (boolean | number)?,
+	flee_when_hit: (boolean | number)?,
+	hop_when_hit: (boolean | number)?,
+	chatter: (string | { string })?,
+	sound: string?,
 }
 
 export type Creature = {
@@ -182,6 +194,7 @@ export type Test = {
 	press: (player: Player, action: string) -> (),
 	release: (player: Player, action: string) -> (),
 	answer: (player: Player, choice: number) -> (),
+	hold: (player: Player, block: string?) -> (),
 	-- these only look
 	kind: (name: string) -> any,
 	creature: (id: number | Creature) -> Creature?,

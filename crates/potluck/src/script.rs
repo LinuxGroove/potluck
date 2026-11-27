@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 9), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1), ("test", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 10), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1), ("test", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -96,6 +96,8 @@ pub struct KindDef {
     pub flies: bool,
     pub count: u32,
     pub home: Vec3,
+    /// What it does by itself, before any code (world 0.10).
+    pub behaviours: Option<crate::behaviours::Behaviours>,
 }
 
 #[derive(Clone, Debug)]
@@ -662,6 +664,8 @@ pub struct Scripts {
     /// What players did to blocks, for creations' `world.on`: (player,
     /// event, where, the block).
     block_events: Vec<(u32, &'static str, IVec3, blocks::BlockId)>,
+    /// Where each creature is with its kind's behaviours.
+    behaving: HashMap<u64, crate::behaviours::Behaving>,
 }
 
 pub(crate) fn vec_of(v: &Value) -> Option<Vec3> {
@@ -997,6 +1001,10 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
         count: def.get::<Option<u32>>("count")?.unwrap_or(1).min(32),
         home,
         parts,
+        behaviours: match def.get::<Option<Table>>("behaviours")? {
+            Some(t) => Some(crate::behaviours::parse(&t)?),
+            None => None,
+        },
     })
 }
 
@@ -2385,6 +2393,14 @@ impl Scripts {
             // they came to it, so it may ask them things again
             self.shared.lock().unwrap().ui.quiet.remove(&(player.id, creation.clone()));
         }
+        // its kind's behaviours first, so its own handler has the last word
+        if let Some(k) = vm.kinds.iter().find(|k| k.name == b.kind && k.behaviours.is_some()).cloned() {
+            let mut sounds = Vec::new();
+            if let Some(body) = herd.bodies.get_mut(&b.id) {
+                crate::behaviours::react(body, &k, event, player, &mut self.behaving, &mut vm.rng, &mut sounds);
+            }
+            self.shared.lock().unwrap().sounds.extend(sounds.into_iter().map(|p| (None, p)));
+        }
         let r = vm.session(voxels, herd, &players, &mut self.out, &creation, time.max(0.001), &mut log, |lua, _| {
             if let Some(f) = t.get::<Option<Function>>(event)? {
                 f.call::<()>((t.clone(), player_table(lua, &p)?))?;
@@ -2457,6 +2473,7 @@ impl Scripts {
             sh.ui.joined.extend(joined.iter().map(|p| p.id));
             sh.ui.time = time;
         }
+        self.behaving.retain(|i, _| herd.bodies.contains_key(i));
         for (id, vm) in self.vms.iter_mut() {
             if vm.paused {
                 continue;
@@ -2473,6 +2490,13 @@ impl Scripts {
                 }
             }
             vm.instances.retain(|i, _| herd.bodies.contains_key(i));
+            // what its creatures do by themselves, before its own code
+            if vm.kinds.iter().any(|k| k.behaviours.is_some()) {
+                let held = self.shared.lock().unwrap().held.clone();
+                let mut sounds = Vec::new();
+                crate::behaviours::step(herd, id, &vm.kinds, &players, &held, &mut self.behaving, &mut vm.rng, step, &mut sounds);
+                self.shared.lock().unwrap().sounds.extend(sounds.into_iter().map(|p| (None, p)));
+            }
             let bodies: Vec<Body> = herd.bodies.values().filter(|b| b.creation == *id).cloned().collect();
             let mut calls = Vec::new();
             for b in &bodies {

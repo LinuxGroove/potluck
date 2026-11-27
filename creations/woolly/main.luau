@@ -1,12 +1,12 @@
 --!strict
 -- Woolly: sheep that graze the Green and nibble the tall grass.
--- Interact with one and it follows you for a while. Hit one and it runs.
+-- Hold wheat and they come to you; Interact with one and it follows you for
+-- a while; hit one and it runs. All that is `behaviours`, with no code.
 -- In survival, Interact shears it too: you get wool, and it's a Shorn woolly
 -- (self:become) until its fleece grows back.
 
-local world = require("@potluck/world@0.9")
+local world = require("@potluck/world@0.10")
 local tweak = require("@potluck/tweak")
-local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	wool = { "#efe9dc", label = "Wool colour", order = 1 },
@@ -16,11 +16,22 @@ local knobs = tweak {
 	regrow = { 3, min = 0.5, max = 20, label = "Minutes for its wool to grow back", order = 5 },
 }
 
+-- what a sheep does by itself, sheared or not
+local SHEEP = {
+	follow_food = "Wheat",
+	follow_when_used = knobs.follow,
+	flee_when_hit = 6,
+	hop_when_hit = 0.8,
+	chatter = { "Baa.", "Baa?", "Meh-eh-eh." },
+	sound = "bleat",
+}
+
 local Woolly = world.creature {
 	name = "Woolly",
 	speed = 2,
 	count = math.floor(knobs.flock),
 	home = "green",
+	behaviours = SHEEP,
 	body = {
 		{ "fleece", size = { 1.0, 0.8, 1.3 }, at = { 0, 0.85, 0.05 }, color = knobs.wool },
 		{ "fleece_top", size = { 0.8, 0.2, 1.0 }, at = { 0, 1.32, 0.05 }, color = knobs.wool },
@@ -43,6 +54,7 @@ local Shorn = world.creature {
 	speed = 2.2,
 	count = 0,
 	home = "green",
+	behaviours = SHEEP,
 	body = {
 		{ "fleece", size = { 0.78, 0.58, 1.12 }, at = { 0, 0.8, 0.05 }, color = knobs.wool },
 		{ "head", size = { 0.46, 0.5, 0.5 }, at = { 0, 1.0, -0.7 }, color = "#3b3430", head = true },
@@ -58,18 +70,7 @@ local Shorn = world.creature {
 	},
 }
 
-local function find_player(id: number)
-	for _, p in world.players() do
-		if p.id == id then
-			return p
-		end
-	end
-	return nil
-end
-
 function Woolly:spawned()
-	self.following = nil
-	self.follow_left = 0
 	self.nibble = world.random(10, 40)
 end
 
@@ -81,22 +82,6 @@ function Woolly:tick(dt: number)
 			self:become(Woolly)
 		end
 	end
-	if self.following then
-		self.follow_left -= dt
-		local p = find_player(self.following)
-		if not p or self.follow_left <= 0 then
-			self.following = nil
-			self:say("Baa.")
-			sound.play("bleat", { at = self })
-		elseif self:distance_to(p.position) > 2.5 then
-			self:walk_to(p.position, 3.2)
-		else
-			self:stop()
-			self:face(p.position)
-		end
-		return
-	end
-	self:wander()
 	-- now and then a mouthful of the tall grass underfoot
 	self.nibble -= dt
 	if self.nibble <= 0 then
@@ -110,33 +95,16 @@ function Woolly:tick(dt: number)
 end
 
 function Woolly:used(player)
-	self.following = player.id
-	self.follow_left = knobs.follow
-	self:hop(0.5)
 	-- in survival, a fleecy one gives up its wool
 	if not self.regrow and world.pockets(player) ~= nil and world.give(player, "Cream wool", math.floor(knobs.shear)) > 0 then
 		self:become(Shorn)
 		self.regrow = knobs.regrow * 60
 		self:say("Baa! A bit chilly.")
-		sound.play("bleat", { at = self, pitch = 1.3 })
-		return
 	end
-	self:say("Baa?")
-	sound.play("bleat", { at = self, pitch = 1.15 })
 end
 
 function Woolly:hit(player)
-	self.following = nil
-	-- a good few blocks straight away from them, however close they stood
-	local d = self.position - player.position
-	d = vector.create(d.x, 0, d.z)
-	if vector.magnitude(d) < 0.1 then
-		d = vector.create(1, 0, 0)
-	end
-	self:walk_to(self.position + vector.normalize(d) * 6, 4.5)
-	self:hop(0.8)
 	self:say("Baa!")
-	sound.play("bleat", { at = self, pitch = 1.25 })
 end
 
 -- a shorn one is the same sheep
