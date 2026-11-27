@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -107,6 +107,8 @@ pub enum Msg {
     Piece { creation: String, id: String, piece: Option<crate::script::Piece> },
     /// The question a creation asks you now (`ui.ask`), or none.
     Panel(Option<crate::script::Panel>),
+    /// A sound a creation played near you, or for you (`sound.play`).
+    Sound(crate::sound::Play),
 }
 
 pub enum Event {
@@ -442,6 +444,7 @@ pub fn host_net(
     settings: Res<Settings>,
     mut info: ResMut<WorldInfo>,
     ticks: Res<crate::hosting::TickTimes>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     let pending = std::mem::take(&mut net.pending);
     let Role::Host(_) = &net.role else {
@@ -528,8 +531,13 @@ pub fn host_net(
                 Msg::Blocks(list) => {
                     let build = net.rules().map(|r| r.build).unwrap_or(true);
                     if build {
+                        let few = list.len() <= 8;
                         for (x, y, z, b) in list {
-                            voxels.set(IVec3::new(x, y, z), b);
+                            let p = IVec3::new(x, y, z);
+                            if few {
+                                block_sound(&mut heard, p, voxels.at(p), b);
+                            }
+                            voxels.set(p, b);
                         }
                     } else {
                         undo.push((id, list.iter().map(|&(x, y, z, _)| (x, y, z, voxels.at(IVec3::new(x, y, z)))).collect()));
@@ -660,6 +668,15 @@ impl Net {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
                 let _ = o.send(frame_msg(&Msg::Focus(creation)));
+            }
+        }
+    }
+
+    /// A sound for one player to hear.
+    pub fn send_sound(&self, pid: u32, play: crate::sound::Play) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Sound(play)));
             }
         }
     }
@@ -800,6 +817,7 @@ pub fn client_net(
     mut focus: ResMut<Focus>,
     mut info: ResMut<WorldInfo>,
     mut acts: ResMut<crate::ui::Acts>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     let Role::Client(_) = &net.role else { return };
     let events: Vec<Event> = match &net.role {
@@ -878,8 +896,14 @@ pub fn client_net(
                 }
                 Msg::Stop(id) => lib.running.retain(|r| *r != id),
                 Msg::Blocks(list) => {
+                    // what others built and broke (my own come back unchanged)
+                    let few = list.len() <= 8;
                     for (x, y, z, b) in list {
-                        voxels.apply(IVec3::new(x, y, z), b);
+                        let p = IVec3::new(x, y, z);
+                        if few {
+                            block_sound(&mut heard, p, voxels.at(p), b);
+                        }
+                        voxels.apply(p, b);
                     }
                 }
                 Msg::People { list, gone } => {
@@ -946,6 +970,7 @@ pub fn client_net(
                 Msg::Focus(c) => me.focus = c,
                 Msg::Piece { creation, id, piece } => me.show(crate::script::UiChange::Piece { creation, id, piece }),
                 Msg::Panel(p) => me.show(crate::script::UiChange::Panel(p)),
+                Msg::Sound(p) => heard.0.push(p),
                 _ => {}
             },
         }
@@ -1067,5 +1092,21 @@ pub fn draw_me(
     let want = if me.third_person { Visibility::Inherited } else { Visibility::Hidden };
     if *vis != want {
         *vis = want;
+    }
+}
+
+/// The sound of someone else's block changing: breaking, or placing.
+fn block_sound(heard: &mut crate::sound::Heard, p: IVec3, old: u8, new: u8) {
+    use crate::sound::material;
+    if old == new {
+        return;
+    }
+    let at = p.as_vec3() + Vec3::splat(0.5);
+    if new == crate::blocks::AIR {
+        if let Some(n) = material(old).breaks() {
+            heard.game(n, at, 0.6, 1.0);
+        }
+    } else {
+        heard.game("place", at, 0.5, material(new).knock());
     }
 }

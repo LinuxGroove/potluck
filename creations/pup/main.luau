@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	coat = { "#c58b4e", label = "Coat colour", order = 1 },
@@ -50,6 +51,7 @@ function Pup:tick(dt: number)
 		if self:distance_to(self.fetching) < 1.2 then
 			self.fetching = nil
 			self:say("Woof!")
+			sound.play("yip", { at = self, pitch = 0.8 })
 		else
 			return
 		end
@@ -84,10 +86,12 @@ function Pup:used(player)
 	self.back_to = player.position
 	self:walk_to(self.fetching, 5)
 	self:say("Arf!")
+	sound.play("yip", { at = self })
 end
 
 function Pup:hit(player)
 	self.sit = 3
 	self.fetching = nil
 	self:say("Whimper.")
+	sound.play("yip", { at = self, volume = 0.5, pitch = 1.4 })
 end

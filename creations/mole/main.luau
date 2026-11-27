@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	hills = { 4, min = 0, max = 10, label = "Molehills each", order = 1 },
@@ -50,6 +51,7 @@ function Mole:tick(dt: number)
 	world.set_block(above, "Dirt")
 	table.insert(self.hills, { x, y + 1, z })
 	self:say("*sniff*")
+	sound.play("dig", { at = self, volume = 0.5 })
 	-- flatten the oldest once there are enough
 	while #self.hills > knobs.hills do
 		local old = table.remove(self.hills, 1)
@@ -63,4 +65,5 @@ end
 function Mole:hit(player)
 	self:hop(0.5)
 	self:say("Eep!")
+	sound.play("yip", { at = self, pitch = 1.5 })
 end

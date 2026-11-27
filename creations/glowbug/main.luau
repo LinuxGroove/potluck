@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	glow = { "#ffd76a", label = "Glow colour", order = 1 },
@@ -49,4 +50,5 @@ function Glowbug:hit(player)
 	local away = self.position + (self.position - player.position) * 3
 	self:walk_to(away, 4)
 	self:hop(1.2)
+	sound.play("sparkle", { at = self, volume = 0.7 })
 end

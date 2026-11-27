@@ -7,6 +7,7 @@
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
 local game = require("@potluck/game@0.1")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	fleece = { "#d8cfbf", label = "Fleece colour", order = 1 },
@@ -66,6 +67,7 @@ local function finish(ram)
 		world.say(who.name .. " rode the Rodeo Ram for " .. seconds(t) .. ". A new record!")
 	else
 		ram:say(seconds(t) .. "! Best is " .. seconds(best.value) .. ".")
+		sound.play("ding", { at = ram })
 	end
 end
 
@@ -87,6 +89,7 @@ function Ram:tick(dt: number)
 		if world.random() < chance then
 			self:throw_rider(knobs.buck)
 			self:say(SNORTS[math.floor(world.random(1, #SNORTS + 1))])
+			sound.play("bleat", { at = self, pitch = 0.8 })
 			finish(self)
 		end
 	end
@@ -97,6 +100,7 @@ function Ram:ridden(player)
 	self.started = world.time()
 	self.buck_in = 1.5
 	self:say("Hold on!")
+	sound.play("bleat", { at = self })
 end
 
 function Ram:hit(player)

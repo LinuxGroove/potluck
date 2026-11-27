@@ -37,6 +37,10 @@ pub struct Settings {
     pub parent_pin: String,
     /// Creations' actions moved to other buttons, by `creation/action`.
     pub bindings: std::collections::BTreeMap<String, Binding>,
+    /// How loud everything is, 0 to 1.
+    pub volume: f32,
+    /// Words on the screen for sounds, and which side they're on.
+    pub subtitles: bool,
 }
 
 /// A creation's action on buttons the player chose.
@@ -66,6 +70,8 @@ impl Default for Settings {
             servers: true,
             parent_pin: String::new(),
             bindings: Default::default(),
+            volume: 0.8,
+            subtitles: false,
         }
     }
 }

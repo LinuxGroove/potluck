@@ -18,6 +18,7 @@ pub mod render;
 pub mod script;
 pub mod settings;
 pub mod share;
+pub mod sound;
 pub mod textures;
 pub mod transport;
 pub mod ui;
@@ -52,6 +53,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<share::ShareJobs>()
         .init_resource::<green::Green>()
         .init_resource::<hosting::TickTimes>()
+        .init_resource::<sound::Heard>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
@@ -59,6 +61,10 @@ pub fn sim(app: &mut App, seed: u32) {
             Update,
             (game::host_step, net::host_net, game::reloads, game::share_results).chain().in_set(Sim),
         );
+    // sounds, where there's a speaker: the game, not the server
+    if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
+        sound::add(app);
+    }
 }
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]

@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 2), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 2), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -45,6 +45,8 @@ pub const MAX_ASKS: usize = 64;
 /// After a player closes a creation's panel, its questions to them are
 /// answered with nil for this many seconds.
 pub const QUIET: f64 = 10.0;
+/// Sounds one creation may play in a second (`@potluck/sound`).
+pub const SOUNDS_A_SECOND: f32 = 10.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum KnobValue {
@@ -103,6 +105,9 @@ pub struct GameShared {
     pub store: Store,
     pub input: InputState,
     pub ui: UiState,
+    /// Sounds creations played since the host last looked: (only this
+    /// player, or anyone near enough; the sound).
+    pub sounds: Vec<(Option<u32>, crate::sound::Play)>,
 }
 
 /// A line a creation shows on a player's screen (`@potluck/ui`).
@@ -343,6 +348,8 @@ struct Waiting {
     asks: Vec<(u32, u32, Function)>,
     /// (ask, player, choice from 0): answers to give on the next tick.
     answers: Vec<(u32, u32, Option<u32>)>,
+    /// Sounds it may still play, refilled each tick up to a second's worth.
+    sound_budget: f32,
 }
 
 struct Timer {
@@ -644,7 +651,7 @@ impl Vm {
             Ok(VmState::Continue)
         });
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
-        let waiting = Arc::new(Mutex::new(Waiting::default()));
+        let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, ..default() }));
         let setup = || -> mlua::Result<(Table, Table, Table)> {
             let world = lua.create_table()?;
             let game = lua.create_table()?;
@@ -867,6 +874,54 @@ impl Vm {
                     })?,
                 )?;
             }
+            // sound 0.1: the game's sounds, by name, somewhere or for one player
+            let sound = lua.create_table()?;
+            {
+                // (where, volume, pitch, caption) from play's options
+                let options = |opts: Option<Table>| -> mlua::Result<(Option<[f32; 3]>, f32, f32, Option<String>)> {
+                    let Some(o) = opts else { return Ok((None, 1.0, 1.0, None)) };
+                    let at = match o.get::<Value>("at")? {
+                        Value::Nil => None,
+                        // a creature: where it is
+                        Value::Table(t) if t.raw_get::<Option<u64>>("id")?.is_some() => vec_of(&t.raw_get::<Value>("position")?),
+                        v => Some(vec_of(&v).ok_or_else(|| bad("a sound's at is a position or a creature"))?),
+                    };
+                    let volume = o.get::<Option<f32>>("volume")?.unwrap_or(1.0);
+                    let pitch = o.get::<Option<f32>>("pitch")?.unwrap_or(1.0);
+                    if !volume.is_finite() || !pitch.is_finite() {
+                        return Err(bad("a sound's volume and pitch are numbers"));
+                    }
+                    let caption = o.get::<Option<String>>("caption")?.map(|c| c.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(30).collect::<String>()).filter(|c| !c.is_empty());
+                    Ok((at.map(|p| p.to_array()), volume.clamp(0.0, 1.0), pitch.clamp(0.5, 2.0), caption))
+                };
+                let queue = |sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
+                    if crate::sound::caption_of(&name).is_none() {
+                        return Err(bad(format!("there's no sound called \"{name}\" (sound.names() lists them)")));
+                    }
+                    let mut w = w.lock().unwrap();
+                    if w.sound_budget < 1.0 {
+                        // too many at once: this one's skipped
+                        return Ok(false);
+                    }
+                    w.sound_budget -= 1.0;
+                    sh.lock().unwrap().sounds.push((who, crate::sound::Play { name, at, volume, pitch, caption }));
+                    Ok(true)
+                };
+                let (sh, w) = (shared.clone(), waiting.clone());
+                sound.set(
+                    "play",
+                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&sh, &w, None, name, options(opts)?))?,
+                )?;
+                let (sh, w) = (shared.clone(), waiting.clone());
+                sound.set(
+                    "play_for",
+                    lua.create_function(move |_, (player, name, opts): (Value, String, Option<Table>)| {
+                        let pid = pid_of(&player)?;
+                        queue(&sh, &w, Some(pid), name, options(opts)?)
+                    })?,
+                )?;
+                sound.set("names", lua.create_function(|_, ()| Ok(crate::sound::SOUNDS.iter().map(|s| s.0).collect::<Vec<_>>()))?)?;
+            }
             // store 0.1: what this creation keeps in this world
             let store = lua.create_table()?;
             {
@@ -939,6 +994,7 @@ impl Vm {
                         "store" => Value::Table(store.clone()),
                         "input" => Value::Table(input.clone()),
                         "ui" => Value::Table(ui.clone()),
+                        "sound" => Value::Table(sound.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -1496,6 +1552,25 @@ impl Scripts {
         out
     }
 
+    /// Sounds creations played, and who hears each: the player it's for,
+    /// or everyone near enough (everyone, for one that's nowhere).
+    pub fn sound_changes(&mut self) -> Vec<(u32, crate::sound::Play)> {
+        let list = std::mem::take(&mut self.shared.lock().unwrap().sounds);
+        let mut out = vec![];
+        for (who, play) in list {
+            for p in &self.players {
+                let near = match play.at {
+                    Some(at) => p.pos.distance(Vec3::from_array(at)) <= crate::sound::HEARD_WITHIN,
+                    None => true,
+                };
+                if who.map_or(near, |w| w == p.id) {
+                    out.push((p.id, play.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// Calls a creature's handler for something a player did to it.
     pub fn event(&mut self, voxels: &mut Voxels, herd: &mut Herd, body: u64, event: &str, player: &PlayerInfo) {
         let Some(b) = herd.bodies.get(&body).cloned() else { return };
@@ -1575,6 +1650,10 @@ impl Scripts {
             }
             let mut log = Vec::new();
             let waiting = vm.waiting.clone();
+            {
+                let mut w = waiting.lock().unwrap();
+                w.sound_budget = (w.sound_budget + step * SOUNDS_A_SECOND).min(SOUNDS_A_SECOND);
+            }
             if !left.is_empty() {
                 // questions to players who went get no answer
                 let mut w = waiting.lock().unwrap();

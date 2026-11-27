@@ -655,6 +655,8 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
                 Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
+                Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
+                Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
                 button("Creations' buttons", Act::OpenControls),
@@ -731,6 +733,7 @@ pub fn menu_input(
     time: Res<Time>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut last_cursor: Local<Option<Vec2>>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     // a button drawn again under a resting pointer counts as hovered; only a
     // pointer that moved should take the selection from the keys or the pad
@@ -806,6 +809,7 @@ pub fn menu_input(
     match &item.kind {
         Kind::Button(act) => {
             if accept {
+                heard.click();
                 acts.0.push(act.clone());
             }
         }
@@ -899,6 +903,8 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("fov", KnobValue::Number(n)) => settings.fov = n.round() as f32,
         ("invert", KnobValue::Toggle(b)) => settings.invert_y = b,
         ("survival", KnobValue::Toggle(b)) => settings.survival = b,
+        ("volume", KnobValue::Number(n)) => settings.volume = n.clamp(0.0, 1.0) as f32,
+        ("subtitles", KnobValue::Toggle(b)) => settings.subtitles = b,
         // a parent's, once unlocked
         ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
         ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,
@@ -1131,6 +1137,9 @@ pub struct LabelText(usize);
 /// Where creations' lines go (`ui.show`): an index into `script::PLACES`.
 #[derive(Component)]
 pub struct PieceText(usize);
+/// Subtitles for sounds, bottom right.
+#[derive(Component)]
+pub struct CaptionText;
 
 pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
     let ui = fonts.ui.clone();
@@ -1215,6 +1224,16 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                     Visibility::Hidden,
                 ));
             }
+            h.spawn((
+                CaptionText,
+                Text::new(""),
+                TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() },
+                TextColor(INK),
+                TextLayout::justify(Justify::Right),
+                Node { position_type: PositionType::Absolute, right: px(18), bottom: px(96), padding: UiRect::axes(px(10), px(6)), border_radius: BorderRadius::all(px(8)), ..default() },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                Visibility::Hidden,
+            ));
             for i in 0..24 {
                 h.spawn((
                     LabelText(i),
@@ -1256,6 +1275,7 @@ pub fn update_hud(
         Query<&mut Text, With<InfoText>>,
         Query<(&LabelText, &mut Text, &mut Node, &mut Visibility)>,
         Query<(&PieceText, &mut Text, &mut Visibility), Without<Hud>>,
+        Query<(&mut Text, &mut Visibility), (With<CaptionText>, Without<Hud>)>,
     )>,
     mut health: Query<(&mut Node, &mut BackgroundColor), (With<HealthBar>, Without<LabelText>)>,
     cam: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -1318,6 +1338,11 @@ pub fn update_hud(
     }
     if let Ok(mut t) = texts.p3().single_mut() {
         t.0 = info.line.clone();
+    }
+    // subtitles, newest at the bottom
+    if let Ok((mut t, mut v)) = texts.p6().single_mut() {
+        t.0 = me.captions.iter().map(|c| c.0.as_str()).collect::<Vec<_>>().join("\n");
+        *v = if t.0.is_empty() || !show { Visibility::Hidden } else { Visibility::Inherited };
     }
     // creations' lines, each place's in the order of their creation and id
     for (place, mut t, mut v) in &mut texts.p5() {

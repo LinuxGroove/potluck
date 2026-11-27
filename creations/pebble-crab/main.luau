@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	shell = { "#c8553d", label = "Shell colour", order = 1 },
@@ -48,6 +49,7 @@ function Crab:tick(dt: number)
 		local side = vector.create(-d.z, 0, d.x)
 		self:walk_to(self.position + side * 1.5 + d * 0.5, 3.6)
 		self:say("Click!")
+		sound.play("click", { at = self })
 		self.calm = 2
 		return
 	end
@@ -60,10 +62,12 @@ function Crab:used(player)
 	self.dance = 2.5
 	self:face(player.position)
 	self:say("Click click!")
+	sound.play("click", { at = self, pitch = 1.2 })
 end
 
 function Crab:hit(player)
 	self:hop(0.9)
 	self:say("Snip!")
+	sound.play("click", { at = self, pitch = 0.7 })
 	self.calm = 0
 end
