@@ -337,7 +337,7 @@ end
 
 ## Testing
 
-Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error.
+Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error, and for how it's doing against its budgets: how long its ticks take of their 15 ms, on average and at most lately, and its memory of 32 MB.
 
 ### With a coding helper: the dev bridge
 

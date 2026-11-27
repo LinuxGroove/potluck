@@ -636,6 +636,14 @@ pub struct Vm {
     deadline: Arc<Mutex<Instant>>,
     rng: Rng,
     pub load_ms: f32,
+    /// How long its ticks take, on average and at most lately, in ms: its
+    /// budget is `TICK_BUDGET`.
+    pub tick_ms: f32,
+    pub tick_peak: f32,
+    /// What Look inside shows of them, taken once a second so the screen
+    /// isn't redrawn every tick: (average, longest, memory in bytes).
+    shown: (f32, f32, usize),
+    ticks: u32,
 }
 
 #[derive(Resource, Default)]
@@ -1595,6 +1603,10 @@ impl Vm {
             deadline,
             rng: Rng::new(crate::noise::seed_of(&creation.id)),
             load_ms: 0.0,
+            tick_ms: 0.0,
+            tick_peak: 0.0,
+            shown: (0.0, 0.0, 0),
+            ticks: 0,
         };
         // the top level runs with the read-only parts of the world reachable
         let mut scratch_vox = Voxels::empty(0);
@@ -1979,6 +1991,19 @@ impl Vm {
     /// The memory its sandbox uses, in bytes.
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
+    }
+
+    /// How it's doing against its budgets, for Look inside: a tick's time
+    /// (on average, and the longest lately) of its 15 ms, and its memory of 32 MB.
+    pub fn budget(&self) -> String {
+        let (avg, peak, mem) = self.shown;
+        let mem = if self.ticks == 0 { self.memory() } else { mem };
+        format!(
+            "a tick takes {avg:.1} ms (at most {peak:.1}) of its {} ms  ·  {:.1} of {} MB",
+            TICK_BUDGET.as_millis(),
+            mem as f32 / (1 << 20) as f32,
+            MEMORY_LIMIT >> 20
+        )
     }
 
     /// The creatures' own fields, to carry over a reload.
@@ -2450,6 +2475,7 @@ impl Scripts {
                 w.answers.retain(|a| !left.iter().any(|p| p.id == a.1));
                 w.notes.retain(|n| !left.iter().any(|p| p.id == n.0));
             }
+            let began = Instant::now();
             let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
                 // who came and went
                 if !joined.is_empty() || !left.is_empty() {
@@ -2518,6 +2544,13 @@ impl Scripts {
                 }
                 Ok(())
             });
+            let ms = began.elapsed().as_secs_f32() * 1000.0;
+            vm.tick_ms = if vm.tick_ms == 0.0 { ms } else { vm.tick_ms * 0.95 + ms * 0.05 };
+            vm.tick_peak = (vm.tick_peak * 0.99).max(ms);
+            vm.ticks += 1;
+            if vm.ticks % 10 == 1 {
+                vm.shown = (vm.tick_ms, vm.tick_peak, vm.memory());
+            }
             vm.log.extend(log);
             if vm.log.len() > 200 {
                 let n = vm.log.len() - 200;
