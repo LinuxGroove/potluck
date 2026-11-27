@@ -130,4 +130,4 @@ Pushing to `main` builds both snaps (`potluck` and `potluck-server`, for amd64 a
 
 ## License
 
-The code is MIT; see [LICENSE](LICENSE). The fonts (Fredoka and Montserrat) are under the SIL Open Font License ([assets/fonts/OFL.txt](assets/fonts/OFL.txt)). Creations carry their own licence in their `potluck.toml`; the base game's are CC-BY-4.0.
+The code is MIT; see [LICENSE](LICENSE). The fonts (Bungee and Barlow) are under the SIL Open Font License ([assets/fonts/OFL.txt](assets/fonts/OFL.txt)). Creations carry their own licence in their `potluck.toml`; the base game's are CC-BY-4.0.
