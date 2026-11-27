@@ -115,6 +115,48 @@ fn layer_problems(what: &str, t: &toml::Table, keys: &[&str], out: &mut Vec<Stri
     }
 }
 
+/// The most cubes of a model a body uses (the game's `model::MAX_PARTS`).
+pub const MAX_MODEL_CUBES: usize = 64;
+
+/// How many cubes a Blockbench model has, as the game's `model::read` counts
+/// them (visible cubes with a `from` and a `to`), or why it isn't one.
+pub fn model_cubes(text: &str) -> Result<usize, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("isn't a Blockbench model: {e}"))?;
+    let elements = v.get("elements").and_then(|e| e.as_array()).ok_or("has no cubes in it (is it a Blockbench .bbmodel?)")?;
+    Ok(elements
+        .iter()
+        .filter(|e| e.get("type").and_then(|t| t.as_str()).unwrap_or("cube") == "cube")
+        .filter(|e| e.get("visibility").and_then(|v| v.as_bool()) != Some(false))
+        .filter(|e| e.get("from").and_then(|f| f.as_array()).is_some_and(|f| f.len() == 3) && e.get("to").and_then(|t| t.as_array()).is_some_and(|t| t.len() == 3))
+        .count())
+}
+
+/// The names in a model (its own, its cubes', groups' and textures'), which
+/// are all of it a person reads: the rest is numbers and pictures.
+fn model_names(text: &str) -> String {
+    fn names(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(o) => {
+                if let Some(n) = o.get("name").and_then(|n| n.as_str()) {
+                    out.push(n.to_string());
+                }
+                for (k, c) in o {
+                    if k != "source" {
+                        names(c, out);
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|c| names(c, out)),
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        names(&v, &mut out);
+    }
+    out.join(" ")
+}
+
 /// What's wrong with a creation's own sounds.
 pub fn sound_problems(sounds: &BTreeMap<String, toml::Value>) -> Vec<String> {
     let mut out = vec![];
@@ -152,14 +194,14 @@ pub fn sound_problems(sounds: &BTreeMap<String, toml::Value>) -> Vec<String> {
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.10"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.1"), ("test", "0.2")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.11"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.1"), ("test", "0.2")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
 pub const MAX_FILES: usize = 64;
 pub const MAX_FILE: usize = 128 * 1024;
 pub const MAX_SIZE: usize = 256 * 1024;
-const TEXT: &[&str] = &["luau", "lua", "toml", "md", "txt", "json"];
+const TEXT: &[&str] = &["luau", "lua", "toml", "md", "txt", "json", "bbmodel"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Check {
@@ -423,6 +465,28 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         });
     }
 
+    // Its Blockbench models (world 0.11), read as the game reads them
+    let models: Vec<_> = files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).collect();
+    if !models.is_empty() {
+        let mut problems = vec![];
+        let mut notes = vec![];
+        for (name, text) in &models {
+            match model_cubes(text) {
+                Err(e) => problems.push(format!("{name} {e}")),
+                Ok(0) => problems.push(format!("{name} has no cubes in it to make a body from")),
+                Ok(n) if n > MAX_MODEL_CUBES => notes.push(format!("{name} has {n} cubes, and a body uses the first {MAX_MODEL_CUBES}")),
+                Ok(_) => {}
+            }
+        }
+        out.push(if !problems.is_empty() {
+            Check::new("Models", "fail", problems.join("; "))
+        } else if !notes.is_empty() {
+            Check::new("Models", "warn", notes.join("; "))
+        } else {
+            Check::new("Models", "pass", format!("{} Blockbench model{}", models.len(), if models.len() == 1 { "" } else { "s" }))
+        });
+    }
+
     // The code compiles
     let mut code_problems = Vec::new();
     for (name, text) in files.iter().filter(|(n, _)| n.ends_with(".luau") || n.ends_with(".lua")) {
@@ -450,7 +514,15 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         }
         let mut in_code = Vec::new();
         for (name, text) in files {
-            let t = if name.ends_with(".luau") || name.ends_with(".lua") { strings_in(text) } else if name == "potluck.toml" || name == "AGENTS.md" || name.starts_with("types/") { String::new() } else { text.clone() };
+            let t = if name.ends_with(".luau") || name.ends_with(".lua") {
+                strings_in(text)
+            } else if name.ends_with(".bbmodel") {
+                model_names(text)
+            } else if name == "potluck.toml" || name == "AGENTS.md" || name.starts_with("types/") {
+                String::new()
+            } else {
+                text.clone()
+            };
             in_code.extend(words.find(&t));
         }
         out.push(if !shown.is_empty() {
@@ -523,6 +595,33 @@ mod tests {
             let c = with(bad);
             assert_eq!(c.result, "fail", "{bad}: {c:?}");
         }
+    }
+
+    #[test]
+    fn blockbench_models_are_checked_and_only_their_names_are_read() {
+        let words = Words::parse("grumble\n");
+        let with = |model: &str| {
+            let mut f = creation("local world = require(\"@potluck/world@0.11\")\n");
+            f.insert("models/hopper.bbmodel".into(), model.into());
+            let (_, checks) = run(&f, &words, &|_| false);
+            checks
+        };
+        let find = |checks: &[Check], name: &str| checks.iter().find(|c| c.name == name).cloned().unwrap_or_else(|| panic!("a {name} check: {checks:?}"));
+        let cube = r#"{"name": "leg", "from": [0, 0, 0], "to": [2, 4, 2]}"#;
+        // a picture whose letters happen to spell a word is still only a picture
+        let good = with(&format!(r#"{{"elements": [{cube}, {{"type": "mesh", "name": "tail"}}], "textures": [{{"name": "skin", "source": "data:image/png;base64,GRUMBLE"}}]}}"#));
+        let models = find(&good, "Models");
+        assert_eq!((models.result.as_str(), models.note.as_str()), ("pass", "1 Blockbench model"), "{models:?}");
+        assert_eq!(find(&good, "Size").result, "pass");
+        assert_eq!(find(&good, "Words").result, "pass", "{good:?}");
+        let named = with(&format!(r#"{{"elements": [{cube}, {{"name": "grumble", "from": [0, 0, 0], "to": [1, 1, 1]}}]}}"#));
+        assert_eq!(find(&named, "Words").result, "warn", "a cube's name is read");
+        for bad in ["{ not json", r#"{"cubes": []}"#, r#"{"elements": [{"type": "mesh"}]}"#] {
+            assert_eq!(find(&with(bad), "Models").result, "fail", "{bad}");
+        }
+        let many: Vec<String> = (0..70).map(|_| cube.to_string()).collect();
+        assert_eq!(find(&with(&format!(r#"{{"elements": [{}]}}"#, many.join(","))), "Models").result, "warn");
+        assert_eq!(model_cubes(&format!(r#"{{"elements": [{cube}, {{"name": "x", "from": [0, 0, 0], "to": [1, 1, 1], "visibility": false}}]}}"#)), Ok(1));
     }
 
     #[test]
