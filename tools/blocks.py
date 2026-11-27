@@ -21,6 +21,7 @@ import os
 import sys
 
 import bpy
+import numpy as np
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 pos = [a for a in argv if not a.startswith("only=")]
@@ -29,6 +30,8 @@ OUT = os.path.abspath(pos[0] if pos else os.path.join(HERE, "..", "assets", "blo
 RES = int(pos[1]) if len(pos) > 1 else 128
 ONLY = next((a[5:].split(",") for a in argv if a.startswith("only=")), None)
 TAU = math.tau
+# cell patterns are worked out here at this size and sampled as images
+CELL_RES = min(2048, max(512, RES * 4))
 
 
 def lin(h):
@@ -62,6 +65,58 @@ WOOL = {
     "wool_blue": [0x1f4f8a, 0x2c65a8, 0x3c7cc2, 0x5595d6],
     "wool_yellow": [0xc28a17, 0xdca424, 0xeebd3a, 0xf8d35a],
 }
+
+
+_cells = {}
+
+
+def periodic_cells(nx, ny, seed, rand):
+    """Voronoi of one jittered point per grid square, nx by ny, wrapping at
+    the edges, as Blender works it out: F1 distance, smooth F1 (smoothness
+    1), distance to the nearest edge and a random value per cell, each a
+    CELL_RES square array with rows running up the texture. Distances are in
+    grid squares, as Blender's are at scale 1."""
+    key = (nx, ny, seed, rand)
+    if key in _cells:
+        return _cells[key]
+    rng = np.random.default_rng(int(seed * 1000) + 7)
+    jit = 0.5 + (rng.random((ny, nx, 2)) - 0.5) * rand
+    val = rng.random((ny, nx))
+    t = (np.arange(CELL_RES) + 0.5) / CELL_RES
+    y, x = np.meshgrid(t * ny, t * nx, indexing="ij")
+    cx, cy = np.floor(x).astype(int), np.floor(y).astype(int)
+    fx, fy = x - cx, y - cy
+
+    def to_point(di, dj):
+        gx, gy = (cx + di) % nx, (cy + dj) % ny
+        return di + jit[gy, gx, 0] - fx, dj + jit[gy, gx, 1] - fy, val[gy, gx]
+
+    f1 = np.full(x.shape, 1e9)
+    bx, by, bv = np.zeros(x.shape), np.zeros(x.shape), np.zeros(x.shape)
+    for dj in (-1, 0, 1):
+        for di in (-1, 0, 1):
+            px, py, v = to_point(di, dj)
+            d = np.hypot(px, py)
+            m = d < f1
+            f1 = np.where(m, d, f1)
+            bx, by, bv = np.where(m, px, bx), np.where(m, py, by), np.where(m, v, bv)
+    smooth = np.full(x.shape, 8.0)
+    edge = np.full(x.shape, 1e9)
+    k = 0.5  # Blender halves the smoothness
+    for dj in (-2, -1, 0, 1, 2):
+        for di in (-2, -1, 0, 1, 2):
+            px, py, _ = to_point(di, dj)
+            d = np.hypot(px, py)
+            h = np.clip(0.5 + 0.5 * (smooth - d) / k, 0.0, 1.0)
+            h = h * h * (3.0 - 2.0 * h)
+            smooth = smooth + (d - smooth) * h - k * h * (1.0 - h)
+            ex, ey = px - bx, py - by
+            l2 = ex * ex + ey * ey
+            ok = l2 > 1e-4
+            dist = ((bx + px) * 0.5 * ex + (by + py) * 0.5 * ey) / np.sqrt(np.where(ok, l2, 1.0))
+            edge = np.where(ok, np.minimum(edge, dist), edge)
+    _cells[key] = (f1, smooth, edge, bv)
+    return _cells[key]
 
 
 class Graph:
@@ -168,20 +223,38 @@ class Graph:
         return nd.outputs["Fac"]
 
     def voronoi(self, r, feature="F1", out="Distance", seed=0.0, rand=1.0, ry=None):
-        vec, w = self.torus(r, ox=seed * 23.0, ry=ry)
-        nd = self.node("ShaderNodeTexVoronoi", voronoi_dimensions="4D", feature=feature)
-        self.feed(nd.inputs["Vector"], vec)
-        self.feed(nd.inputs["W"], w)
-        nd.inputs["Scale"].default_value = 1.0
-        nd.inputs["Randomness"].default_value = rand
-        return nd.outputs[out]
+        """Cells about as many across as noise of the same r has features
+        (2 pi r), from a flat voronoi that wraps at the tile's edges. (4D
+        voronoi on the torus tiles too, but its cells meet the surface at
+        slants and leave round bubbles and smudges.)"""
+        ry = r if ry is None else ry
+        nx, ny = max(1, round(TAU * r)), max(1, round(TAU * ry))
+        f1, smooth, edge, value = periodic_cells(nx, ny, seed, rand)
+        if out == "Color":
+            arr = value
+        elif feature == "DISTANCE_TO_EDGE":
+            arr = edge
+        elif feature == "SMOOTH_F1":
+            arr = smooth
+        else:
+            arr = f1
+        name = f"cells {nx}x{ny} {seed} {rand} {feature} {out}"
+        img = bpy.data.images.get(name)
+        if img is None:
+            img = bpy.data.images.new(name, CELL_RES, CELL_RES, alpha=False, float_buffer=True)
+            img.colorspace_settings.name = "Non-Color"
+            px = np.ones((CELL_RES, CELL_RES, 4), dtype=np.float32)
+            px[..., 0] = px[..., 1] = px[..., 2] = arr
+            img.pixels.foreach_set(px.ravel())
+        nd = self.node("ShaderNodeTexImage", image=img, interpolation="Linear", extension="REPEAT")
+        self.feed(nd.inputs["Vector"], self.uv)
+        sep = self.node("ShaderNodeSeparateColor")
+        self.feed(sep.inputs[0], nd.outputs["Color"])
+        return sep.outputs[0]
 
     def cell_value(self, r, seed=0.0):
         """A random number per voronoi cell, for colouring stones one by one."""
-        c = self.voronoi(r, out="Color", seed=seed)
-        sep = self.node("ShaderNodeSeparateColor")
-        self.feed(sep.inputs[0], c)
-        return sep.outputs[0]
+        return self.voronoi(r, out="Color", seed=seed)
 
     def bricks(self, across, rows, mortar, offset=0.5, smooth=0.1):
         """Fac is 1 in the mortar; a random shade per brick comes out too."""
