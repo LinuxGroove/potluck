@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -103,6 +103,10 @@ pub enum Msg {
     Tweak { id: String, knobs: BTreeMap<String, serde_json::Value> },
     /// The creation that has your controls now (`input.focus`), or none.
     Focus(Option<String>),
+    /// A line a creation shows on your screen (`ui.show`), or hides with None.
+    Piece { creation: String, id: String, piece: Option<crate::script::Piece> },
+    /// The question a creation asks you now (`ui.ask`), or none.
+    Panel(Option<crate::script::Panel>),
 }
 
 pub enum Event {
@@ -660,6 +664,19 @@ impl Net {
         }
     }
 
+    /// What a creation shows one player, or asks them.
+    pub fn send_ui(&self, pid: u32, change: crate::script::UiChange) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let m = match change {
+                    crate::script::UiChange::Piece { creation, id, piece } => Msg::Piece { creation, id, piece },
+                    crate::script::UiChange::Panel(p) => Msg::Panel(p),
+                };
+                let _ = o.send(frame_msg(&m));
+            }
+        }
+    }
+
     /// A line for one player's screen.
     pub fn tell(&self, pid: u32, text: &str) {
         if let Role::Host(h) = &self.role {
@@ -927,6 +944,8 @@ pub fn client_net(
                 Msg::Thrown(v) => throw(&mut me, Vec3::from_array(v)),
                 Msg::Toast(t) => toasts.push(t),
                 Msg::Focus(c) => me.focus = c,
+                Msg::Piece { creation, id, piece } => me.show(crate::script::UiChange::Piece { creation, id, piece }),
+                Msg::Panel(p) => me.show(crate::script::UiChange::Panel(p)),
                 _ => {}
             },
         }

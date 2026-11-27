@@ -62,6 +62,10 @@ pub struct Me {
     pub pressing: (Option<String>, Vec<String>),
     /// What the live creation's buttons do, for the HUD.
     pub live_prompt: Option<String>,
+    /// Lines creations show on this screen (`ui.show`), by (creation, id).
+    pub pieces: std::collections::BTreeMap<(String, String), crate::script::Piece>,
+    /// The question a creation asks this player now (`ui.ask`), as the host said.
+    pub panel: Option<crate::script::Panel>,
     regen: f32,
     /// Seconds since the last hurt, for the HUD's flash.
     pub hurt: f32,
@@ -94,6 +98,8 @@ impl Default for Me {
             focus: None,
             pressing: (None, vec![]),
             live_prompt: None,
+            pieces: Default::default(),
+            panel: None,
             regen: 0.0,
             hurt: 9.0,
         }
@@ -101,6 +107,19 @@ impl Default for Me {
 }
 
 impl Me {
+    /// What a creation shows this player, or asks them, from the host.
+    pub fn show(&mut self, change: crate::script::UiChange) {
+        match change {
+            crate::script::UiChange::Piece { creation, id, piece: Some(p) } => {
+                self.pieces.insert((creation, id), p);
+            }
+            crate::script::UiChange::Piece { creation, id, piece: None } => {
+                self.pieces.remove(&(creation, id));
+            }
+            crate::script::UiChange::Panel(p) => self.panel = p,
+        }
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.pos + Vec3::Y * EYE
     }

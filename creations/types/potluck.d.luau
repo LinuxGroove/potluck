@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1
+-- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1
 
 export type Position = vector | { number }
 
@@ -92,6 +92,19 @@ export type Input = {
 	held: (action: string, player: Player | number) -> boolean,
 	focus: (player: Player | number, on: boolean?) -> (),
 	focused: (player: Player | number) -> boolean,
+}
+
+export type Question = {
+	title: string?,
+	text: string?,
+	choices: { string }?,
+}
+
+export type UI = {
+	show: (player: Player | number | nil, id: string, text: string, opts: { at: ("right" | "left" | "bottom")? }?) -> (),
+	hide: (player: Player | number | nil, id: string) -> (),
+	ask: (player: Player | number, question: Question, fn: (player: Player, choice: number?) -> ()) -> number,
+	close: (player: Player | number) -> boolean,
 }
 
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }

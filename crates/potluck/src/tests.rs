@@ -1376,3 +1376,167 @@ print(pcall(input.on, "fly", function() end) and "fly ok" or "no fly")
     assert_eq!(s.bindings.get("test/spin"), Some(&Binding { pad: "Y".into(), keys: "R".into() }), "the pad moved, the key stayed");
     assert!(app.world().resource::<Focus>().rebinding.is_none());
 }
+
+#[test]
+fn creations_show_lines_and_ask_questions() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::game::{Action, Actions};
+    use crate::input::Controls;
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::script::{Panel, Piece, UiChange};
+    use crate::settings::Settings;
+    use crate::transport::Wire;
+    use crate::ui::{menu_items, Act, Acts, Focus, Kind, Screen, WorldInfo};
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.2")
+local ui = require("@potluck/ui@0.1")
+ui.show(nil, "round", "Round 1", { at = "left" })
+world.on("player_joined", function(p)
+	ui.show(p, "you", "Hello   " .. p.name .. "\nthere")
+	ui.ask(p, { title = "Play?", text = "Want a round?", choices = { "Yes", "No" } }, function(who, choice)
+		print("answer " .. who.name .. " " .. tostring(choice))
+		if choice == 1 then ui.hide(who, "you") end
+		if choice == nil then
+			ui.ask(who, { text = "Sure?" }, function(_, c) print("again " .. tostring(c)) end)
+		end
+	end)
+end)
+world.after(1, function()
+	for _, p in world.players() do
+		ui.ask(p, { text = "One" }, function(who, c) print("one " .. who.name .. " " .. tostring(c)) end)
+		ui.ask(p, { text = "Two" }, function(who, c) print("two " .. who.name .. " " .. tostring(c)) end)
+	end
+end)
+print(pcall(ui.show, nil, "x", "y", { at = "middle" }) and "middle ok" or "no middle")
+print(pcall(ui.ask, 1, { choices = { "a", "b", "c", "d", "e" } }, function() end) and "five ok" or "no five")
+for i = 1, 7 do ui.show(nil, "n" .. i, "line " .. i) end
+print(pcall(ui.show, nil, "one too many", "line") and "nine ok" or "no nine")
+ui.show(nil, "n1", "line 1 again")
+for i = 1, 7 do ui.hide(nil, "n" .. i) end
+"#;
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::new(2.0, 40.0, 0.0) };
+    scripts.players = vec![ada.clone()];
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let log = |s: &Scripts| s.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
+    assert!(log(&scripts).contains("no middle") && log(&scripts).contains("no five") && log(&scripts).contains("no nine"), "{}", log(&scripts));
+    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into() });
+    let shown = |ch: &[(u32, UiChange)], pid: u32, id: &str| {
+        ch.iter().find_map(|(p, c)| match c {
+            UiChange::Piece { id: i, piece, .. } if *p == pid && i == id => Some(piece.clone()),
+            _ => None,
+        })
+    };
+    let panel = |ch: &[(u32, UiChange)], pid: u32| ch.iter().find_map(|(p, c)| if let (true, UiChange::Panel(x)) = (*p == pid, c) { Some(x.clone()) } else { None });
+    let ch = scripts.ui_changes(&[7]);
+    assert_eq!(shown(&ch, 7, "round"), Some(piece("Round 1", "left")), "everyone's line: {ch:?}");
+    assert_eq!(shown(&ch, 7, "you"), Some(piece("Hello Ada there", "right")), "one line, spaces tidied");
+    assert_eq!(shown(&ch, 7, "n1"), Some(None), "shown and hidden again");
+    let ada_ask = panel(&ch, 7).flatten().expect("Ada is asked");
+    assert_eq!((ada_ask.title.as_str(), ada_ask.text.as_str(), ada_ask.choices.clone()), ("Play?", "Want a round?", vec!["Yes".to_string(), "No".to_string()]));
+    assert!(scripts.ui_changes(&[7]).is_empty(), "told once");
+
+    // Bo arrives, and sees everyone's line and his own
+    scripts.players = vec![ada.clone(), bo.clone()];
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let ch = scripts.ui_changes(&[7, 8]);
+    assert_eq!(shown(&ch, 8, "round"), Some(piece("Round 1", "left")), "{ch:?}");
+    assert_eq!(shown(&ch, 8, "you"), Some(piece("Hello Bo there", "right")));
+    assert!(shown(&ch, 7, "you").is_none(), "Ada's line didn't change");
+    let bo_ask = panel(&ch, 8).flatten().expect("Bo is asked");
+
+    // Ada says yes; Bo closes it, and isn't asked again for a while
+    scripts.answer(7, ada_ask.ask, Some(0));
+    scripts.answer(8, bo_ask.ask, None);
+    scripts.answer(8, bo_ask.ask, Some(0));
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let l = log(&scripts);
+    assert!(l.contains("answer Ada 1") && l.contains("answer Bo nil"), "{l}");
+    assert_eq!(l.matches("answer Bo").count(), 1, "one answer to a question");
+    let ch = scripts.ui_changes(&[7, 8]);
+    assert_eq!(shown(&ch, 7, "you"), Some(None), "Ada's line hidden");
+    assert_eq!(panel(&ch, 7), Some(None), "her panel's gone");
+    assert_eq!(panel(&ch, 8), Some(None), "Bo's too");
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(log(&scripts).contains("again nil"), "asked again too soon: nil at once");
+    assert!(panel(&scripts.ui_changes(&[7, 8]), 8).is_none(), "and nothing on his screen");
+
+    // a second question from the same creation takes the first one's place
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    let l = log(&scripts);
+    assert!(l.contains("one Ada nil") && !l.contains("two Ada"), "{l}");
+    assert!(l.contains("one Bo nil") && l.contains("two Bo nil"), "Bo is still left be: {l}");
+    let ch = scripts.ui_changes(&[7, 8]);
+    assert_eq!(panel(&ch, 7).flatten().map(|p| p.text), Some("Two".to_string()));
+
+    // Ada goes; then the creation stops, and everyone's lines go with it
+    scripts.players = vec![bo.clone()];
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(scripts.shared.lock().unwrap().ui.panels.get(&7).is_none(), "nothing kept for Ada");
+    scripts.stop("test", &mut herd);
+    let ch = scripts.ui_changes(&[8]);
+    assert_eq!(shown(&ch, 8, "round"), Some(None), "{ch:?}");
+    assert_eq!(shown(&ch, 8, "you"), Some(None));
+
+    // what goes between devices
+    let p = Panel { creation: "test".into(), ask: 3, title: "Play?".into(), text: "Want a round?".into(), choices: vec!["Yes".into()] };
+    for m in [Msg::Panel(Some(p.clone())), Msg::Piece { creation: "test".into(), id: "you".into(), piece: piece("Hi", "bottom") }, Msg::Act(Action::Answer { ask: 3, choice: Some(0) })] {
+        let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+
+    // on the host's own screen: it opens while playing, says whose it is, and the answer goes back
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(Controls::default());
+    let c = creation(code);
+    app.world_mut().resource_mut::<Library>().list.insert("test".into(), c.clone());
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&c, &mut herd).unwrap();
+    });
+    let tick = |app: &mut App| {
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            w.resource_scope(|w, mut v: Mut<Voxels>| {
+                let mut h = w.resource_mut::<Herd>();
+                s.tick(&mut v, &mut h, 0.2);
+            })
+        })
+    };
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    tick(&mut app);
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    {
+        let me = app.world().resource::<crate::player::Me>();
+        assert_eq!(me.panel.as_ref().map(|p| p.title.as_str()), Some("Play?"));
+        assert!(me.pieces.values().any(|p| p.text == "Round 1"), "{:?}", me.pieces);
+    }
+    app.world_mut().resource_mut::<Focus>().go(Screen::Pause);
+    app.world_mut().run_system_once(crate::game::interact).unwrap();
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Pause, "it waits while a menu's open");
+    app.world_mut().resource_mut::<Focus>().go(Screen::Playing);
+    app.world_mut().run_system_once(crate::game::interact).unwrap();
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Panel);
+    let (title, items) = {
+        let w = app.world();
+        menu_items(w.resource::<Focus>(), w.resource::<Library>(), w.resource::<Scripts>(), w.resource::<Settings>(), &WorldInfo::default())
+    };
+    assert_eq!(title, "Play?");
+    assert_eq!(items[0].label, "From Test by Tests", "always says whose question it is");
+    let acts: Vec<Act> = items.iter().filter_map(|i| if let Kind::Button(a) = &i.kind { Some(a.clone()) } else { None }).collect();
+    assert_eq!(acts, vec![Act::Answer(Some(0)), Act::Answer(Some(1)), Act::Answer(None)], "its choices, and Close");
+    app.world_mut().resource_mut::<Acts>().0.push(Act::Answer(Some(1)));
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing);
+    assert!(matches!(app.world().resource::<Actions>().0.as_slice(), [(_, Action::Answer { choice: Some(1), .. })]));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    tick(&mut app);
+    assert!(app.world().resource::<Scripts>().vms["test"].log.iter().any(|l| l.starts_with("answer ") && l.ends_with(" 2")), "{:?}", app.world().resource::<Scripts>().vms["test"].log);
+}
