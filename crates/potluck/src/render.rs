@@ -143,10 +143,11 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
         ..default()
     };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
-    // water reflects about 2% straight on (reflectance 0.35), and is deep
-    // enough to hide most of the sand under it
+    // water reflects about 2% straight on (reflectance 0.35) and sends back
+    // little light from inside, so its colour is deep and the sky's
+    // reflection does the rest
     let water = StandardMaterial {
-        base_color: Color::srgba(0.85, 0.95, 1.0, 0.95),
+        base_color: Color::srgba(0.55, 0.72, 0.8, 0.92),
         base_color_texture: Some(atlas.color.clone()),
         alpha_mode: AlphaMode::Blend,
         perceptual_roughness: 0.06,
