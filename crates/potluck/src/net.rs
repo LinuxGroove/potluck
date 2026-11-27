@@ -28,25 +28,37 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
+/// How far away (in blocks, across the ground) a player hears about
+/// creatures and other players.
+pub const NEAR: f32 = 144.0;
+/// Beyond this, players and creatures are sent a quarter as often.
+const CLOSE: f32 = 32.0;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct PlayerSnap {
     pub id: u32,
+    /// Sent when a player first comes into view, or changes name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     pub pos: [f32; 3],
     pub yaw: f32,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct BodySnap {
     pub id: u64,
+    /// Sent when a creature first comes into view.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub creation: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub pos: [f32; 3],
     pub yaw: f32,
     pub phase: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rider: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub says: Option<String>,
     pub rev: u32,
 }
@@ -63,15 +75,27 @@ pub struct Look {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum Msg {
-    Hello { name: String, protocol: u32 },
+    /// `pass` is the market's word on who this is, for worlds that ask.
+    Hello {
+        name: String,
+        protocol: u32,
+        #[serde(default)]
+        pass: Option<String>,
+    },
     Welcome { id: u32, seed: u32, time: f32, host: String },
     Refused(String),
     Creation(Payload),
     Stop(String),
     Blocks(Vec<(i32, i32, i32, u8)>),
     Me { pos: [f32; 3], yaw: f32 },
-    Players(Vec<PlayerSnap>),
-    Herd(Vec<BodySnap>),
+    /// Players near you that moved, and those gone from view.
+    People { list: Vec<PlayerSnap>, gone: Vec<u32> },
+    /// Creatures near you that changed, and those gone from view.
+    Bodies { list: Vec<BodySnap>, gone: Vec<u64> },
+    /// Everyone in the world, by name, now and then.
+    Roster(Vec<String>),
+    /// Off to another server, with what the creation said about it.
+    Go { address: String, note: String },
     Looks(Vec<Look>),
     Act(Action),
     Thrown([f32; 3]),
@@ -79,14 +103,14 @@ pub enum Msg {
     Tweak { id: String, knobs: BTreeMap<String, serde_json::Value> },
 }
 
-pub(crate) enum Event {
+pub enum Event {
     Msg(u32, Msg),
     World(u32, Vec<u8>),
     Joined(u32, Sender<Vec<u8>>),
     Gone(u32),
 }
 
-pub(crate) fn decode(w: Wire) -> Option<Event> {
+pub fn decode(w: Wire) -> Option<Event> {
     match w {
         Wire::Joined(id, s) => Some(Event::Joined(id, s)),
         Wire::Gone(id) => Some(Event::Gone(id)),
@@ -98,7 +122,7 @@ pub(crate) fn decode(w: Wire) -> Option<Event> {
     }
 }
 
-pub(crate) fn frame_msg(m: &Msg) -> Vec<u8> {
+pub fn frame_msg(m: &Msg) -> Vec<u8> {
     let mut out = vec![0u8];
     out.extend_from_slice(&serde_json::to_vec(m).unwrap_or_default());
     out
@@ -119,15 +143,42 @@ pub struct HostOptions {
     pub tls: Option<(PathBuf, PathBuf, u16)>,
     /// Announce it on the local network.
     pub beacon: bool,
+    pub rules: crate::hosting::Rules,
 }
 
 pub struct Remote {
     pub id: u32,
     pub name: String,
+    /// The market handle, when the player came with a pass.
+    pub handle: Option<String>,
     pub pos: Vec3,
     pub yaw: f32,
     out: Option<Sender<Vec<u8>>>,
     welcomed: bool,
+    /// What this player has been told, so only changes go out.
+    seen: Seen,
+}
+
+#[derive(Default)]
+struct Seen {
+    bodies: HashMap<u64, BodySnap>,
+    revs: HashMap<u64, u32>,
+    players: HashMap<u32, PlayerSnap>,
+    /// sends so far, for sending far things less often
+    tick: u32,
+}
+
+/// Centimetres are plenty, and shorter to send.
+fn r2(v: f32) -> f32 {
+    (v * 100.0).round() / 100.0
+}
+
+fn r2v(v: Vec3) -> [f32; 3] {
+    [r2(v.x), r2(v.y), r2(v.z)]
+}
+
+fn remote(id: u32, name: String, out: Option<Sender<Vec<u8>>>) -> Remote {
+    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, out, welcomed: false, seen: Seen::default() }
 }
 
 pub struct HostNet {
@@ -136,8 +187,11 @@ pub struct HostNet {
     name: String,
     since_status: f32,
     players: BTreeMap<u32, Remote>,
-    sent_revs: HashMap<u64, u32>,
     stop_beacon: Arc<Mutex<bool>>,
+    pub rules: crate::hosting::Rules,
+    since_roster: f32,
+    /// Bytes sent this second, and the last whole second's.
+    sent: (usize, usize, f32),
 }
 
 pub struct ClientNet {
@@ -147,6 +201,8 @@ pub struct ClientNet {
     players: BTreeMap<u32, Remote>,
     welcomed: bool,
     addr: String,
+    /// Everyone in the world, as the host last said.
+    pub roster: Vec<String>,
 }
 
 pub enum Role {
@@ -195,7 +251,7 @@ impl Net {
         if let Role::Host(_) = self.role {
             return Ok(format!("{}:{PORT}", local_ip()));
         }
-        self.host_with(HostOptions { name: name.to_string(), port: PORT, tls: None, beacon: true })
+        self.host_with(HostOptions { name: format!("{name}'s world"), port: PORT, tls: None, beacon: true, rules: Default::default() })
     }
 
     pub fn host_with(&mut self, o: HostOptions) -> Result<String, String> {
@@ -222,18 +278,42 @@ impl Net {
                 }
             });
         }
-        self.role = Role::Host(HostNet { events: Mutex::new(rx), status, name: o.name, since_status: 9.0, players: BTreeMap::new(), sent_revs: HashMap::new(), stop_beacon: stop });
+        self.role = Role::Host(HostNet { events: Mutex::new(rx), status, name: o.name, since_status: 9.0, players: BTreeMap::new(), stop_beacon: stop, rules: o.rules, since_roster: 9.0, sent: (0, 0, 0.0) });
         self.my_id = 1;
         Ok(format!("{}:{}", local_ip(), o.port))
     }
 
-    pub fn join(&mut self, addr: &str, name: &str) -> Result<(), String> {
+    pub fn join(&mut self, addr: &str, name: &str, pass: Option<String>) -> Result<(), String> {
         self.leave();
         let (tx, rx) = channel();
         let out = transport::connect(addr, PORT, tx)?;
-        let _ = out.send(frame_msg(&Msg::Hello { name: name.to_string(), protocol: PROTOCOL }));
-        self.role = Role::Client(ClientNet { events: Mutex::new(rx), out, host_name: String::new(), players: BTreeMap::new(), welcomed: false, addr: addr.to_string() });
+        let _ = out.send(frame_msg(&Msg::Hello { name: name.to_string(), protocol: PROTOCOL, pass }));
+        self.role = Role::Client(ClientNet { events: Mutex::new(rx), out, host_name: String::new(), players: BTreeMap::new(), welcomed: false, addr: addr.to_string(), roster: vec![] });
         Ok(())
+    }
+
+    /// Sends a player to another server.
+    pub fn send_away(&self, pid: u32, address: &str, note: &str) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Go { address: address.to_string(), note: note.to_string() }));
+            }
+        }
+    }
+
+    /// A remote player's market handle, if they came with a pass.
+    pub fn handle_of(&self, pid: u32) -> Option<String> {
+        match &self.role {
+            Role::Host(h) => h.players.get(&pid).and_then(|p| p.handle.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn rules(&self) -> Option<&crate::hosting::Rules> {
+        match &self.role {
+            Role::Host(h) => Some(&h.rules),
+            _ => None,
+        }
     }
 
     pub fn leave(&mut self) {
@@ -257,7 +337,7 @@ impl Net {
                 let text = String::from_utf8_lossy(&buf[..n]).to_string();
                 let parts: Vec<&str> = text.split('|').collect();
                 if parts.len() == 3 && parts[0] == format!("POTLUCK{PROTOCOL}") {
-                    if tx.send((format!("{}'s world", parts[1]), format!("{}:{}", from.ip(), parts[2]))).is_err() {
+                    if tx.send((parts[1].to_string(), format!("{}:{}", from.ip(), parts[2]))).is_err() {
                         break;
                     }
                 }
@@ -272,11 +352,12 @@ impl Net {
         }
     }
 
-    fn broadcast(&self, m: &Msg) {
-        if let Role::Host(h) = &self.role {
+    fn broadcast(&mut self, m: &Msg) {
+        if let Role::Host(h) = &mut self.role {
             let f = frame_msg(m);
             for p in h.players.values().filter(|p| p.welcomed) {
                 if let Some(o) = &p.out {
+                    h.sent.0 += f.len();
                     let _ = o.send(f.clone());
                 }
             }
@@ -315,9 +396,9 @@ fn snap_bodies(herd: &Herd) -> Vec<BodySnap> {
             id: b.id,
             creation: b.creation.clone(),
             kind: b.kind.clone(),
-            pos: b.pos.to_array(),
-            yaw: b.yaw,
-            phase: b.phase,
+            pos: r2v(b.pos),
+            yaw: r2(b.yaw),
+            phase: r2(b.phase),
             rider: b.rider,
             says: b.says.as_ref().map(|s| s.0.clone()),
             rev: b.rev,
@@ -354,6 +435,7 @@ pub fn host_net(
     clock: Res<Clock>,
     settings: Res<Settings>,
     mut info: ResMut<WorldInfo>,
+    ticks: Res<crate::hosting::TickTimes>,
 ) {
     let pending = std::mem::take(&mut net.pending);
     let Role::Host(_) = &net.role else {
@@ -370,19 +452,21 @@ pub fn host_net(
         Role::Host(h) => h.events.lock().unwrap().try_iter().filter_map(decode).collect(),
         _ => vec![],
     };
+    // blocks a player may not change go back as they were, to them alone
+    let mut undo: Vec<(u32, Vec<(i32, i32, i32, u8)>)> = vec![];
     for ev in events {
         match ev {
             Event::Joined(id, out) => {
                 if let Role::Host(h) = &mut net.role {
-                    h.players.insert(id, Remote { id, name: format!("guest {id}"), pos: Vec3::ZERO, yaw: 0.0, out: Some(out), welcomed: false });
+                    h.players.insert(id, remote(id, format!("guest {id}"), Some(out)));
                 }
             }
             Event::Gone(id) => {
-                let name = match &mut net.role {
-                    Role::Host(h) => h.players.remove(&id).map(|p| p.name),
+                let gone = match &mut net.role {
+                    Role::Host(h) => h.players.remove(&id).map(|p| (p.name, p.welcomed)),
                     _ => None,
                 };
-                if let Some(n) = name {
+                if let Some((n, true)) = gone {
                     toasts.push(format!("{n} left"));
                     for b in herd.bodies.values_mut() {
                         if b.rider == Some(id) {
@@ -394,35 +478,60 @@ pub fn host_net(
             }
             Event::World(..) => {}
             Event::Msg(id, m) => match m {
-                Msg::Hello { name, protocol } => {
+                Msg::Hello { name, protocol, pass } => {
                     let Role::Host(h) = &mut net.role else { continue };
+                    let here = h.players.values().filter(|p| p.welcomed).count() + usize::from(me.is_some());
+                    let rules = h.rules.clone();
                     let Some(p) = h.players.get_mut(&id) else { continue };
                     let Some(out) = p.out.clone() else { continue };
+                    if p.welcomed {
+                        continue;
+                    }
                     if protocol != PROTOCOL {
                         let _ = out.send(frame_msg(&Msg::Refused("This world runs a different version of Potluck.".into())));
                         continue;
                     }
-                    p.name = name.chars().take(20).collect();
+                    let (shown, handle) = match rules.admit(&name, pass.as_deref(), here) {
+                        Ok(w) => w,
+                        Err(why) => {
+                            let _ = out.send(frame_msg(&Msg::Refused(why)));
+                            continue;
+                        }
+                    };
+                    p.name = shown;
+                    p.handle = handle;
+                    // where they'll appear, until they say where they are
+                    p.pos = Vec3::new(crate::world::START.x, 0.0, crate::world::START.z);
                     // the world, then everything in it
-                    let _ = out.send(frame_msg(&Msg::Welcome { id, seed: voxels.seed, time: clock.time, host: settings.name.clone() }));
-                    let _ = out.send(frame_world(&voxels.encode()));
+                    let world = frame_world(&voxels.encode());
+                    let mut sent = world.len();
+                    let _ = out.send(frame_msg(&Msg::Welcome { id, seed: voxels.seed, time: clock.time, host: h.name.clone() }));
+                    let _ = out.send(world);
                     for cid in &lib.running {
                         if let Some(c) = lib.list.get(cid) {
-                            let _ = out.send(frame_msg(&Msg::Creation(c.payload())));
+                            let f = frame_msg(&Msg::Creation(c.payload()));
+                            sent += f.len();
+                            let _ = out.send(f);
                         }
                     }
-                    let _ = out.send(frame_msg(&Msg::Looks(herd.bodies.values().map(look_of).collect())));
                     p.welcomed = true;
+                    h.sent.0 += sent;
+                    h.since_roster = 9.0;
                     toasts.push(format!("{} joined", p.name));
                 }
                 Msg::Blocks(list) => {
-                    for (x, y, z, b) in list {
-                        voxels.set(IVec3::new(x, y, z), b);
+                    let build = net.rules().map(|r| r.build).unwrap_or(true);
+                    if build {
+                        for (x, y, z, b) in list {
+                            voxels.set(IVec3::new(x, y, z), b);
+                        }
+                    } else {
+                        undo.push((id, list.iter().map(|&(x, y, z, _)| (x, y, z, voxels.at(IVec3::new(x, y, z)))).collect()));
                     }
                 }
                 Msg::Me { pos, yaw } => {
                     if let Role::Host(h) = &mut net.role {
-                        if let Some(p) = h.players.get_mut(&id) {
+                        if let Some(p) = h.players.get_mut(&id).filter(|p| p.welcomed) {
                             p.pos = Vec3::from_array(pos);
                             p.yaw = yaw;
                         }
@@ -430,10 +539,17 @@ pub fn host_net(
                 }
                 Msg::Act(a) => actions.0.push((id, a)),
                 Msg::Creation(p) => {
-                    let who = match &net.role {
-                        Role::Host(h) => h.players.get(&id).map(|p| p.name.clone()).unwrap_or_default(),
-                        _ => String::new(),
+                    let (who, handle, welcomed) = match &net.role {
+                        Role::Host(h) => h.players.get(&id).map(|p| (p.name.clone(), p.handle.clone(), p.welcomed)).unwrap_or_default(),
+                        _ => Default::default(),
                     };
+                    if !welcomed {
+                        continue;
+                    }
+                    if !net.rules().is_none_or(|r| r.may_bring(handle.as_deref())) {
+                        net.tell(id, "This world doesn't take creations from players.");
+                        continue;
+                    }
                     match Creation::from_payload(p, Origin::Friend(who.clone())) {
                         Ok(c) => {
                             let name = c.manifest.name.clone();
@@ -445,6 +561,10 @@ pub fn host_net(
                     }
                 }
                 Msg::Tweak { id: cid, knobs } => {
+                    let handle = net.handle_of(id);
+                    if !net.rules().is_none_or(|r| r.may_bring(handle.as_deref())) {
+                        continue;
+                    }
                     if let Some(c) = lib.list.get_mut(&cid) {
                         c.knobs = knobs.iter().filter_map(|(k, v)| Some((k.clone(), crate::creations::knob_from_json(v)?))).collect();
                         crate::game::bring(&cid, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
@@ -454,7 +574,15 @@ pub fn host_net(
             },
         }
     }
-    // twenty times a second: blocks, players and creatures
+    for (pid, list) in undo {
+        net.tell(pid, "This world doesn't let players change blocks.");
+        if let Role::Host(h) = &net.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Blocks(list)));
+            }
+        }
+    }
+    // twenty times a second: blocks, and what changed near each player
     net.since_send += time.delta_secs();
     let changes: Vec<(i32, i32, i32, u8)> = voxels.changes.drain(..).map(|(p, b)| (p.x, p.y, p.z, b)).collect();
     if !changes.is_empty() {
@@ -462,41 +590,169 @@ pub fn host_net(
     }
     if net.since_send >= 0.05 {
         net.since_send = 0.0;
-        let mut players = vec![];
+        let mut everyone = vec![];
         if let Some(me) = &me {
-            players.push(PlayerSnap { id: 1, name: settings.name.clone(), pos: me.pos.to_array(), yaw: me.yaw });
+            everyone.push(PlayerSnap { id: 1, name: settings.name.clone(), pos: r2v(me.pos), yaw: r2(me.yaw) });
         }
-        players.extend(net.remote_players().iter().map(|p| PlayerSnap { id: p.id, name: p.name.clone(), pos: p.pos.to_array(), yaw: p.yaw }));
-        net.broadcast(&Msg::Players(players));
-        let looks: Vec<Look> = match &net.role {
-            Role::Host(h) => herd.bodies.values().filter(|b| h.sent_revs.get(&b.id) != Some(&b.rev)).map(look_of).collect(),
-            _ => vec![],
-        };
-        if !looks.is_empty() {
-            if let Role::Host(h) = &mut net.role {
-                for l in &looks {
-                    h.sent_revs.insert(l.id, l.rev);
+        everyone.extend(net.remote_players().iter().map(|p| PlayerSnap { id: p.id, name: p.name.clone(), pos: r2v(p.pos), yaw: r2(p.yaw) }));
+        let bodies = snap_bodies(&herd);
+        if let Role::Host(h) = &mut net.role {
+            let mut sent = 0;
+            for p in h.players.values_mut().filter(|p| p.welcomed) {
+                let Some(out) = &p.out else { continue };
+                for m in news_for(p.id, p.pos, &mut p.seen, &everyone, &bodies, &herd) {
+                    let f = frame_msg(&m);
+                    sent += f.len();
+                    let _ = out.send(f);
                 }
             }
-            net.broadcast(&Msg::Looks(looks));
+            h.sent.0 += sent;
         }
-        net.broadcast(&Msg::Herd(snap_bodies(&herd)));
     }
-    let n = net.remote_players().len();
-    info.line = format!("Hosting at {}  ·  {} {}", local_ip(), n, if n == 1 { "friend" } else { "friends" });
     let names: Vec<String> = net.remote_players().iter().map(|p| p.name.clone()).collect();
+    let n = names.len();
+    info.line = format!("Hosting at {}  ·  {} {}", local_ip(), n, if n == 1 { "friend" } else { "friends" });
     let creations: Vec<String> = lib.running.iter().filter_map(|id| lib.list.get(id)).map(|c| format!("{} by {}", c.manifest.name, c.manifest.by)).collect();
-    if let Role::Host(h) = &mut net.role {
-        h.since_status += time.delta_secs();
+    let dt = time.delta_secs();
+    let roster = {
+        let Role::Host(h) = &mut net.role else { return };
+        h.sent.2 += dt;
+        if h.sent.2 >= 1.0 {
+            h.sent = (0, h.sent.0, 0.0);
+        }
+        h.since_roster += dt;
+        let mut all = names;
+        if me.is_some() {
+            all.insert(0, settings.name.clone());
+        }
+        h.since_status += dt;
         if h.since_status > 1.0 {
             h.since_status = 0.0;
-            let mut all = names;
-            if me.is_some() {
-                all.insert(0, settings.name.clone());
+            *h.status.lock().unwrap() = serde_json::json!({
+                "name": h.name, "players": all, "max_players": h.rules.max_players, "creations": creations,
+                "creatures": herd.bodies.len(), "version": crate::share::version(), "protocol": PROTOCOL,
+                "tick_ms": ticks.average_ms(), "tick_ms_max": ticks.max_ms(), "bytes_per_second": h.sent.1,
+                "up_seconds": ticks.up_seconds(),
+            })
+            .to_string();
+        }
+        if h.since_roster > 2.0 {
+            h.since_roster = 0.0;
+            Some(all)
+        } else {
+            None
+        }
+    };
+    if let Some(all) = roster {
+        net.broadcast(&Msg::Roster(all));
+    }
+}
+
+impl Net {
+    /// A line for one player's screen.
+    pub fn tell(&self, pid: u32, text: &str) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Toast(text.to_string())));
             }
-            *h.status.lock().unwrap() = serde_json::json!({ "name": h.name, "players": all, "creations": creations, "version": crate::share::version() }).to_string();
         }
     }
+
+    /// Bytes sent to players in the last whole second.
+    pub fn bytes_per_second(&self) -> usize {
+        match &self.role {
+            Role::Host(h) => h.sent.1,
+            _ => 0,
+        }
+    }
+}
+
+fn near(a: Vec3, b: [f32; 3]) -> bool {
+    let (dx, dz) = (a.x - b[0], a.z - b[2]);
+    dx * dx + dz * dz <= NEAR * NEAR
+}
+
+/// What one player needs to hear: players and creatures near them that
+/// changed since they were last told, those gone from view, and the look
+/// of any creature they haven't seen in its current look.
+fn news_for(me: u32, at: Vec3, seen: &mut Seen, everyone: &[PlayerSnap], bodies: &[BodySnap], herd: &Herd) -> Vec<Msg> {
+    seen.tick = seen.tick.wrapping_add(1);
+    let turn = seen.tick;
+    // far things move on a quarter of the sends, spread over them
+    let later = |id: u64, pos: [f32; 3]| {
+        let (dx, dz) = (at.x - pos[0], at.z - pos[2]);
+        dx * dx + dz * dz > CLOSE * CLOSE && (turn as u64 + id) % 4 != 0
+    };
+    let mut out = vec![];
+    let mut list = vec![];
+    let mut here = std::collections::HashSet::new();
+    for p in everyone.iter().filter(|p| p.id != me && near(at, p.pos)) {
+        here.insert(p.id);
+        let old = seen.players.get(&p.id);
+        if old.is_some() && later(p.id as u64, p.pos) {
+            continue;
+        }
+        if old.is_none_or(|old| moved(old.pos, p.pos) || (old.yaw - p.yaw).abs() > 0.01 || old.name != p.name) {
+            let mut snap = p.clone();
+            if old.is_some_and(|o| o.name == p.name) {
+                snap.name.clear();
+            }
+            seen.players.insert(p.id, p.clone());
+            list.push(snap);
+        }
+    }
+    let gone: Vec<u32> = seen.players.keys().filter(|id| !here.contains(id)).copied().collect();
+    for id in &gone {
+        seen.players.remove(id);
+    }
+    if !list.is_empty() || !gone.is_empty() {
+        out.push(Msg::People { list, gone });
+    }
+    let mut list = vec![];
+    let mut looks = vec![];
+    let mut here = std::collections::HashSet::new();
+    for b in bodies.iter().filter(|b| near(at, b.pos)) {
+        here.insert(b.id);
+        let known = seen.bodies.get(&b.id).is_some_and(|o| o.rev == b.rev && o.rider == b.rider && o.says == b.says);
+        if known && later(b.id, b.pos) {
+            continue;
+        }
+        if seen.revs.get(&b.id) != Some(&b.rev) {
+            if let Some(body) = herd.bodies.get(&b.id) {
+                looks.push(look_of(body));
+            }
+            seen.revs.insert(b.id, b.rev);
+        }
+        let old = seen.bodies.get(&b.id);
+        let changed = old.is_none_or(|old| moved(old.pos, b.pos) || (old.yaw - b.yaw).abs() > 0.01 || old.rider != b.rider || old.says != b.says || old.rev != b.rev);
+        if changed {
+            let mut snap = b.clone();
+            if old.is_some() {
+                // what it is doesn't change
+                snap.creation.clear();
+                snap.kind.clear();
+            }
+            seen.bodies.insert(b.id, b.clone());
+            list.push(snap);
+        }
+    }
+    let gone: Vec<u64> = seen.bodies.keys().filter(|id| !here.contains(id)).copied().collect();
+    for id in &gone {
+        seen.bodies.remove(id);
+        seen.revs.remove(id);
+    }
+    // the look first, so a new creature is never drawn as a blank
+    if !looks.is_empty() {
+        out.push(Msg::Looks(looks));
+    }
+    if !list.is_empty() || !gone.is_empty() {
+        out.push(Msg::Bodies { list, gone });
+    }
+    out
+}
+
+fn moved(a: [f32; 3], b: [f32; 3]) -> bool {
+    (a[0] - b[0]).abs() > 0.01 || (a[1] - b[1]).abs() > 0.01 || (a[2] - b[2]).abs() > 0.01
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -530,7 +786,7 @@ pub fn client_net(
                     _ => (false, String::new()),
                 };
                 if welcomed {
-                    toasts.push("Lost the connection to your friend's world.");
+                    toasts.push("Lost the connection to the world.");
                     acts.0.push(crate::ui::Act::Leave);
                 } else {
                     focus.status = format!("Couldn't join {addr}: nobody answered.");
@@ -565,7 +821,7 @@ pub fn client_net(
                         c.welcomed = true;
                         c.host_name = host.clone();
                     }
-                    toasts.push(format!("Welcome to {host}'s world"));
+                    toasts.push(format!("Welcome to {host}"));
                 }
                 Msg::Refused(why) => {
                     focus.status = why;
@@ -598,15 +854,37 @@ pub fn client_net(
                         voxels.apply(IVec3::new(x, y, z), b);
                     }
                 }
-                Msg::Players(list) => {
+                Msg::People { list, gone } => {
                     let my = net.my_id;
                     if let Role::Client(c) = &mut net.role {
-                        c.players = list
-                            .into_iter()
-                            .filter(|p| p.id != my)
-                            .map(|p| (p.id, Remote { id: p.id, name: p.name, pos: Vec3::from_array(p.pos), yaw: p.yaw, out: None, welcomed: true }))
-                            .collect();
+                        for id in gone {
+                            c.players.remove(&id);
+                        }
+                        for p in list.into_iter().filter(|p| p.id != my) {
+                            let r = c.players.entry(p.id).or_insert_with(|| Remote { welcomed: true, ..remote(p.id, String::new(), None) });
+                            if !p.name.is_empty() {
+                                r.name = p.name;
+                            }
+                            r.pos = Vec3::from_array(p.pos);
+                            r.yaw = p.yaw;
+                        }
                     }
+                }
+                Msg::Roster(all) => {
+                    if let Role::Client(c) = &mut net.role {
+                        c.roster = all;
+                    }
+                }
+                Msg::Go { address, note } => {
+                    if !note.is_empty() {
+                        toasts.push(note);
+                    }
+                    if let Role::Client(c) = &mut net.role {
+                        // leaving on purpose isn't losing the connection
+                        c.welcomed = false;
+                    }
+                    acts.0.push(crate::ui::Act::JoinAddress(address));
+                    return;
                 }
                 Msg::Looks(list) => {
                     for l in list {
@@ -618,13 +896,16 @@ pub fn client_net(
                         b.rideable = l.rideable;
                     }
                 }
-                Msg::Herd(list) => {
-                    let ids: std::collections::HashSet<u64> = list.iter().map(|b| b.id).collect();
-                    herd.bodies.retain(|id, _| ids.contains(id));
+                Msg::Bodies { list, gone } => {
+                    for id in gone {
+                        herd.bodies.remove(&id);
+                    }
                     for s in list {
                         let b = herd.bodies.entry(s.id).or_insert_with(|| blank_body(s.id));
-                        b.creation = s.creation;
-                        b.kind = s.kind;
+                        if !s.creation.is_empty() {
+                            b.creation = s.creation;
+                            b.kind = s.kind;
+                        }
                         b.pos = Vec3::from_array(s.pos);
                         b.yaw = s.yaw;
                         b.phase = s.phase;
@@ -656,7 +937,7 @@ pub fn client_net(
         net.send_host(&Msg::Me { pos: me.pos.to_array(), yaw: me.yaw });
     }
     if let Role::Client(c) = &net.role {
-        info.line = format!("In {}'s world  ·  {} here", c.host_name, c.players.len() + 1);
+        info.line = format!("In {}  ·  {} here", c.host_name, c.roster.len().max(c.players.len() + 1));
     }
 }
 

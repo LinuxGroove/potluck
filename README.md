@@ -4,7 +4,7 @@ A block sandbox where everything is made by someone you know. Build, explore and
 
 The concept is idea 26 in [game-ideas](https://github.com/LinuxGroove/game-ideas/blob/main/ideas/26-potluck.md). The game is written in Rust on [Bevy](https://bevy.org/), and creations run in [Luau](https://luau.org/) sandboxes through [mlua](https://github.com/mlua-rs/mlua).
 
-This is a test build of milestones M0 to M2 of the plan: a hilly island with the Green at its middle, the Mossback (the first creation, written in Luau), Look inside, Tweak, Remix with hot reload from any editor, building and survival basics, worlds friends can join, `potluck-server` (an always-on world with HTTPS), and the market: creations shared to Everyone or by code, their versions and family trees on the web, and changes suggested from a remix and merged from the game.
+This is a test build of milestones M0 to M3 of the plan: a hilly island with the Green at its middle, a dozen creatures and two mini games (all creations, written in Luau), Look inside, Tweak, Remix with hot reload from any editor, building and survival basics, worlds friends can join, the market (creations shared to Everyone or by code, their versions and family trees on the web, and changes suggested from a remix and merged from the game), and `potluck-server`: an always-on world with HTTPS, rules for who may join, a place in the market's server list, boards for its mini games and links to other servers.
 
 ## Playing
 
@@ -22,12 +22,12 @@ This is a test build of milestones M0 to M2 of the plan: a hilly island with the
 | First or third person | F5 | Right stick click |
 | Pause | Esc | Start |
 
-Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
+Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. The Rodeo Ram is there too, if you want your longest ride on its board, and the Tag Bot on the Green keeps a board of who's caught it most. Woollies, Glowbugs, Jellies and two Gnome Gardeners (ask them how things work) live on the Green, ducks, frogs and Pebble Crabs by the creek north-east of it, and pups and moles on the hill. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
 
 ### Playing with friends
 
 - **On the same network:** one player chooses Host a world for friends; the others choose Join a friend's world, where the world shows up by itself.
-- **Over the internet:** run `potluck-server` somewhere friends can reach (below), and everyone joins by its address: `192.168.1.20`, `potluck.example.org:47126` or `https://potluck.example.org`.
+- **Over the internet:** run `potluck-server` somewhere friends can reach (below), and everyone joins by its address: `192.168.1.20`, `potluck.example.org:47126` or `https://potluck.example.org`. Servers listed on the market show under **Servers on the market** in Join a friend's world.
 
 Creations the host or anyone else brings into a world are sent to everyone who joins, and Tweak changes show for everyone at once.
 
@@ -55,7 +55,17 @@ sudo snap set potluck-server name="Riverbend" port=47126 seed=26 beacon=false
 
 With `domain` set, the snap runs Caddy in front of the world for automatic certificates. With a certificate of your own, the server speaks TLS itself on `tls.port` (443 unless set). Either way the plain port keeps working for players on the local network.
 
-Outside the snap: `potluck-server --help`. Every option can also come from the environment (`POTLUCK_NAME`, `POTLUCK_PORT`, `POTLUCK_TLS_PORT`, `POTLUCK_CERT`, `POTLUCK_KEY`, `POTLUCK_SEED`, `POTLUCK_HOME`).
+The rest of its settings are in `server.toml` in its data folder (`/var/snap/potluck-server/common/world/server.toml` in the snap), written on the first start with every setting explained ([packaging/server.toml](packaging/server.toml) is the same file):
+
+- **Who may join**: `join = "anyone"` who knows the address, `"signed-in"` players the market vouches for (the game asks the market for a pass naming this server's address, good for five minutes), or `"list"` for only the handles in `allow`; `ban` keeps handles out; `max_players` (50).
+- **What players may do**: `build` (place and break blocks) and `bring` (their own creations: `"anyone"`, `"signed-in"` or `"nobody"`).
+- **Creations it always runs**, by market code: `creations = ["ABCD2345", "WXYZ6789@3"]` (the newest version each start, or the one after `@`).
+- **The server list**: make a token on the market's **Your servers** page, then set `list = true`, `address` (what players type) and `market_token`. The server sends a heartbeat every minute; the market lists it once it has reached the server's status page at that address, and shows its creations' boards on their pages.
+- **Links to other servers**: `[links] rodeo = "wss://rodeo.example.org"`, which creations send players to with `game.send(player, "rodeo")`.
+
+Outside the snap: `potluck-server --help`, and `potluck-server --check` to read the settings and say what's wrong. Every command line option can also come from the environment (`POTLUCK_CONFIG`, `POTLUCK_NAME`, `POTLUCK_PORT`, `POTLUCK_TLS_PORT`, `POTLUCK_CERT`, `POTLUCK_KEY`, `POTLUCK_SEED`, `POTLUCK_MAX_PLAYERS`, `POTLUCK_HOME`), and wins over `server.toml`.
+
+The status page's `/status.json` has what a soak test needs: players, creatures, the average and slowest tick of the last ten seconds, bytes sent a second and time up. `potluck-bots --address=ws://HOST:47126 --bots=50 --minutes=600 --build --report=soak.jsonl --pid=SERVER_PID` joins that many bot players, who walk about, build, and pat, bop and ride creatures, and writes a line of numbers a minute.
 
 ## Making creations
 

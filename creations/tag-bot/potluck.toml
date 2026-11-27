@@ -1,0 +1,12 @@
+name = "Tag Bot"
+by = "Potluck"
+kind = "game"
+about = "A little robot on the Green that runs from anyone close. Catch it and tag it: the most tags go on the board."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"
+game = "0.1"

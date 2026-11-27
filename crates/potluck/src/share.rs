@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use bevy::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::creations::{FromRef, Manifest, Payload};
@@ -59,8 +59,29 @@ pub enum Done {
     Suggestions { id: String, list: Vec<Suggestion> },
     /// A suggestion merged on the market: the creation's new version.
     Merged { id: String, suggestion: i64, code: String, version: u32, files: BTreeMap<String, String> },
+    /// A pass for joining a server, or None when the market couldn't give one.
+    Pass { address: String, pass: Option<String> },
+    /// The market's server list.
+    Servers(Vec<Listed>),
     Said(String),
     Failed(String),
+}
+
+/// A server in the market's list.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct Listed {
+    pub name: String,
+    #[serde(default)]
+    pub about: String,
+    pub address: String,
+    #[serde(default)]
+    pub players: u32,
+    #[serde(default)]
+    pub max_players: u32,
+    #[serde(default)]
+    pub creations: Vec<String>,
+    #[serde(default)]
+    pub join: String,
 }
 
 /// Where to and as whom: the game server, the market, this device's id and
@@ -215,6 +236,24 @@ impl Market {
             return Err(Fail::Offline(format!("it answered {status}")));
         }
         let v: Value = serde_json::from_str(&text).map_err(|_| Fail::Offline("that address isn't a Potluck market".into()))?;
+        if status >= 400 {
+            return Err(Fail::Said(status, v.get("error").and_then(|e| e.as_str()).unwrap_or("the market said no").to_string()));
+        }
+        Ok(v)
+    }
+
+    /// A call as a server, with the token from the market's Your servers page.
+    fn as_server(&self, path: &str, token: &str, body: &Value) -> Result<Value, Fail> {
+        let mut r = self
+            .agent
+            .post(format!("{}{path}", self.base))
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Server {token}"))
+            .send(body.to_string())
+            .map_err(|e| Fail::Offline(e.to_string()))?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().map_err(|e| Fail::Offline(e.to_string()))?;
+        let v: Value = serde_json::from_str(&text).map_err(|_| Fail::Offline(format!("it answered {status} with something else")))?;
         if status >= 400 {
             return Err(Fail::Said(status, v.get("error").and_then(|e| e.as_str()).unwrap_or("the market said no").to_string()));
         }
@@ -382,6 +421,52 @@ fn sentence(s: &str) -> String {
     }
 }
 
+/// A dedicated server's line to the market: its signing key (to check
+/// players' passes), the creations the server pins, the server list and
+/// boards. Every call blocks, so call from a thread or before starting.
+pub struct MarketLink {
+    base: String,
+    token: String,
+    ctx: Ctx,
+}
+
+impl MarketLink {
+    pub fn new(market: &str, token: &str) -> MarketLink {
+        let base = market.trim_end_matches('/').to_string();
+        let who = Who { server: String::new(), market: base.clone(), device: String::new(), name: String::new() };
+        let ctx = Ctx {
+            // no game server: a server loads what anyone may load
+            server: Server { agent: agent(1), base: "http://0.0.0.0:9".into() },
+            market: Market { agent: agent(20), base: base.clone() },
+            who,
+            token: Default::default(),
+        };
+        MarketLink { base, token: token.to_string(), ctx }
+    }
+
+    /// The market's public key, checked as the game checks it.
+    pub fn key(&self) -> Result<String, String> {
+        let v = self.ctx.market.call("GET", "/api/key", None, "", None).map_err(Fail::text)?;
+        trusted_key(&self.base, v["key"].as_str().unwrap_or(""))
+    }
+
+    /// A creation by its code, signed and checked.
+    pub fn load(&self, code: &str, version: Option<u32>) -> Result<Payload, String> {
+        let code = clean_code(code);
+        self.ctx.load(&code, version).map(|(_, p)| p).map_err(Fail::text)
+    }
+
+    /// Tells the market this server is up, for its server list.
+    pub fn heartbeat(&self, body: &Value) -> Result<Value, String> {
+        self.ctx.market.as_server("/api/servers/heartbeat", &self.token, body).map_err(Fail::text)
+    }
+
+    /// Sends boards that changed.
+    pub fn boards(&self, body: &Value) -> Result<(), String> {
+        self.ctx.market.as_server("/api/servers/boards", &self.token, body).map(|_| ()).map_err(Fail::text)
+    }
+}
+
 impl ShareJobs {
     fn run(&self, who: &Who, job: impl FnOnce(&Ctx) -> Done + Send + 'static) {
         let tx = self.tx.clone();
@@ -533,6 +618,38 @@ impl ShareJobs {
         let (code, reason) = (code.to_string(), reason.to_string());
         self.run(who, move |c| match c.market("POST", &format!("/api/c/{code}/report"), Some(json!({ "reason": reason }))) {
             Ok(_) => Done::Said("Thanks. A moderator will look at it.".into()),
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// A pass that tells a server who this player is. Quick, and nothing
+    /// is lost without one: worlds that don't ask let anyone in.
+    pub fn pass(&self, who: &Who, address: &str) {
+        let address = address.to_string();
+        let mut who = who.clone();
+        if who.device.is_empty() {
+            let tx = self.tx.clone();
+            let _ = tx.send(Done::Pass { address, pass: None });
+            return;
+        }
+        who.name = who.name.chars().take(32).collect();
+        let tx = self.tx.clone();
+        let ctx = Ctx {
+            server: Server { agent: agent(5), base: who.server.trim_end_matches('/').to_string() },
+            market: Market { agent: agent(5), base: who.market.trim_end_matches('/').to_string() },
+            who,
+            token: self.token.clone(),
+        };
+        std::thread::spawn(move || {
+            let pass = ctx.market("POST", "/api/pass", Some(json!({ "server": address }))).ok().and_then(|v| v["pass"].as_str().map(|s| s.to_string()));
+            let _ = tx.send(Done::Pass { address, pass });
+        });
+    }
+
+    /// The servers listed on the market.
+    pub fn servers(&self, who: &Who) {
+        self.run(who, |c| match c.market.call("GET", "/api/servers", None, "", None) {
+            Ok(v) => Done::Servers(serde_json::from_value(v["servers"].clone()).unwrap_or_default()),
             Err(e) => Done::Failed(e.text()),
         });
     }

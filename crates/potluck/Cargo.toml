@@ -38,6 +38,11 @@ path = "src/server.rs"
 # the tests are in the library
 test = false
 
+[[bin]]
+name = "potluck-bots"
+path = "src/bots.rs"
+test = false
+
 [dev-dependencies]
 # the market itself, run in the tests that share from the game
 potluck-share = { path = "../share-service" }

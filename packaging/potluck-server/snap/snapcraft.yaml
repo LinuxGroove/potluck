@@ -29,6 +29,15 @@ description: |
   Other settings: name (what players see), port (47126), seed (for a new
   world), beacon (announce the world on the local network, true).
 
+  Everything else is in /var/snap/potluck-server/common/world/server.toml,
+  written on the first start with every setting explained: who may join
+  (anyone, players signed in to the market, or a list), whether players
+  may build or bring creations, the creations the world always runs,
+  listing it in the market's server list, and other servers creations
+  can send players to. Restart after editing it:
+
+      sudo snap restart potluck-server
+
   Docs: https://github.com/LinuxGroove/potluck
 license: MIT
 website: https://github.com/LinuxGroove/potluck

@@ -119,3 +119,7 @@ img.face { vertical-align: -0.25em; margin-right: 6px; border-radius: 4px; }
 .pick input:checked + span { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .preview { text-align: center; }
 .preview img { width: 160px; height: 160px; image-rendering: auto; }
+ol.board { margin: 0; padding-left: 22px; display: grid; gap: 4px; }
+ol.board .score { font-variant-numeric: tabular-nums; font-weight: 700; }
+ul.servers li { flex-wrap: wrap; }
+pre.mono { white-space: pre-wrap; word-break: break-all; font-size: 13px; background: var(--chip); padding: 10px 12px; border-radius: 10px; }

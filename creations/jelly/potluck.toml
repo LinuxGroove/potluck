@@ -1,0 +1,11 @@
+name = "Jelly"
+by = "Potluck"
+kind = "creature"
+about = "Wobbly jellies that bounce round the Green. Bop one and it splits in two little ones, who don't last long."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"

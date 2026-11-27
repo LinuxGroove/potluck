@@ -28,6 +28,9 @@ pub struct Config {
     /// Accept `dev:<id>:<name>` instead of a game sign-in: for tests and trying
     /// the service on one machine only. Refused when `public_url` is https.
     pub dev_accounts: bool,
+    /// Let the server list check servers on this machine and private
+    /// networks: for tests and a market on a LAN only.
+    pub private_servers: bool,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -70,6 +73,7 @@ impl Default for Config {
             hide_after_reports: 5,
             words: None,
             dev_accounts: false,
+            private_servers: false,
         }
     }
 }

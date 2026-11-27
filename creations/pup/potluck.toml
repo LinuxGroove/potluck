@@ -1,0 +1,11 @@
+name = "Pup"
+by = "Potluck"
+kind = "creature"
+about = "Friendly pups on the hill where everyone starts. They trot after you, and fetch when asked."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.1"
+tweak = "0.1"
