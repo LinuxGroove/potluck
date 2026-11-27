@@ -2,7 +2,7 @@
 -- Mining's own tests: `potluck-server --test=mining`.
 
 local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.13")
+local world = require("@potluck/world@0.14")
 
 -- the tools creation gives pickaxes their levels; its own tests don't run it
 world.digging("Wooden pickaxe", { hard = 2.5, level = 1 })
@@ -84,4 +84,16 @@ test.case("a creative player is told chests are for survival", function()
 	test.use_block(p, at)
 	test.same(world.block(at), "Old chest", "still there")
 	test.same(test.shown(p, "found"), "Old chests hold prizes for survival.")
+end)
+
+test.case("gravel turns up flint now and then", function()
+	local p, at = beside("Wooden pickaxe", "Gravel")
+	local flint = 0
+	for _ = 1, 60 do
+		world.set_block(at, "Gravel")
+		test.dig(p, at)
+		flint = world.has(p, "Flint")
+	end
+	test.check(flint >= 1 and flint < 30, "some flint, not every time: " .. flint)
+	test.check(world.has(p, "Gravel") >= 60, "and the gravel too")
 end)
