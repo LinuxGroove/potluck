@@ -419,6 +419,8 @@ impl Focus {
         self.screen = s;
         self.sel = 0;
         self.scroll = 0;
+        // a new screen starts at its top
+        self.first = 0;
     }
     /// The page open on a screen with pages, to change.
     fn page_mut(&mut self) -> Option<&mut usize> {
@@ -1033,11 +1035,13 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                         v.push(button("Share it", Act::ShareWorld));
                     }
                     Some(w) => {
-                        v.push(Item { label: pretty_world_code(&w.code), kind: Kind::Big });
+                        // the QR code first, so the sheet puts it beside what it's for
                         if !w.url.is_empty() {
                             v.push(Item { label: w.url.clone(), kind: Kind::Qr });
+                            v.push(note("Point a phone at this to see the code and how to join, to pass on to a friend."));
                         }
-                        v.push(note("Friends type it under Join a friend's world. A phone pointed at this shows the code too."));
+                        v.push(Item { label: pretty_world_code(&w.code), kind: Kind::Big });
+                        v.push(note("Friends type it under Join a friend's world."));
                         if settings.young {
                             v.push(note("Who can join: your friends."));
                         } else {
