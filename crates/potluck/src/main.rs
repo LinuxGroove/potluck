@@ -106,7 +106,7 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, mesh::remesh, mesh::wind).chain(),
-                (render::sky, render::clouds::drift, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (render::sky, render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
             )
                 .chain()
                 .after(Sim),
@@ -296,7 +296,7 @@ fn setup(
 ) {
     let atlas = textures::build(&mut images);
     let rt = render::Raytraced::new(&settings, device.as_deref());
-    commands.insert_resource(render::make_materials(&atlas, &mut mats, &mut waters, rt));
+    commands.insert_resource(render::make_materials(&atlas, &mut mats, &mut waters, rt, render::Tier::of(&settings.lighting)));
     commands.insert_resource(atlas);
     commands.insert_resource(rt);
     commands.insert_resource(mesh::Cover::of(render::Tier::of(&settings.lighting)));
@@ -305,6 +305,9 @@ fn setup(
     render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
     render::spawn_sea(&mut commands, &mut meshes, &mut mats);
     render::clouds::spawn(&mut commands, &mut meshes, &mut mats, &mut images);
+    if render::Tier::of(&settings.lighting) == render::Tier::Low {
+        render::dome::spawn(&mut commands, &mut meshes, &mut mats);
+    }
     if let Some(off) = off {
         commands.insert_resource(off);
     }

@@ -16,6 +16,7 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
 pub mod clouds;
+pub mod dome;
 pub mod timings;
 pub mod motes;
 
@@ -175,7 +176,7 @@ impl bevy::pbr::MaterialExtension for OwnNormals {
     }
 }
 
-pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, waters: &mut Assets<WaterMaterial>, rt: Raytraced) -> BlockMaterials {
+pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, waters: &mut Assets<WaterMaterial>, rt: Raytraced, tier: Tier) -> BlockMaterials {
     let solid = StandardMaterial {
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
@@ -193,10 +194,12 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
     // only glowing blocks get a glowing material (see `mesh::ChunkMesh`).
     // Drawn normally, glow skips the eye's exposure; ray traced, it's real
     // light that goes through it like everything else, and it's all the
-    // light lanterns give there, so it's brighter
+    // light lanterns give there, so it's brighter. Low has no bloom to spread
+    // a bright flame's colour round it, so there a flame stays dim enough to
+    // keep its colour rather than burning out to white
     let glow = StandardMaterial {
         emissive_texture: Some(atlas.glow.clone()),
-        emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * if rt.0 { 2400.0 } else { 600.0 },
+        emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * if rt.0 { 2400.0 } else if tier == Tier::Low { 0.22 } else { 600.0 },
         // a flame's box shows only the flame
         alpha_mode: AlphaMode::Mask(0.5),
         ..solid.clone()
@@ -394,6 +397,22 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
     commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.75, 0.82, 1.0), brightness: if medium { 1200.0 } else { 6000.0 }, ..default() });
 }
 
+/// The fog's colour (sRGB), which the far hills fade into, at daylight `day`
+/// with the sun `low` (1 at sunset); Low's sky meets it at the horizon.
+pub(crate) fn fog_colour(day: f32, low: f32) -> Vec3 {
+    let day_fog = Vec3::new(0.62, 0.74, 0.88);
+    let night_fog = Vec3::new(0.03, 0.045, 0.09);
+    night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day)
+}
+
+/// Toward the sun (unit length; below the horizon at night), the daylight,
+/// and how low the sun is (1 at sunset), as `sky` works them out.
+pub(crate) fn sun_now(clock: &Clock) -> (Vec3, f32, f32) {
+    let a = TAU * (clock.time - 0.25);
+    let up = a.sin();
+    (Vec3::new(a.cos(), up, -0.35).normalize(), clock.daylight(), 1.0 - crate::noise::smooth(0.02, 0.4, up))
+}
+
 /// How far into the night it is for the eye, 0 by day and 1 at night.
 fn night_eye(day: f32) -> f32 {
     (1.0 - day).powf(0.7)
@@ -497,15 +516,13 @@ pub fn sky(
         // sky's fill still reaches in, more where ray tracing finds the
         // shade truly dark
         ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
-        let day_fog = Vec3::new(0.62, 0.74, 0.88);
-        let night_fog = Vec3::new(0.03, 0.045, 0.09);
-        let f = night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day);
+        let f = fog_colour(day, low);
         fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });
         if let Projection::Perspective(p) = &mut *proj {
             p.fov = settings.fov.clamp(70.0, 110.0).to_radians() * 0.75;
         }
     }
-    // Low's sky
+    // Low's sky, under its dome (`dome`)
     let s = Vec3::new(0.02, 0.03, 0.07).lerp(Vec3::new(0.5, 0.68, 0.9), day).lerp(SUNSET, 0.4 * low * day);
     clear.0 = Color::srgb(s.x, s.y, s.z);
     ambient.brightness = if medium { 40.0 + 1310.0 * day } else { 160.0 + 5940.0 * day };
