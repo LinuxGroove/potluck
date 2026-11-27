@@ -46,6 +46,14 @@ pub struct Settings {
     /// The dev bridge: coding helpers on this computer can reload, test and
     /// look at creations (`bridge.rs`). Off unless turned on.
     pub dev_bridge: bool,
+    /// The minimap in the corner: "off", "near", "middle" or "far".
+    pub minimap: String,
+    /// The minimap turns with you (true) or keeps north up.
+    pub minimap_turns: bool,
+    /// Waypoints' names and distances over the world.
+    pub waypoint_labels: bool,
+    /// A parent can turn chat off: no lines shown, none sent.
+    pub chat: bool,
 }
 
 /// A creation's action on buttons the player chose.
@@ -79,6 +87,10 @@ impl Default for Settings {
             subtitles: false,
             fullscreen: true,
             dev_bridge: false,
+            minimap: "middle".into(),
+            minimap_turns: false,
+            waypoint_labels: true,
+            chat: true,
         }
     }
 }

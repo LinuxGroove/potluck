@@ -187,6 +187,15 @@ fn main() {
         shared.store = script::Store::load(&store_file());
         shared.links = cfg.links.keys().cloned().collect();
     }
+    {
+        // every line of chat, for the operator; their own word list, if they keep one
+        let mut chat = app.world_mut().resource_mut::<chat::Chat>();
+        chat.log = Some(settings::data_dir().join("chat.jsonl"));
+        if let Ok(words) = std::fs::read_to_string(settings::data_dir().join("chat_words.txt")) {
+            chat.use_words(&words);
+            info!("Chat hides the words in {}", settings::data_dir().join("chat_words.txt").display());
+        }
+    }
     let listing = cfg.list.then(|| (cfg.clone(), Arc::new(link)));
     app.insert_resource(s)
         .insert_resource(Opts { cfg, market_key, pinned })

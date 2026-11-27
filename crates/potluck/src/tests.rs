@@ -294,7 +294,7 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
 
     let (tx, rx) = channel();
     let to_host = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
-    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None })).unwrap();
+    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None, young: false })).unwrap();
 
     let (mut welcome, mut world, mut mossback, mut herd) = (None, None, false, std::collections::HashSet::new());
     let t = Instant::now();
@@ -680,7 +680,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let mut knock = |pass: Option<String>, name: &str| -> Result<String, String> {
         let (tx, rx) = channel();
         let to_host = transport::connect(&address, port, tx).unwrap();
-        to_host.send(net::frame_msg(&Msg::Hello { name: name.into(), protocol: net::PROTOCOL, pass })).unwrap();
+        to_host.send(net::frame_msg(&Msg::Hello { name: name.into(), protocol: net::PROTOCOL, pass, young: false })).unwrap();
         let t = Instant::now();
         let mut welcomed = false;
         while t.elapsed() < Duration::from_secs(20) {
@@ -2443,7 +2443,7 @@ fn creations_hear_players_place_break_and_use_blocks() {
     app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
     let (tx, rx) = channel();
     let to_host = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
-    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None })).unwrap();
+    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None, young: false })).unwrap();
     let spot = IVec3::new(world::GREEN.x as i32 + 3, 100, world::GREEN.z as i32 + 3);
     let (mut welcomed, mut heard) = (false, false);
     let t = Instant::now();
@@ -3457,10 +3457,443 @@ end
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mine = v["creations"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap();
     assert!(mine["running"] == true && mine["folder"].as_str().is_some() && mine["knobs"]["glow"]["label"] == "Glow" && mine["error"].as_str().is_some_and(|e| e.contains("main.luau:3")), "{mine}");
+    // its budgets, as Look inside shows them
+    let budgets = mine["budgets"].as_str().unwrap_or_default();
+    assert!(budgets.starts_with("a tick takes ") && budgets.contains("of its 15") && budgets.contains("of 32 MB"), "{budgets}");
+    assert!(cx.scripts.vms[id].tick_ms > 0.0, "its ticks are timed");
     assert!(v["creations"].as_array().unwrap().iter().any(|c| c["id"] == "mossback" && c["origin"] == "the base game"));
     let (text, err) = bridge_tool(&open, &mut cx, "guide", json!({}));
     assert!(!err && text.contains("@potluck/world"));
     // a screenshot needs the game's screen, which this test hasn't got
     assert!(bridge_tool(&open, &mut cx, "screenshot", json!({})).1);
     drop(open);
+}
+
+// ---------- the map, waypoints, teleporting and chat ----------
+
+#[test]
+fn the_map_shows_the_world_from_above_and_keeps_up_with_changes() {
+    use crate::map::{self, Column, MapImage, Palette};
+    let mut v = world();
+    let mut m = MapImage::default();
+    m.draw_all(&v);
+    // the sea round the island is the sea's blue; the hill at the start isn't
+    let sea = m.at(2.0, 2.0);
+    assert!(sea[2] > sea[0], "the sea far out is blue: {sea:?}");
+    let (sx, sz) = (world::START.x, world::START.z);
+    assert_ne!(m.at(sx, sz), sea, "land at the start");
+    assert_eq!(m.height(sx, sz), v.top(sx as i32, sz as i32), "heights from above are the ground's");
+    // deeper water is darker, and a hill's north face lighter than its south
+    let p = Palette::default();
+    let shallow = map::shade(&p, Column { block: crate::blocks::SAND, y: 17, water: 1 }, 17);
+    let deep = map::shade(&p, Column { block: crate::blocks::SAND, y: 10, water: 8 }, 10);
+    assert!(deep.iter().take(3).map(|&c| c as u32).sum::<u32>() < shallow.iter().take(3).map(|&c| c as u32).sum::<u32>());
+    let up = map::shade(&p, Column { block: crate::blocks::GRASS, y: 30, water: 0 }, 28);
+    let down = map::shade(&p, Column { block: crate::blocks::GRASS, y: 30, water: 0 }, 32);
+    assert!(up[1] > down[1], "a column above its north neighbour is lit");
+    // a tower built: its column, and only near it, is drawn again
+    let (x, z) = (sx as i32 + 3, sz as i32 + 3);
+    let top = v.top(x, z);
+    for y in top + 1..top + 9 {
+        v.set(IVec3::new(x, y, z), crate::blocks::PLANKS);
+    }
+    let rev = m.rev;
+    m.draw_changes(&mut v);
+    assert_eq!(m.height(x as f32, z as f32), top + 8);
+    assert!(m.rev > rev && v.map_dirty.is_empty());
+    // a different world is drawn whole
+    let other = world::generate(7);
+    let mut other = other;
+    m.draw_changes(&mut other);
+    assert_eq!(m.height(sx, sz), other.top(sx as i32, sz as i32));
+}
+
+#[test]
+fn under_a_roof_the_map_shows_the_level_youre_on() {
+    use crate::map;
+    let mut v = world();
+    let (x, z) = (world::START.x as i32, world::START.z as i32);
+    let floor = v.top(x, z);
+    let eye = Vec3::new(x as f32 + 0.5, floor as f32 + 2.6, z as f32 + 0.5);
+    assert_eq!(map::roof_level(&v, eye), None, "out under the sky");
+    for dx in -2..=2 {
+        for dz in -2..=2 {
+            v.set(IVec3::new(x + dx, floor + 5, z + dz), crate::blocks::PLANKS);
+        }
+    }
+    assert_eq!(map::roof_level(&v, eye), Some(floor + 2), "a roof over you and round you");
+    let mut m = map::MapImage::default();
+    m.draw_all(&v);
+    let from_above = m.at(x as f32, z as f32);
+    m.show_level(&v, map::roof_level(&v, eye));
+    assert_ne!(m.at(x as f32, z as f32), from_above, "the floor, not the roof");
+}
+
+#[test]
+fn the_minimap_is_round_with_you_in_the_middle() {
+    use crate::map::{self, Dot, MapImage};
+    let v = world();
+    let mut m = MapImage::default();
+    m.draw_all(&v);
+    let size = 64;
+    let mut out = vec![0u8; size * size * 4];
+    let me = Vec2::new(world::START.x, world::START.z);
+    let friend = Dot { at: me + Vec2::new(10.0, 0.0), rgb: [255, 0, 255], r: 3.0 };
+    map::draw_minimap(&mut out, size, &m, me, map::facing(0.0), false, 1.0, &[friend]);
+    let px = |x: usize, y: usize| &out[(y * size + x) * 4..(y * size + x) * 4 + 4];
+    assert_eq!(px(0, 0)[3], 0, "outside the circle is clear");
+    assert_eq!(px(32, 30), &[255, 255, 255, 255][..], "the arrow is in the middle");
+    assert!(px(42, 32)[0] > 200 && px(42, 32)[1] < 80, "a friend ten blocks east is ten pixels right: {:?}", px(42, 32));
+    // turned with you, facing east: the friend is straight up
+    let mut out2 = vec![0u8; size * size * 4];
+    map::draw_minimap(&mut out2, size, &m, me, Vec2::X, true, 1.0, &[Dot { at: me + Vec2::new(20.0, 0.0), rgb: [255, 0, 255], r: 3.0 }]);
+    let p = &out2[(12 * size + 32) * 4..(12 * size + 32) * 4 + 4];
+    assert!(p[0] > 200 && p[1] < 80, "ahead is up: {p:?}");
+    assert_eq!(map::next_zoom("far"), "off");
+    assert_eq!(map::zoom_of("off"), 0.0);
+}
+
+#[test]
+fn waypoints_are_kept_for_each_world_and_know_where_youve_stood() {
+    use crate::waypoints::{world_key, Kind, Waypoints};
+    home();
+    let mut w = Waypoints::load();
+    w.here = world_key(true, None, 26);
+    assert_eq!(w.here, "seed 26");
+    let home_at = IVec3::new(100, 30, 100);
+    let a = w.add("Home", home_at, true, Kind::Mine).unwrap();
+    let b = w.add("", IVec3::new(200, 0, 50), false, Kind::Mine).unwrap();
+    assert_eq!(w.get(b).unwrap().name, "Place 2", "a name when none is given");
+    assert_eq!(w.next_name(), "Place 1");
+    assert!(w.get(a).unwrap().stood && !w.get(b).unwrap().stood);
+    assert_ne!(w.get(a).unwrap().color, w.get(b).unwrap().color, "neighbours differ");
+    // marked on the map, it gets its height when you stand there
+    assert!(w.stand(Vec3::new(201.0, 41.0, 51.0)));
+    assert_eq!(w.get(b).unwrap().at, [200, 41, 50]);
+    assert!(w.get(b).unwrap().stood);
+    w.fell(IVec3::new(5, 20, 5));
+    w.fell(IVec3::new(6, 21, 6));
+    let fell: Vec<_> = w.list().iter().filter(|p| p.kind == Kind::Fell).collect();
+    assert_eq!(fell.len(), 1, "one mark for where you fell, moved");
+    assert_eq!((fell[0].at, fell[0].letter()), ([6, 21, 6], "X".to_string()));
+    w.save();
+    // another world has its own
+    let mut again = Waypoints::load();
+    again.here = world_key(true, Some("Play.Example.org:47126/"), 26);
+    assert!(again.list().is_empty(), "{:?}", again.list());
+    assert!(again.add("Spawn", IVec3::new(1, 1, 1), true, Kind::Mine).is_some());
+    again.here = "seed 26".into();
+    assert_eq!(again.list().len(), 3, "saved and loaded");
+    again.remove(a);
+    assert_eq!(again.list().len(), 2);
+    again.here = String::new();
+    assert!(again.add("Nowhere", IVec3::ZERO, true, Kind::Mine).is_none(), "outside a world there's nowhere to mark");
+}
+
+#[test]
+fn teleporting_is_free_in_build_mode_and_earned_in_survival() {
+    use crate::waypoints::{may_go, Goal, WAIT};
+    let mine = Goal::Waypoint { stood: true };
+    let unseen = Goal::Waypoint { stood: false };
+    assert_eq!(may_go(&Goal::Spot, false, true, false, 0.0), Ok(0.0), "anywhere at once when building");
+    assert_eq!(may_go(&Goal::Player, false, true, false, 50.0), Ok(0.0));
+    assert_eq!(may_go(&mine, true, true, false, 0.0), Ok(WAIT), "your own places, after standing still");
+    assert!(may_go(&unseen, true, true, false, 0.0).unwrap_err().contains("stood"));
+    assert!(may_go(&Goal::Spot, true, true, false, 0.0).is_err());
+    assert!(may_go(&Goal::Player, true, true, false, 0.0).is_err());
+    assert!(may_go(&mine, true, true, false, 12.0).unwrap_err().contains("12 s"), "and not again straight away");
+    assert!(may_go(&mine, false, false, false, 0.0).is_err(), "a world can turn it off");
+    assert!(may_go(&mine, false, true, true, 0.0).is_err(), "not while riding");
+}
+
+#[test]
+fn a_trip_fades_lands_on_open_ground_and_stops_if_you_move() {
+    use crate::player::Me;
+    use crate::waypoints::{landing, Travel, REST};
+    let mut v = world();
+    let (x, z) = (world::START.x as i32 + 20, world::START.z as i32 - 10);
+    // a spot picked on the map lands on the ground, never in it
+    let at = landing(&v, Vec3::new(x as f32, 0.0, z as f32), false);
+    let feet = at.floor().as_ivec3();
+    assert!(!crate::blocks::is_solid(v.at(feet)) && !crate::blocks::is_solid(v.at(feet + IVec3::Y)), "room to stand");
+    assert!(crate::blocks::is_solid(v.at(feet - IVec3::Y)) || v.at(feet - IVec3::Y) == crate::blocks::WATER, "something under you");
+    // a waypoint in a cave lands in the cave; one now filled in, on top
+    let top = v.top(x, z);
+    for y in top - 6..=top - 4 {
+        v.set(IVec3::new(x, y, z), crate::blocks::AIR);
+    }
+    let cave = landing(&v, Vec3::new(x as f32, (top - 6) as f32, z as f32), true);
+    assert_eq!(cave.y.floor() as i32, top - 6);
+    let buried = landing(&v, Vec3::new(x as f32, (top - 20) as f32, z as f32), true);
+    assert!(buried.y > top as f32, "not inside the rock");
+
+    // survival: stand still, the screen goes dark, you're there, it comes back
+    let mut me = Me::default();
+    me.respawn(&v, None);
+    let mut t = Travel::default();
+    t.start(&me, Vec3::new(x as f32, 0.0, z as f32), false, "the hill", 3.0);
+    let mut said = vec![];
+    let mut darkest: f32 = 0.0;
+    for _ in 0..200 {
+        said.extend(t.step(0.05, &mut me, &v, true));
+        darkest = darkest.max(t.dark);
+    }
+    assert!(!t.going() && t.dark == 0.0, "the trip is over and the screen clear");
+    assert_eq!(darkest, 1.0, "the screen went dark rather than the camera moving");
+    assert_eq!(me.pos.floor().as_ivec3().xz(), IVec2::new(x, z));
+    assert!(said.iter().any(|s| s.contains("the hill")));
+    assert!(t.rest > REST - 10.0, "a rest before the next");
+    // moving while it counts down stops it
+    let mut t = Travel::default();
+    t.start(&me, Vec3::new(10.0, 0.0, 10.0), false, "far", 3.0);
+    t.step(0.05, &mut me, &v, true);
+    me.pos.x += 2.0;
+    let stop = t.step(0.05, &mut me, &v, true);
+    assert!(stop.is_some_and(|s| s.contains("Stopped")) && !t.going());
+}
+
+#[test]
+fn chat_hides_listed_words_keeps_younger_players_to_quick_lines_and_slows_floods() {
+    use crate::chat::{Chat, Say, Speaker};
+    let mut chat = Chat::default();
+    let say = |t: &str| Say { text: t.into(), place: None };
+    let drew = Speaker { id: 2, name: "Drew", young: false };
+    let l = chat.hear(Speaker { ..drew }, say("well   that's   fucking great"), true, 0.0).unwrap();
+    assert_eq!(l.text, "well that's ******* great", "tidied and hidden");
+    let l = chat.hear(Speaker { ..drew }, say("what a SH1T idea"), true, 1.0).unwrap();
+    assert_eq!(l.text, "what a **** idea", "look-alikes too");
+    let l = chat.hear(Speaker { ..drew }, say("a classic class assessment in Scunthorpe"), true, 2.0).unwrap();
+    assert_eq!(l.text, "a classic class assessment in Scunthorpe", "and not words that only hold one");
+    chat.hear(Speaker { ..drew }, say("four"), true, 3.0).unwrap();
+    chat.hear(Speaker { ..drew }, say("five"), true, 4.0).unwrap();
+    assert!(chat.hear(Speaker { ..drew }, say("six"), true, 5.0).unwrap_err().contains("Slow down"));
+    assert!(chat.hear(Speaker { ..drew }, say("later"), true, 20.0).is_ok(), "a while later is fine");
+    assert!(chat.hear(Speaker { ..drew }, say("   "), true, 30.0).is_err(), "nothing to say");
+    assert!(chat.hear(Speaker { ..drew }, say("hello"), false, 40.0).unwrap_err().contains("off"), "a world can turn chat off");
+
+    let cy = Speaker { id: 3, name: "Cy", young: true };
+    assert!(chat.hear(Speaker { ..cy }, say("my address is"), true, 0.0).unwrap_err().contains("quick lines"));
+    let l = chat.hear(Speaker { ..cy }, say("Nice build!"), true, 1.0).unwrap();
+    assert!(l.young && !l.may_leave(), "a younger player's lines stay in the world");
+    chat.keep(l, 1.0);
+    // a place, with its name tidied
+    let l = chat.hear(Speaker { ..drew }, Say { text: String::new(), place: Some(crate::chat::Place { name: "  the   mill ".into(), at: [10, 30, 10] }) }, true, 50.0).unwrap();
+    assert_eq!(l.place.as_ref().unwrap().name, "the mill");
+    assert!(l.may_leave());
+    chat.keep(l, 50.0);
+    assert!(chat.hear(Speaker { ..drew }, Say { text: String::new(), place: Some(crate::chat::Place { name: "x".into(), at: [-5, 30, 10] }) }, true, 60.0).is_err(), "places in the world only");
+    assert_eq!(chat.places(99).len(), 1);
+    assert_eq!(chat.outbox.len(), 1, "only Drew's line may go to a bridge");
+}
+
+#[test]
+fn chat_goes_through_the_host_to_everyone_and_nothing_from_outside_reaches_younger_players() {
+    use crate::chat::{Chat, Line, Say, Source};
+    use crate::net::{self, Event, Msg};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken's world".into(), ..Default::default() });
+    app.update();
+    let port = free_port();
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
+    // a player who joins, and what reaches them
+    struct Guest {
+        to: std::sync::mpsc::Sender<Vec<u8>>,
+        from: Receiver<Wire>,
+        lines: Vec<Line>,
+        toasts: Vec<String>,
+        welcome: Option<(bool, bool)>,
+    }
+    let join = |name: &str, young: bool| {
+        let (tx, rx) = channel();
+        let to = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
+        to.send(net::frame_msg(&Msg::Hello { name: name.into(), protocol: net::PROTOCOL, pass: None, young })).unwrap();
+        Guest { to, from: rx, lines: vec![], toasts: vec![], welcome: None }
+    };
+    let pump = |app: &mut App, guests: &mut [&mut Guest], until: &dyn Fn(&[&mut Guest]) -> bool| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(20) && !until(guests) {
+            app.update();
+            std::thread::sleep(Duration::from_millis(5));
+            for g in guests.iter_mut() {
+                for w in g.from.try_iter() {
+                    match net::decode(w) {
+                        Some(Event::Msg(_, Msg::Welcome { teleport, chat, .. })) => g.welcome = Some((teleport, chat)),
+                        Some(Event::Msg(_, Msg::Chat(l))) => g.lines.extend(l),
+                        Some(Event::Msg(_, Msg::Toast(t))) => g.toasts.push(t),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+    let mut drew = join("Drew", false);
+    let mut cy = join("Cy", true);
+    pump(&mut app, &mut [&mut drew, &mut cy], &|g| g.iter().all(|g| g.welcome.is_some()));
+    assert_eq!(drew.welcome, Some((true, true)), "a friend's world lets players teleport and chat");
+    let say = |g: &Guest, t: &str| g.to.send(net::frame_msg(&Msg::Say(Say { text: t.into(), place: None }))).unwrap();
+    say(&drew, "hello everyone");
+    // two sockets race, so Cy speaks once Drew's line is in
+    pump(&mut app, &mut [&mut drew, &mut cy], &|g| !g[0].lines.is_empty());
+    say(&cy, "where do you live");
+    say(&cy, "Hi!");
+    pump(&mut app, &mut [&mut drew, &mut cy], &|g| g.iter().all(|g| g.lines.len() >= 2) && !g[1].toasts.is_empty());
+    let texts = |g: &Guest| g.lines.iter().map(|l| format!("{}: {}", l.name, l.text)).collect::<Vec<_>>();
+    assert_eq!(texts(&drew), ["Drew: hello everyone", "Cy: Hi!"]);
+    assert_eq!(texts(&cy), ["Drew: hello everyone", "Cy: Hi!"]);
+    assert!(cy.toasts.iter().any(|t| t.contains("quick lines")), "{:?}", cy.toasts);
+    // a line from outside the world (a bridge, later) reaches Drew but not Cy
+    app.world_mut().resource_mut::<Chat>().inbox.push(Line { id: 0, name: "Kaden".into(), from: Source::Bridge("Fluxer".into()), text: "hi from outside".into(), place: None, young: false, at: 0 });
+    pump(&mut app, &mut [&mut drew, &mut cy], &|g| g[0].lines.len() >= 3);
+    assert_eq!(drew.lines[2].who(), "Kaden on Fluxer");
+    for _ in 0..20 {
+        app.update();
+    }
+    for w in cy.from.try_iter() {
+        if let Some(Event::Msg(_, Msg::Chat(l))) = net::decode(w) {
+            cy.lines.extend(l);
+        }
+    }
+    assert_eq!(cy.lines.len(), 2, "younger players never get a bridge's lines");
+    let out: Vec<String> = app.world().resource::<Chat>().outbox.iter().map(|l| l.text.clone()).collect();
+    assert_eq!(out, ["hello everyone"], "and their own never go out");
+    // whoever joins later gets the last lines, minus the bridge's when younger
+    let mut kaden = join("Kaden", false);
+    let mut dot = join("Dot", true);
+    pump(&mut app, &mut [&mut kaden, &mut dot], &|g| g[0].lines.len() >= 3 && g[1].lines.len() >= 2);
+    assert_eq!(kaden.lines.len(), 3);
+    assert!(dot.lines.iter().all(|l| !matches!(l.from, Source::Bridge(_))), "{:?}", texts(&dot));
+}
+
+#[test]
+fn a_server_can_turn_teleporting_and_chat_off() {
+    let cfg: crate::hosting::ServerConfig = toml::from_str("teleport = false\nchat = false").unwrap();
+    let rules = cfg.rules();
+    assert!(!rules.teleport && !rules.chat);
+    let all = crate::hosting::ServerConfig::default().rules();
+    assert!(all.teleport && all.chat, "both on unless a server says");
+}
+
+#[test]
+fn the_keyboard_on_the_screen_types_with_a_pad() {
+    use crate::keyboard::Keys;
+    let mut k = Keys::new("say", "Say something", "", 8);
+    // starts on q; right to w, press, then capitals for one letter
+    k.step(1, 0);
+    assert!(!k.press());
+    k.step(0, 3); // down to the wide keys, Capitals
+    k.col = 0;
+    k.press();
+    k.row = 1;
+    k.col = 5; // y
+    k.press();
+    assert_eq!(k.text, "wY");
+    k.step(0, -2); // up through the number row's neighbours wraps round
+    assert!(k.row < 5);
+    // Space, Delete and Done along the bottom
+    k.row = 4;
+    k.col = 1;
+    k.press();
+    k.col = 2;
+    k.press();
+    k.press();
+    assert_eq!(k.text, "w");
+    for _ in 0..20 {
+        k.row = 0;
+        k.col = 3;
+        k.press();
+    }
+    assert_eq!(k.text, "w4444444", "no longer than the field takes");
+    k.row = 4;
+    k.col = 3;
+    assert!(k.press(), "Done");
+    // wrapping round the edges
+    let mut k = Keys::new("x", "", "", 8);
+    k.step(-1, 0);
+    assert_eq!((k.row, k.col), (1, 9));
+}
+
+#[test]
+fn a_pad_opens_the_keyboard_on_a_field_and_esc_from_a_menu_goes_back_to_playing() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::input::Controls;
+    use crate::ui::{Act, Acts, Focus, Screen};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+    // chat with a pad: A on the field brings up the keyboard
+    app.world_mut().resource_mut::<Focus>().go(Screen::Chat);
+    app.world_mut().run_system_once(crate::chat::fill).unwrap();
+    let ctl = |f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        c
+    };
+    app.insert_resource(ctl(&|c| (c.accept, c.pad) = (true, true)));
+    app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    let keys = app.world().resource::<Focus>().keyboard.clone().expect("the keyboard opens");
+    assert_eq!(keys.field, "say");
+    // typing and Done says it
+    {
+        let mut f = app.world_mut().resource_mut::<Focus>();
+        let k = f.keyboard.as_mut().unwrap();
+        k.text = "hello".into();
+    }
+    // (what the menu drew is what the keyboard's Done looks along)
+    let made = app.world().resource::<Focus>().made.1.clone();
+    app.world_mut().resource_mut::<Focus>().items = made;
+    app.insert_resource(ctl(&|c| (c.pause, c.pad) = (true, true)));
+    app.world_mut().run_system_once(crate::keyboard::input).unwrap();
+    assert!(app.world().resource::<Focus>().keyboard.is_none());
+    let acts = std::mem::take(&mut app.world_mut().resource_mut::<Acts>().0);
+    assert_eq!(acts, [Act::Say("hello".into())]);
+    app.world_mut().resource_mut::<Acts>().0 = acts;
+    app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    assert_eq!(app.world().resource::<crate::chat::Chat>().out.len(), 1);
+    assert!(app.world().resource::<Focus>().playing(), "saying it goes back to playing");
+
+    // Esc on the pause menu: back to playing, and it doesn't open again
+    app.world_mut().resource_mut::<Focus>().go(Screen::Pause);
+    app.insert_resource(ctl(&|c| (c.back, c.pause) = (true, true)));
+    app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    app.world_mut().run_system_once(crate::ui::menu_owns).unwrap();
+    assert!(!app.world().resource::<Controls>().pause, "the menu had the key");
+    assert!(app.world().resource::<Acts>().0.contains(&Act::Resume));
+}
+
+#[test]
+fn the_maps_chats_and_keyboards_systems_ask_for_what_they_can_have_together() {
+    // two queries that could reach the same thing mutably stop the game at
+    // its start (Bevy's B0001), so each system is put together here
+    fn check<M>(s: impl IntoSystem<(), (), M>) {
+        let mut world = World::new();
+        let mut s = IntoSystem::into_system(s);
+        let _ = s.initialize(&mut world);
+    }
+    check(crate::map::draw_hud);
+    check(crate::map::draw_map);
+    check(crate::map::map_input);
+    check(crate::map::map_acts);
+    check(crate::map::refresh);
+    check(crate::map::make_room);
+    check(crate::map::fill);
+    check(crate::map::keys);
+    check(crate::map::spawn_hud);
+    check(crate::map::spawn_map);
+    check(crate::chat::draw_feed);
+    check(crate::chat::run);
+    check(crate::chat::fill);
+    check(crate::chat::acts);
+    check(crate::keyboard::draw);
+    check(crate::keyboard::input);
+    check(crate::waypoints::travel);
+    check(crate::waypoints::spawn_fade);
+    check(crate::ui::draw_menu);
+    check(crate::ui::menu_input);
+    check(crate::ui::update_hud);
 }

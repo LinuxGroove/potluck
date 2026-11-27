@@ -32,6 +32,14 @@ bring = "anyone"
 # Whether players may place and break blocks.
 build = true
 
+# Whether players may go to waypoints and friends from the map. In
+# survival they can only go back to places they've stood, now and then.
+teleport = true
+
+# Whether players may chat. Every line goes through this server, which
+# filters it; younger players chat with quick lines.
+chat = true
+
 # Tell the local network about this world.
 beacon = true
 
