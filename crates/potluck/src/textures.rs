@@ -26,7 +26,7 @@ mod art;
 
 /// How big the drawn textures are.
 pub const TILE: usize = 32;
-pub const GRID: usize = 8; // 8 x 8 tiles
+pub const GRID: usize = 16; // 16 x 16 tiles
 pub const SIZE: usize = TILE * GRID;
 /// Each tile sits in a cell with a gutter a tile's width over this all round,
 /// filled with the tile wrapped round. Multisampling shades a pixel that only
@@ -685,6 +685,8 @@ pub(crate) fn baked() -> (HashMap<&'static str, Vec<[f32; 4]>>, usize) {
 pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
     let drawn = draw_all();
     let (baked, full) = baked();
+    // the bakes' size only when one is used; the 64 px art needs no more
+    let full = if drawn.iter().any(|(name, t)| !t.glow && t.size < ART && baked.contains_key(*name)) { full } else { ART };
     let maps: Vec<Maps> = drawn
         .iter()
         // bakes take the place of the old 32 px drawings, but not of glowing
