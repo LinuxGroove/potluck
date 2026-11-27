@@ -45,6 +45,9 @@ pub fn routes() -> Router<Shared> {
         .route("/api/suggestions/{id}/close", post(close))
         .route("/api/signin", post(signin))
         .route("/api/invite", post(invite))
+        .route("/api/link", post(link))
+        .route("/api/link/code", post(link_code))
+        .route("/api/link/leave", post(leave))
         .route("/api/pass", post(pass))
         .route("/api/servers", get(servers))
         .route("/api/servers/heartbeat", post(heartbeat))
@@ -78,8 +81,10 @@ async fn key(State(app): State<Shared>) -> Json<Value> {
 
 async fn me(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
     let a = who(&app, &h).await?;
+    let (device, _) = app.game_device(&bearer(&h).unwrap_or_default()).await?;
     Ok(Json(json!({
         "handle": a.handle, "name": a.name, "beta": a.beta || !app.cfg.invite_only, "moderator": a.moderator, "trusted": a.trusted,
+        "linked": device != a.user_id,
         "url": format!("{}/@{}", app.cfg.public_url, a.handle),
         "about": a.about, "avatar": format!("{}/avatar/{}.svg", app.cfg.public_url, a.handle), "named_on_web": a.named_on_web,
     })))
@@ -224,6 +229,35 @@ async fn signin(State(app): State<Shared>, h: HeaderMap, body: axum::body::Bytes
     let a = who(&app, &h).await?;
     let next = serde_json::from_slice::<SigninReq>(&body).unwrap_or_default().next;
     Ok(Json(json!({ "url": app.signin_link(&a, &next)?, "expires_in": 300 })))
+}
+
+/// A code for another device to type, so it plays as this account too.
+async fn link_code(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let code = app.link_code(&a)?;
+    Ok(Json(json!({ "code": codes::pretty(&code), "expires_in": crate::devices::LINK_SECONDS })))
+}
+
+#[derive(Deserialize)]
+struct LinkReq {
+    code: String,
+    /// What the device is, for the account's list: "Steam Deck", "Windows".
+    #[serde(default)]
+    device: String,
+}
+
+/// This device plays as the account a link or recovery code belongs to.
+async fn link(State(app): State<Shared>, h: HeaderMap, Json(r): Json<LinkReq>) -> R<Json<Value>> {
+    let Some(token) = bearer(&h) else { return Err(Fail { status: 401, message: "sign in to the game server first".into() }) };
+    let l = app.link(&token, &r.code, &r.device).await?;
+    Ok(Json(serde_json::to_value(l).unwrap_or_default()))
+}
+
+/// This device stops playing as the account it was linked to.
+async fn leave(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let Some(token) = bearer(&h) else { return Err(Fail { status: 401, message: "sign in to the game server first".into() }) };
+    app.leave(&token).await?;
+    Ok(Json(json!({ "left": true })))
 }
 
 #[derive(Deserialize)]

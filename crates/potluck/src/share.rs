@@ -63,8 +63,41 @@ pub enum Done {
     Pass { address: String, pass: Option<String> },
     /// The market's server list.
     Servers(Vec<Listed>),
+    /// Who this device plays as on the market.
+    Account(Account),
+    /// A code for another device to type, to play as this account too.
+    LinkCode(String),
+    /// This device plays as another device's account now; `recovery` when
+    /// a recovery code did it (it's used up).
+    Linked { name: String, handle: String, recovery: bool },
+    /// This device left the account it was linked to.
+    Unlinked,
     Said(String),
     Failed(String),
+}
+
+/// The market account this device plays as.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Account {
+    pub handle: String,
+    pub name: String,
+    /// Linked from another device, rather than started here.
+    #[serde(default)]
+    pub linked: bool,
+}
+
+/// What this device is, for the account's list of devices: never its name
+/// or anything about who uses it.
+pub fn device_label() -> &'static str {
+    if std::env::var("SteamDeck").is_ok_and(|v| v == "1") {
+        "Steam Deck"
+    } else if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "Mac"
+    } else {
+        "Linux"
+    }
 }
 
 /// A server in the market's list.
@@ -650,6 +683,47 @@ impl ShareJobs {
     pub fn servers(&self, who: &Who) {
         self.run(who, |c| match c.market.call("GET", "/api/servers", None, "", None) {
             Ok(v) => Done::Servers(serde_json::from_value(v["servers"].clone()).unwrap_or_default()),
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// Who this device plays as on the market.
+    pub fn account(&self, who: &Who) {
+        self.run(who, |c| match c.market("GET", "/api/me", None) {
+            Ok(v) => match serde_json::from_value(v) {
+                Ok(a) => Done::Account(a),
+                Err(e) => Done::Failed(format!("the market's answer didn't make sense ({e})")),
+            },
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// A code for another device to type, so it plays as this account too.
+    pub fn link_code(&self, who: &Who) {
+        self.run(who, |c| match c.market("POST", "/api/link/code", None) {
+            Ok(v) => Done::LinkCode(v["code"].as_str().unwrap_or("").to_string()),
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// This device plays as the account a link code or recovery code
+    /// belongs to.
+    pub fn link_device(&self, who: &Who, code: &str) {
+        let code = clean_code(code);
+        self.run(who, move |c| match c.market("POST", "/api/link", Some(json!({ "code": code, "device": device_label() }))) {
+            Ok(v) => Done::Linked {
+                name: v["name"].as_str().unwrap_or("").to_string(),
+                handle: v["handle"].as_str().unwrap_or("").to_string(),
+                recovery: v["recovery"].as_bool().unwrap_or(false),
+            },
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// This device stops playing as the account it was linked to.
+    pub fn unlink(&self, who: &Who) {
+        self.run(who, |c| match c.market("POST", "/api/link/leave", None) {
+            Ok(_) => Done::Unlinked,
             Err(e) => Done::Failed(e.text()),
         });
     }

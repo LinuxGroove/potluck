@@ -454,6 +454,30 @@ pub fn do_acts(
                 shares.link(&Who::of(&settings), &next, &title);
                 focus.go(Screen::Link);
             }
+            Act::OpenDevices => {
+                focus.status.clear();
+                focus.link_code = None;
+                focus.fields.remove("link");
+                shares.account(&Who::of(&settings));
+                focus.go(Screen::Devices);
+            }
+            Act::MakeLinkCode => {
+                focus.status = "Asking the market for a code...".into();
+                shares.link_code(&Who::of(&settings));
+            }
+            Act::LinkDevice(code) => {
+                let n = crate::share::clean_code(&code).len();
+                if n != 8 && n != 20 {
+                    focus.status = "A code from another device is 8 letters and numbers; a recovery code is 20.".into();
+                    continue;
+                }
+                focus.status = "Linking...".into();
+                shares.link_device(&Who::of(&settings), &code);
+            }
+            Act::UnlinkDevice => {
+                focus.status = "Unlinking...".into();
+                shares.unlink(&Who::of(&settings));
+            }
             Act::OpenUrl(url) => {
                 open_link(&url);
                 // a link works once: opening it here uses it up
@@ -521,7 +545,7 @@ pub fn start_world(lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, ne
 /// Finished share jobs: a code to show, or a creation to bring in.
 #[allow(clippy::too_many_arguments)]
 pub fn share_results(
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     shares: Res<ShareJobs>,
     mut focus: ResMut<Focus>,
     mut lib: ResMut<Library>,
@@ -595,6 +619,33 @@ pub fn share_results(
                     }
                     Err(e) => focus.status = format!("Merged on the market, but couldn't write it here: {e}."),
                 }
+            }
+            Done::Account(a) => focus.account = Some(a),
+            Done::LinkCode(code) => {
+                focus.status.clear();
+                focus.link_code = Some(code);
+            }
+            Done::Linked { name, handle, recovery } => {
+                // the account's name, as far as names in the game go
+                let game_name: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == ' ').take(20).collect();
+                if !game_name.trim().is_empty() {
+                    settings.name = game_name.trim().to_string();
+                    settings.save();
+                }
+                focus.fields.remove("link");
+                focus.fields.insert("name".into(), settings.name.clone());
+                focus.account = Some(crate::share::Account { handle, name: name.clone(), linked: true });
+                focus.status = if recovery {
+                    format!("This device plays as {name} now. Your recovery code is used up: make a new one on the market, under Your devices.")
+                } else {
+                    format!("This device plays as {name} now.")
+                };
+                toasts.push(format!("Playing as {name}"));
+            }
+            Done::Unlinked => {
+                focus.status = "Unlinked. This device starts an account of its own.".into();
+                focus.account = None;
+                shares.account(&Who::of(&settings));
             }
             Done::Said(s) => {
                 focus.status = s.clone();
