@@ -48,12 +48,15 @@ pub struct MoteLooks {
     dust: Handle<StandardMaterial>,
 }
 
-pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, settings: Res<crate::settings::Settings>) {
     let glow = |c: LinearRgba| StandardMaterial { base_color: Color::BLACK, emissive: c, perceptual_roughness: 1.0, ..default() };
+    // Low has no bloom, so there they're dim enough to keep their colour
+    // rather than burning out to white specks (as flames are, `render::make_materials`)
+    let low = crate::render::Tier::of(&settings.lighting) == crate::render::Tier::Low;
     commands.insert_resource(MoteLooks {
         mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        ember: mats.add(glow(LinearRgba::rgb(14.0, 5.0, 1.2) * 600.0)),
-        firefly: mats.add(glow(LinearRgba::rgb(5.0, 12.0, 2.0) * 260.0)),
+        ember: mats.add(glow(LinearRgba::rgb(14.0, 5.0, 1.2) * if low { 0.25 } else { 600.0 })),
+        firefly: mats.add(glow(LinearRgba::rgb(5.0, 12.0, 2.0) * if low { 0.25 } else { 260.0 })),
         dust: mats.add(StandardMaterial { base_color: Color::srgb(1.0, 0.94, 0.82), perceptual_roughness: 1.0, reflectance: 0.0, ..default() }),
     });
 }
