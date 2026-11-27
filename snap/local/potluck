@@ -3,4 +3,18 @@
 # your own editor) live in the snap's common folder, ~/snap/potluck/common,
 # which isn't copied for every revision.
 export POTLUCK_HOME="$SNAP_USER_COMMON"
+# libasound's PulseAudio plugin finds the sound server here: the snap's own
+# runtime folder sits one below the desktop's
+if [ -z "$PULSE_SERVER" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
+    export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/../pulse/native"
+fi
+# and the PulseAudio client keeps half of itself in a folder of its own,
+# which it looks for outside the snap
+case "$SNAP_ARCH" in
+    amd64) triplet=x86_64-linux-gnu ;;
+    arm64) triplet=aarch64-linux-gnu ;;
+esac
+if [ -n "$triplet" ]; then
+    export LD_LIBRARY_PATH="$SNAP/usr/lib/$triplet/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 exec "$SNAP/bin/potluck" "$@"
