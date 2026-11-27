@@ -7,6 +7,7 @@
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
 local input = require("@potluck/input")
+local sound = require("@potluck/sound@0.1")
 
 -- Knobs show up in Tweak, so anyone can change them without code.
 local knobs = tweak {
@@ -61,6 +62,7 @@ function Mossback:tick(dt: number)
 			patted[self.rider.id] = nil
 			self.patience += 1.5
 			self:say("Mmm.")
+			sound.play("grumble", { at = self, volume = 0.6, pitch = 1.3, caption = "Mossback hums" })
 		end
 		-- now and then a mossback has had enough
 		self.patience -= dt
@@ -70,6 +72,7 @@ function Mossback:tick(dt: number)
 			if world.random() < 0.5 then
 				self:throw_rider(knobs.buck)
 				self:say(GRUMBLES[math.floor(world.random(1, #GRUMBLES + 1))])
+				sound.play("grumble", { at = self })
 			end
 		end
 		return
@@ -98,10 +101,12 @@ end
 function Mossback:ridden(player)
 	self.patience = world.random(3, 7)
 	self:say("Mmmf?")
+	sound.play("grumble", { at = self, volume = 0.5, pitch = 1.2 })
 end
 
 -- Hit one and it complains.
 function Mossback:hit(player)
 	self:hop(1)
 	self:say("Oi!")
+	sound.play("grumble", { at = self, pitch = 1.4 })
 end

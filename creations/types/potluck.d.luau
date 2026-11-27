@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1
+-- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1, @potluck/sound 0.1
 
 export type Position = vector | { number }
 
@@ -105,6 +105,19 @@ export type UI = {
 	hide: (player: Player | number | nil, id: string) -> (),
 	ask: (player: Player | number, question: Question, fn: (player: Player, choice: number?) -> ()) -> number,
 	close: (player: Player | number) -> boolean,
+}
+
+export type SoundOptions = {
+	at: (Position | Creature)?,
+	volume: number?,
+	pitch: number?,
+	caption: string?,
+}
+
+export type Sound = {
+	play: (name: string, opts: SoundOptions?) -> boolean,
+	play_for: (player: Player | number, name: string, opts: SoundOptions?) -> boolean,
+	names: () -> { string },
 }
 
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }

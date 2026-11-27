@@ -1540,3 +1540,111 @@ for i = 1, 7 do ui.hide(nil, "n" .. i) end
     tick(&mut app);
     assert!(app.world().resource::<Scripts>().vms["test"].log.iter().any(|l| l.starts_with("answer ") && l.ends_with(" 2")), "{:?}", app.world().resource::<Scripts>().vms["test"].log);
 }
+
+#[test]
+fn sounds_are_made_the_same_every_time_and_creations_play_them() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::sound::{material, synth, Material, Play, SOUNDS};
+    use crate::transport::Wire;
+    home();
+    // every sound is there, short, never clipping, and the same each time
+    for (name, _) in SOUNDS {
+        let v = synth(name);
+        assert!(!v.is_empty() && v.len() < crate::sound::RATE as usize * 2, "{name}: {} samples", v.len());
+        let peak = v.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let rms = (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+        assert!(peak > 0.2 && peak <= 0.8001 && rms <= 0.2501 && v.iter().all(|s| s.is_finite()), "{name} peaks at {peak}, rms {rms}");
+        assert_eq!(v, synth(name), "{name} is made the same every time");
+    }
+    // what blocks sound like, from their names
+    let by = |n: &str| material(crate::blocks::by_name(n).unwrap());
+    assert_eq!((by("Grass"), by("Stone"), by("Sandstone"), by("Oak log"), by("Oak leaves"), by("Tall grass"), by("Glass"), by("Water")), (Material::Soft, Material::Hard, Material::Hard, Material::Wood, Material::Plant, Material::Plant, Material::Glass, Material::Water));
+
+    // a creation plays them, for those near enough or for one player
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.2")
+local sound = require("@potluck/sound@0.1")
+world.on("player_joined", function(p)
+	sound.play("chime", { at = vector.create(0, 40, 0), caption = "A   bell" })
+	sound.play_for(p, "ding", { volume = 3, pitch = 9 })
+	sound.play("fanfare")
+end)
+print(pcall(sound.play, "trumpet") and "trumpet ok" or "no trumpet")
+print(#sound.names())
+world.after(0.5, function()
+	local played = 0
+	for _ = 1, 30 do
+		if sound.play("pop") then played += 1 end
+	end
+	print("played " .. played)
+end)
+"#;
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(1.0, 40.0, 0.0) };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::new(200.0, 40.0, 0.0) };
+    scripts.players = vec![ada, bo];
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains("no trumpet") && log.contains(&SOUNDS.len().to_string()), "{log}");
+    let heard = scripts.sound_changes();
+    let who = |name: &str| -> Vec<u32> { heard.iter().filter(|(_, p)| p.name == name).map(|(id, _)| *id).collect() };
+    assert_eq!(who("chime"), vec![7, 7], "only Ada is near the bell, and she hears both creations' joins: {heard:?}");
+    let ding = heard.iter().find(|(_, p)| p.name == "ding").map(|(_, p)| p.clone()).unwrap();
+    assert_eq!((ding.volume, ding.pitch), (1.0, 2.0), "kept in range");
+    assert_eq!(heard.iter().find(|(_, p)| p.name == "chime").unwrap().1.caption.as_deref(), Some("A bell"));
+    assert_eq!(who("fanfare"), vec![7, 8, 7, 8], "nowhere in particular: everyone");
+    assert!(scripts.sound_changes().is_empty(), "played once");
+    // too many at once: the rest are skipped, not an error
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    let log = scripts.vms["test"].log.join("\n");
+    let played: usize = log.lines().find_map(|l| l.strip_prefix("played ")).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!((5..=10).contains(&played), "at most a second's worth: {log}");
+
+    // what goes between devices
+    let m = Msg::Sound(Play { name: "quack".into(), at: Some([1.0, 2.0, 3.0]), volume: 0.5, pitch: 1.2, caption: None });
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+}
+
+/// Writes every sound as a WAV to listen to, and all of them in a row:
+/// `POTLUCK_SOUNDS=DIR cargo test --workspace -- --ignored write_the_sounds`.
+#[test]
+#[ignore]
+fn write_the_sounds() {
+    let dir = std::path::PathBuf::from(std::env::var("POTLUCK_SOUNDS").expect("POTLUCK_SOUNDS=DIR"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = |samples: &[f32]| {
+        let mut b = Vec::with_capacity(44 + samples.len() * 2);
+        let rate = crate::sound::RATE;
+        let data = samples.len() as u32 * 2;
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&(rate * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            b.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        }
+        b
+    };
+    let mut all = vec![];
+    for (name, _) in crate::sound::SOUNDS {
+        let v = crate::sound::synth(name);
+        std::fs::write(dir.join(format!("{name}.wav")), wav(&v)).unwrap();
+        all.extend_from_slice(&v);
+        all.extend(std::iter::repeat_n(0.0, crate::sound::RATE as usize / 3));
+    }
+    std::fs::write(dir.join("all.wav"), wav(&all)).unwrap();
+}

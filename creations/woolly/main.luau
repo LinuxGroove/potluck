@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	wool = { "#efe9dc", label = "Wool colour", order = 1 },
@@ -54,6 +55,7 @@ function Woolly:tick(dt: number)
 		if not p or self.follow_left <= 0 then
 			self.following = nil
 			self:say("Baa.")
+			sound.play("bleat", { at = self })
 		elseif self:distance_to(p.position) > 2.5 then
 			self:walk_to(p.position, 3.2)
 		else
@@ -80,6 +82,7 @@ function Woolly:used(player)
 	self.follow_left = knobs.follow
 	self:hop(0.5)
 	self:say("Baa?")
+	sound.play("bleat", { at = self, pitch = 1.15 })
 end
 
 function Woolly:hit(player)
@@ -88,4 +91,5 @@ function Woolly:hit(player)
 	self:walk_to(away, 4.5)
 	self:hop(0.8)
 	self:say("Baa!")
+	sound.play("bleat", { at = self, pitch = 1.25 })
 end

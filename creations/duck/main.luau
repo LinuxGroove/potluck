@@ -5,6 +5,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	ducklings = { 3, min = 0, max = 6, label = "Ducklings", order = 1 },
@@ -67,6 +68,7 @@ function Duck:tick(dt: number)
 		self.quack_in = world.random(10, 30)
 		if knobs.quack then
 			self:say("Quack!")
+			sound.play("quack", { at = self })
 		end
 	end
 end
@@ -74,6 +76,7 @@ end
 function Duck:hit(player)
 	self:hop(0.6)
 	self:say("QUACK!")
+	sound.play("quack", { at = self, pitch = 1.15 })
 end
 
 function Duckling:spawned()
@@ -97,4 +100,5 @@ end
 function Duckling:used(player)
 	self:hop(0.4)
 	self:say("Peep!")
+	sound.play("chirp", { at = self, volume = 0.6 })
 end

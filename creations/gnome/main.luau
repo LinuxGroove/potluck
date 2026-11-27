@@ -6,6 +6,7 @@
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	hat = { "#c0392b", label = "Hat colour", order = 1 },
@@ -114,6 +115,7 @@ function Gnome:tick(dt: number)
 			if spot then
 				self:walk_to(spot, 1.6)
 				self:say("There we are.")
+				sound.play("dig", { at = self, volume = 0.5 })
 				return
 			end
 		end
@@ -130,6 +132,7 @@ end
 function Gnome:used(player)
 	self:face(player.position)
 	self:say("Hello there!")
+	sound.play("chime", { at = self, volume = 0.5 })
 	ask(self, player)
 end
 

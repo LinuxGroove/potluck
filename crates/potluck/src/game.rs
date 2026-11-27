@@ -182,6 +182,7 @@ pub fn host_step(
     mut toasts: ResMut<Toasts>,
     mut rng: ResMut<HerdRng>,
     settings: Res<Settings>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     if matches!(net.role, Role::Client(_)) {
         return;
@@ -253,6 +254,14 @@ pub fn host_step(
             me.as_mut().unwrap().show(change);
         } else {
             net.send_ui(pid, change);
+        }
+    }
+    // sounds creations played, to whoever's near
+    for (pid, play) in scripts.sound_changes() {
+        if pid == my_id && me.is_some() {
+            heard.0.push(play);
+        } else {
+            net.send_sound(pid, play);
         }
     }
     for (pid, v) in std::mem::take(&mut scripts.out.throws) {

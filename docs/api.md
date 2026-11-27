@@ -29,8 +29,9 @@ store = "0.1"
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.1 | Lines on players' screens, and questions with choices |
+| `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
 
-Still to come, each as its own module with its own version: `@potluck/sound`, and `@potluck/net` (a creation's client half, for what only one player sees).
+Still to come, as its own module with its own version: `@potluck/net` (a creation's client half, for what only one player sees). Sounds of a creation's own, from its files, come with a later `sound`.
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -75,6 +76,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
 | Lines on screens (`ui.show`) | 8 at once (different ids), each up to 60 letters |
 | Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds |
+| Sounds | 10 a second; heard within 40 blocks |
 | Boards | 16, of 100 players each |
 | Store | 64 KB, counted as JSON |
 | Messages | `world.say` 120 letters, a creature's `say` 80 |
@@ -93,6 +95,10 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/input`
 
 - **0.1**: the first version: `[actions]` in `potluck.toml`, and `input.on`, `input.held`, `input.focus` and `input.focused`.
+
+### `@potluck/sound`
+
+- **0.1**: the first version: `sound.play`, `sound.play_for` and `sound.names`, with the game's own sounds.
 
 ### `@potluck/ui`
 

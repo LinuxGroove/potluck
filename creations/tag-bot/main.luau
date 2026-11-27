@@ -10,6 +10,7 @@ local tweak = require("@potluck/tweak")
 local game = require("@potluck/game@0.1")
 local store = require("@potluck/store@0.1")
 local ui = require("@potluck/ui@0.1")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	paint = { "#d9dde3", label = "Paint", order = 1 },
@@ -93,12 +94,14 @@ function Bot:hit(player)
 	self.dizzy = 1.5
 	self:hop(0.8)
 	self:say("Tagged! That's " .. n .. " for " .. player.name .. ".")
+	sound.play("beep", { at = self })
 end
 
 function Bot:used(player)
 	local top = game.board("tags", 5)
 	if #top == 0 then
 		self:say("Beep! Nobody's caught me yet.")
+		sound.play("beep", { at = self, pitch = 1.2 })
 		return
 	end
 	local lines = {}
@@ -106,5 +109,6 @@ function Bot:used(player)
 		table.insert(lines, i .. ". " .. s.name .. ": " .. math.floor(s.value))
 	end
 	self:say("Beep! Here's my board.")
+	sound.play("beep", { at = self, pitch = 1.2 })
 	ui.ask(player, { title = "Who's tagged Tag Bot most", text = table.concat(lines, "\n"), choices = { "OK" } }, function() end)
 end

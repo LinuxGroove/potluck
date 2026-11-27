@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	skin = { "#5a9e3a", label = "Skin colour", order = 1 },
@@ -46,6 +47,7 @@ function Frog:tick(dt: number)
 		self.sing_in = world.random(10, 30)
 		if not world.nearest_player(self.position, 4) then
 			self:say(SONGS[math.floor(world.random(1, #SONGS + 1))])
+			sound.play("croak", { at = self })
 		end
 	end
 end
@@ -53,4 +55,5 @@ end
 function Frog:hit(player)
 	self:hop(knobs.hop * 2)
 	self:say("Brrp!")
+	sound.play("croak", { at = self, pitch = 1.3 })
 end
