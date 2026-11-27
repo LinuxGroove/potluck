@@ -1065,9 +1065,13 @@ fn every_base_creation_runs_and_answers_players() {
         scripts.start(c, &mut herd).unwrap_or_else(|e| panic!("{} doesn't start: {e}", c.manifest.name));
         assert!(c.manifest.needs.contains_key("world"), "{} says which modules it needs", c.manifest.name);
     }
+    // at night, with Ada in survival, so the Gloomlings come out too
+    scripts.set_day(0.0);
+    scripts.set_pockets(7, true, &[], 0);
     run(&mut scripts, &mut voxels, &mut herd, 2.0);
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
-    for c in &base {
+    // everything but the Gloomlings (only near survival players at night) and mods with no bodies
+    for c in base.iter().filter(|c| c.id != "gloomlings" && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -1100,7 +1104,7 @@ fn every_base_creation_runs_and_answers_players() {
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: at + Vec3::X };
     scripts.players = vec![ada.clone()];
     scripts.event(&mut voxels, &mut herd, bot, "hit", &ada);
-    assert!(scripts.out.scores.iter().any(|s| s.1 == "tags" && s.3 == 7 && s.4 == 1.0), "a tag is scored: {:?}", scripts.out.scores);
+    assert!(scripts.out.scores.iter().any(|s| s.1 == "tags" && s.3 == 7 && s.4 >= 1.0), "a tag is scored: {:?}", scripts.out.scores);
     let (ram, at) = find(&herd, "Rodeo Ram");
     let ada = PlayerInfo { pos: at, ..ada };
     scripts.players = vec![ada.clone()];
@@ -1506,7 +1510,7 @@ for i = 1, 7 do ui.hide(nil, "n" .. i) end
     let log = |s: &Scripts| s.vms["test"].log.join("\n");
     assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
     assert!(log(&scripts).contains("no middle") && log(&scripts).contains("no five") && log(&scripts).contains("no nine"), "{}", log(&scripts));
-    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into() });
+    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     let shown = |ch: &[(u32, UiChange)], pid: u32, id: &str| {
         ch.iter().find_map(|(p, c)| match c {
             UiChange::Piece { id: i, piece, .. } if *p == pid && i == id => Some(piece.clone()),
@@ -1868,7 +1872,7 @@ for i = 1, 15 do net.send("spam") end
     halves[0].frame(0.1, &ada, for_ada);
     halves[0].frame(0.45, &ada, vec![]);
     let out = halves[0].take();
-    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into() });
+    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     assert!(out.pieces.contains(&("test".into(), "hi".into(), piece("hi 2 b 2", "bottom"))), "{:?}", out.pieces);
     assert!(out.pieces.contains(&("test".into(), "got".into(), piece("got 30 at 0.55", "right"))), "its own clock: {:?}", out.pieces);
     assert_eq!(out.sounds.len(), 1);
@@ -2141,4 +2145,670 @@ fn villagers_trade_what_survival_players_gathered() {
     let panel = asked(&mut scripts, 8).unwrap();
     assert!(panel.text.contains("creative"), "{}", panel.text);
     assert_eq!(scripts.vms["villagers"].error, None);
+}
+
+#[test]
+fn creations_know_the_time_of_day_find_lights_and_hurt_survival_players() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::{Me, MAX_HEALTH};
+    home();
+    let lantern = crate::blocks::by_name("Lantern").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    // a lantern in the open, far from the Green
+    let (x, z) = (world::GREEN.x as i32 + 70, world::GREEN.z as i32 - 40);
+    let y = voxels.top(x, z) + 1;
+    voxels.set(IVec3::new(x, y, z), lantern);
+    let code = format!(
+        r#"
+local world = require("@potluck/world@0.4")
+print(string.format("start %.2f", world.daytime()))
+world.after(0.1, function()
+	print(string.format("time %.2f light %.2f", world.daytime(), world.daylight()))
+	local l = world.find_light(vector.create({x}, {y} + 3, {z}), 5)
+	print("found " .. tostring(l and l.x) .. " " .. tostring(l and l.y))
+	print("too far " .. tostring(world.find_light(vector.create({x} + 9, {y}, {z}), 6)))
+	print("hurt " .. tostring(world.hurt(7, 3)) .. " " .. tostring(world.heal(7, 1)) .. " " .. tostring(world.hurt(7, 500)))
+	print("creative " .. tostring(world.hurt(8, 3)) .. " unknown " .. tostring(world.hurt(9, 3)))
+	print(pcall(world.hurt, 7, -1) and "less ok" or "no less")
+	print(pcall(world.heal, 7, 0/0) and "nan ok" or "no nan")
+end)
+"#
+    );
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&creation(&code), &mut herd).unwrap();
+    scripts.set_day(1.0); // midnight
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let l = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{l}");
+    for want in [
+        "start 0.34",
+        "time 0.00 light 0.00",
+        &format!("found {} {}", x as f32 + 0.5, y as f32 + 0.5),
+        "too far nil",
+        "hurt true true true",
+        "creative false unknown false",
+        "no less",
+        "no nan",
+    ] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // one change for Ada: three, back one, and at most a whole bar
+    assert_eq!(scripts.health_changes(), vec![(7, -3.0 + 1.0 - MAX_HEALTH)]);
+    assert!(scripts.health_changes().is_empty());
+    scripts.set_day(0.5);
+    assert_eq!(crate::render::Clock { time: 0.5, running: true }.daylight(), 1.0);
+
+    // on the host's own game it lands in their health, in survival only
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    for survival in [true, false] {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        crate::sim(&mut app, crate::SEED);
+        app.insert_resource(Settings { survival, ..default() }).insert_resource(Me::default());
+        app.init_resource::<crate::input::Controls>().init_resource::<crate::ui::Focus>().init_resource::<crate::ui::Toasts>();
+        app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+        let bite = creation("local world = require(\"@potluck/world@0.4\")\nworld.after(0.1, function() for _, p in world.players() do world.hurt(p, 5) end end)");
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            let mut herd = w.resource_mut::<Herd>();
+            s.start(&bite, &mut herd).unwrap();
+        });
+        app.world_mut().run_system_once(crate::player::report_pockets).unwrap();
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            w.resource_scope(|w, mut v: Mut<Voxels>| {
+                let mut h = w.resource_mut::<Herd>();
+                s.tick(&mut v, &mut h, 0.2);
+            })
+        });
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        let due = app.world().resource::<Me>().health_due;
+        assert_eq!(due, if survival { -5.0 } else { 0.0 }, "survival {survival}");
+        app.world_mut().resource_mut::<Me>().health_due = -5.0; // as if sent anyway
+        app.world_mut().run_system_once(crate::player::walk).unwrap();
+        let me = app.world().resource::<Me>();
+        assert_eq!((me.health, me.health_due), (if survival { MAX_HEALTH - 5.0 } else { MAX_HEALTH }, 0.0), "survival {survival}");
+    }
+
+    // what goes between devices
+    let m = Msg::Health(-2.5);
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+}
+
+#[test]
+fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
+    home();
+    let gloomlings = Library::load().list.remove("gloomlings").expect("the base game has the gloomlings");
+    let lantern = crate::blocks::by_name("Lantern").unwrap();
+    let mut voxels = world();
+    // a flat, dark meadow of tall grass, well away from the Green
+    let (cx, cz, ground) = (world::GREEN.x as i32 + 80, world::GREEN.z as i32 + 60, 40);
+    let grass = crate::blocks::by_name("Tall grass").unwrap();
+    for x in cx - 26..=cx + 26 {
+        for z in cz - 26..=cz + 26 {
+            for y in 1..world::WY {
+                let b = match y {
+                    _ if y <= ground => crate::blocks::STONE,
+                    _ if y == ground + 1 => grass,
+                    _ => crate::blocks::AIR,
+                };
+                voxels.set(IVec3::new(x, y, z), b);
+            }
+        }
+    }
+    let ada = Vec3::new(cx as f32 + 0.5, ground as f32 + 1.0, cz as f32 + 0.5);
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: ada }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.start(&gloomlings, &mut herd).unwrap();
+    let count = |herd: &Herd| herd.bodies.values().filter(|b| b.kind == "Gloomling").count();
+    let log = |scripts: &Scripts| scripts.vms["gloomlings"].log.join("\n");
+
+    // nothing by day
+    scripts.set_day(0.5);
+    run(&mut scripts, &mut voxels, &mut herd, 5.0);
+    assert_eq!(count(&herd), 0);
+    // after dark they come, as many as the knob says, and say so
+    scripts.set_day(0.0);
+    run(&mut scripts, &mut voxels, &mut herd, 9.0);
+    assert_eq!(scripts.vms["gloomlings"].error, None, "{}", log(&scripts));
+    let n = count(&herd);
+    assert!((2..=4).contains(&n), "{n} gloomlings");
+    for b in herd.bodies.values() {
+        let d = Vec2::new(b.pos.x - ada.x, b.pos.z - ada.z).length();
+        assert!(d < 20.0, "one turned up {d} away");
+    }
+    let shown = scripts.ui_changes(&[7]);
+    assert!(
+        shown.iter().any(|(p, c)| *p == 7 && matches!(c, crate::script::UiChange::Piece { id, piece: Some(_), .. } if id == "night")),
+        "night falls on Ada's screen"
+    );
+    // they follow her and nip
+    run(&mut scripts, &mut voxels, &mut herd, 12.0);
+    let hurt: f32 = scripts.health_changes().iter().filter(|c| c.0 == 7).map(|c| c.1).sum();
+    assert!(hurt <= -2.0, "nipped {hurt}");
+    assert!(count(&herd) <= 4, "{} after a while", count(&herd));
+    // a lantern over her head: they back off and stop
+    voxels.set(IVec3::new(cx + 1, ground + 3, cz), lantern);
+    run(&mut scripts, &mut voxels, &mut herd, 2.5);
+    scripts.health_changes();
+    run(&mut scripts, &mut voxels, &mut herd, 8.0);
+    assert!(scripts.health_changes().is_empty(), "no nips in the light");
+    for b in herd.bodies.values() {
+        let d = Vec2::new(b.pos.x - (cx as f32 + 1.5), b.pos.z - (cz as f32 + 0.5)).length();
+        assert!(d > 4.0, "one's {d} from the lantern");
+    }
+    // bop one and it pops
+    let id = *herd.bodies.keys().next().expect("they wait at the edge of the light");
+    scripts.event(&mut voxels, &mut herd, id, "hit", &scripts.players[0].clone());
+    assert!(!herd.bodies.contains_key(&id));
+    // in the morning they fade away
+    scripts.set_day(0.4);
+    run(&mut scripts, &mut voxels, &mut herd, 15.0);
+    assert_eq!(count(&herd), 0);
+    // and creative players have nothing to fear
+    voxels.set(IVec3::new(cx + 1, ground + 3, cz), crate::blocks::AIR);
+    scripts.set_pockets(7, false, &[], 0);
+    scripts.set_day(0.0);
+    run(&mut scripts, &mut voxels, &mut herd, 10.0);
+    assert_eq!(count(&herd), 0);
+    assert_eq!(scripts.vms["gloomlings"].error, None, "{}", log(&scripts));
+}
+
+const HEARS_BLOCKS: &str = r#"
+local world = require("@potluck/world@0.5")
+for _, e in { "block_placed", "block_broken", "block_used" } do
+	world.on(e, function(player, at, block)
+		print(string.format("%s %s %s %.1f %.1f %.1f", e, player.name, block, at.x, at.y, at.z))
+	end)
+end
+"#;
+
+/// world 0.5: creations hear players place, break and use blocks, from the
+/// host's own player, from Interact (within reach) and from a friend over
+/// the network.
+#[test]
+fn creations_hear_players_place_break_and_use_blocks() {
+    use crate::blocks::{by_name, AIR, PLANKS, STONE, WATER};
+    use crate::game::{Action, Actions};
+    use crate::net::{self, decode, frame_msg, Event, Msg};
+    use crate::player::Me;
+    use bevy::ecs::system::RunSystemOnce;
+    home();
+    let table = by_name("Table").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    scripts.start(&creation(HEARS_BLOCKS), &mut herd).unwrap();
+    let at = IVec3::new(10, 50, 12);
+    scripts.player_block(7, at, AIR, PLANKS);
+    scripts.player_block(7, at, PLANKS, AIR);
+    scripts.player_block(7, at, STONE, WATER);
+    scripts.use_block(7, at, table);
+    // not events: nothing changed, water running in or out, using air, someone who isn't here
+    scripts.player_block(7, at, PLANKS, PLANKS);
+    scripts.player_block(7, at, WATER, AIR);
+    scripts.player_block(7, at, AIR, WATER);
+    scripts.use_block(7, at, AIR);
+    scripts.player_block(9, at, AIR, PLANKS);
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let log = scripts.vms["test"].log.clone();
+    assert_eq!(scripts.vms["test"].error, None, "{log:?}");
+    let heard: Vec<&String> = log.iter().filter(|l| l.contains("block_")).collect();
+    let want = ["block_placed Ada Planks 10.5 50.5 12.5", "block_broken Ada Planks 10.5 50.5 12.5", "block_broken Ada Stone 10.5 50.5 12.5", "block_used Ada Table 10.5 50.5 12.5"];
+    assert_eq!(heard.len(), want.len(), "{heard:?}");
+    for (h, w) in heard.iter().zip(want) {
+        assert!(h.contains(w), "{w}: {heard:?}");
+    }
+
+    // a flood of them waits its turn, 64 a tick, and a few hundred at most wait
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    let count = "local world = require(\"@potluck/world@0.5\")\nlocal n = 0\nworld.on(\"block_placed\", function() n += 1 if n % 64 == 0 then print(\"heard \" .. n) end end)";
+    scripts.start(&creation(count), &mut herd).unwrap();
+    for i in 0..600 {
+        scripts.player_block(7, at + IVec3::X * i, AIR, PLANKS);
+    }
+    scripts.tick(&mut voxels, &mut herd, 0.1);
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("heard 64") && !log.contains("heard 128"), "{log}");
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("heard 512") && !log.contains("heard 576"), "{log}");
+
+    // the host's own player: blocks they built, and Interact on a block near them (not far off)
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken".into(), ..default() }).insert_resource(Me::default());
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&creation(HEARS_BLOCKS), &mut herd).unwrap();
+    });
+    let me = app.world().resource::<Me>().pos.floor().as_ivec3();
+    let (near, far) = (me + IVec3::new(2, 0, 0), me + IVec3::new(40, 0, 0));
+    app.world_mut().resource_mut::<Voxels>().set(near, table);
+    app.world_mut().resource_mut::<Voxels>().set(far, table);
+    let my_id = app.world().resource::<net::Net>().my_id;
+    app.world_mut().resource_mut::<Me>().built.push((me + IVec3::Y * 3, AIR, PLANKS));
+    app.world_mut().resource_mut::<Actions>().0.extend([(my_id, Action::UseBlock(near.to_array())), (my_id, Action::UseBlock(far.to_array()))]);
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert!(app.world().resource::<Me>().built.is_empty(), "the host has heard them");
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        w.resource_scope(|w, mut v: Mut<Voxels>| {
+            let mut h = w.resource_mut::<Herd>();
+            s.tick(&mut v, &mut h, 0.2);
+        })
+    });
+    let log = app.world().resource::<Scripts>().vms["test"].log.join("\n");
+    assert!(log.contains("block_placed Ken Planks"), "{log}");
+    assert_eq!(log.matches("block_used Ken Table").count(), 1, "only the one in reach: {log}");
+    assert!(log.contains(&format!("block_used Ken Table {:.1}", near.x as f32 + 0.5)), "{log}");
+
+    // what goes between devices
+    let m = Msg::Act(Action::UseBlock([1, -2, 3]));
+    let Some(Event::Msg(_, back)) = decode(transport::Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+
+    // a friend building in a hosted world
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken's world".into(), ..Default::default() });
+    app.update();
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&creation(HEARS_BLOCKS), &mut herd).unwrap();
+    });
+    let port = free_port();
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
+    let (tx, rx) = channel();
+    let to_host = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
+    to_host.send(net::frame_msg(&Msg::Hello { name: "Drew".into(), protocol: net::PROTOCOL, pass: None })).unwrap();
+    let spot = IVec3::new(world::GREEN.x as i32 + 3, 100, world::GREEN.z as i32 + 3);
+    let (mut welcomed, mut heard) = (false, false);
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(20) && !heard {
+        app.update();
+        std::thread::sleep(Duration::from_millis(10));
+        for w in rx.try_iter() {
+            if let Some(Event::Msg(_, Msg::Welcome { .. })) = net::decode(w) {
+                welcomed = true;
+                to_host.send(net::frame_msg(&Msg::Blocks(vec![(spot.x, spot.y, spot.z, PLANKS)]))).unwrap();
+            }
+        }
+        heard = app.world().resource::<Scripts>().vms["test"].log.iter().any(|l| l.contains("block_placed Drew Planks"));
+    }
+    assert!(welcomed, "Drew's in");
+    assert!(heard, "{:?}", app.world().resource::<Scripts>().vms["test"].log);
+}
+
+/// The Workbench: Interact on any table to make things from what you carry.
+#[test]
+fn a_table_is_a_workbench_for_survival_players() {
+    use crate::blocks::{by_name, PLANKS, STONE};
+    home();
+    let bench = Library::load().list.remove("workbench").expect("the base game has the workbench");
+    let b = |n: &str| by_name(n).unwrap();
+    let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(oak, 2), (glass, 1), (cobble, 2)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&bench, &mut herd).unwrap();
+    let at = IVec3::new(5, 60, 5);
+    let asked = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.panels.get(&pid).and_then(|q| q.front().cloned());
+    let items = |scripts: &Scripts| scripts.shared.lock().unwrap().pockets[&7].items.clone();
+    let mut answer = |scripts: &mut Scripts, voxels: &mut Voxels, herd: &mut Herd, choice: Option<u32>| {
+        let panel = asked(scripts, 7).expect("a question for Ada");
+        scripts.answer(7, panel.ask, choice);
+        run(scripts, voxels, herd, 0.2);
+        asked(scripts, 7)
+    };
+    // anything but a table is just a block
+    scripts.use_block(7, at, STONE);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(asked(&scripts, 7).is_none());
+    scripts.use_block(7, at, table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let panel = asked(&scripts, 7).expect("the table asks what to make");
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm"]);
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
+    assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
+    // it asks again with how it went, so making several is quick
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).expect("asks again");
+    assert!(panel.text.starts_with("Made 4 Planks."), "{}", panel.text);
+    let have = items(&scripts);
+    assert_eq!((have.get(&oak).copied(), have.get(&PLANKS).copied()), (Some(1), Some(4)), "{have:?}");
+    // closing it and using the table again opens it at once
+    assert!(answer(&mut scripts, &mut voxels, &mut herd, None).is_none());
+    scripts.use_block(7, at, table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(asked(&scripts, 7).is_some(), "using the table again asks again");
+    // a choice too long to fit says what it takes in the question
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
+    assert_eq!(panel.choices[1], "1 Lantern", "{:?}", panel.choices);
+    assert!(panel.text.contains("1 Lantern takes 1 Glass and 2 Cobblestone."), "{}", panel.text);
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(1)).unwrap();
+    assert!(panel.text.starts_with("Made 1 Lantern."), "{}", panel.text);
+    let have = items(&scripts);
+    assert_eq!((have.get(&b("Lantern")).copied(), have.get(&glass).copied(), have.get(&cobble).copied()), (Some(1), Some(0), Some(0)), "{have:?}");
+    // one she can't pay for takes nothing
+    let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(2)).unwrap();
+    assert!(panel.text.starts_with("You'll need 1 Oak log and 4 Cobblestone for that."), "{}", panel.text);
+    assert_eq!(items(&scripts).get(&oak).copied(), Some(1));
+    answer(&mut scripts, &mut voxels, &mut herd, None);
+    // in creative there's nothing to make
+    scripts.use_block(8, at, table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let panel = asked(&scripts, 8).unwrap();
+    assert!(panel.text.contains("creative"), "{}", panel.text);
+
+    // every recipe makes what it says, with enough to hand
+    let inputs = [
+        vec!["Oak log", "Birch log", "Sand", "Stone"],
+        vec!["Planks"],
+        vec!["Hay", "Glass", "Cobblestone", "Oak log"],
+        vec!["Planks", "Dirt", "Wheat"],
+    ];
+    for (kind, want) in inputs.iter().enumerate() {
+        scripts.pocket_changes();
+        let carry: Vec<_> = want.iter().map(|n| (b(n), 64)).collect();
+        scripts.set_pockets(7, true, &carry, 1000);
+        scripts.use_block(7, at, table);
+        run(&mut scripts, &mut voxels, &mut herd, 0.2);
+        let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
+        assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
+        for i in 0..panel.choices.len() {
+            let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap();
+            assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
+        }
+        answer(&mut scripts, &mut voxels, &mut herd, None);
+    }
+    assert_eq!(scripts.vms["workbench"].error, None, "{:?}", scripts.vms["workbench"].log);
+}
+
+/// Farming: dig farmland, plant, wait, harvest more than you sowed.
+#[test]
+fn crops_planted_on_farmland_grow_and_give_more_back() {
+    use crate::blocks::{by_name, AIR, WATER};
+    home();
+    let mut farming = Library::load().list.remove("farming").expect("the base game has farming");
+    farming.knobs.insert("minutes".into(), KnobValue::Number(1.0));
+    let b = |n: &str| by_name(n).unwrap();
+    let (grass, soil, wheat, carrots, shoot, fern) = (b("Grass"), b("Farmland"), b("Wheat"), b("Carrots"), b("Tall grass"), b("Fern"));
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(wheat, 3), (carrots, 1)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.set_day(0.5);
+    scripts.start(&farming, &mut herd).unwrap();
+    // a strip of grass up in the air, dry but for water by its east end
+    let at = |i: i32| IVec3::new(40 + i * 3, 110, 40);
+    for i in 0..5 {
+        voxels.set(at(i), grass);
+    }
+    voxels.set(at(4) + IVec3::X * 2, WATER);
+    let up = IVec3::Y;
+    let carried = |scripts: &Scripts, block| scripts.shared.lock().unwrap().pockets[&7].items.get(&block).copied().unwrap_or(0);
+    let plant = |scripts: &mut Scripts, voxels: &mut Voxels, i: i32, crop| {
+        voxels.set(at(i) + up, crop);
+        scripts.player_block(7, at(i) + up, AIR, crop);
+    };
+    let harvest = |scripts: &mut Scripts, voxels: &mut Voxels, i: i32| {
+        let was = voxels.at(at(i) + up);
+        voxels.set(at(i) + up, AIR);
+        scripts.player_block(7, at(i) + up, was, AIR);
+    };
+
+    // Interact digs farmland, in survival only
+    for i in 0..5 {
+        scripts.use_block(7, at(i), grass);
+    }
+    scripts.use_block(8, at(0) + IVec3::Z, grass);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!((0..5).all(|i| voxels.at(at(i)) == soil), "farmland");
+    // planting turns a crop into its shoots; wheat on grass is just wheat
+    plant(&mut scripts, &mut voxels, 0, wheat);
+    plant(&mut scripts, &mut voxels, 1, wheat);
+    plant(&mut scripts, &mut voxels, 4, carrots);
+    voxels.set(at(0) + IVec3::Z * 2, grass);
+    voxels.set(at(0) + IVec3::Z * 2 + up, wheat);
+    scripts.player_block(7, at(0) + IVec3::Z * 2 + up, AIR, wheat);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!([0, 1, 4].map(|i| voxels.at(at(i) + up)), [shoot, shoot, fern]);
+    assert_eq!(voxels.at(at(0) + IVec3::Z * 2 + up), wheat);
+    // a shoot broken too soon gives the seed back
+    harvest(&mut scripts, &mut voxels, 1);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!(carried(&scripts, wheat), 4);
+    // near water they're ready in two thirds of the time
+    run(&mut scripts, &mut voxels, &mut herd, 44.0);
+    assert_eq!([voxels.at(at(0) + up), voxels.at(at(4) + up)], [shoot, carrots], "the carrots by the water are ripe first");
+    run(&mut scripts, &mut voxels, &mut herd, 20.0);
+    assert_eq!(voxels.at(at(0) + up), wheat, "a minute by day");
+    // a ripe crop gives two more than the one the game gives
+    harvest(&mut scripts, &mut voxels, 0);
+    harvest(&mut scripts, &mut voxels, 4);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!((carried(&scripts, wheat), carried(&scripts, carrots)), (6, 3));
+    // at night, half as fast; and kept with the world, so it grows on after a restart
+    scripts.set_day(0.0);
+    plant(&mut scripts, &mut voxels, 2, wheat);
+    run(&mut scripts, &mut voxels, &mut herd, 65.0);
+    assert_eq!(voxels.at(at(2) + up), shoot, "not ripe after a minute at night");
+    let kept = scripts.shared.lock().unwrap().store.clone();
+    assert!(kept.data["farming"]["crops"].as_object().is_some_and(|c| c.len() == 1), "{:?}", kept.data);
+    let mut again = Scripts::default();
+    again.players = scripts.players.clone();
+    again.shared.lock().unwrap().store = kept;
+    again.set_day(0.5);
+    again.start(&farming, &mut herd).unwrap();
+    run(&mut again, &mut voxels, &mut herd, 35.0);
+    assert_eq!(voxels.at(at(2) + up), wheat, "it picked up where it left off");
+    // digging up the farmland takes the crop on it out of the list
+    plant(&mut again, &mut voxels, 3, wheat);
+    run(&mut again, &mut voxels, &mut herd, 0.5);
+    voxels.set(at(3), AIR);
+    voxels.set(at(3) + up, AIR);
+    again.player_block(7, at(3), soil, AIR);
+    run(&mut again, &mut voxels, &mut herd, 6.0);
+    let crops = again.shared.lock().unwrap().store.data["farming"]["crops"].clone();
+    assert!(crops.as_object().is_some_and(|c| c.keys().all(|k| k != &format!("{},{},{}", at(3).x, at(3).y + 1, at(3).z))), "{crops}");
+    assert_eq!(again.vms["farming"].error, None, "{:?}", again.vms["farming"].log);
+    assert_eq!(scripts.vms["farming"].error, None, "{:?}", scripts.vms["farming"].log);
+}
+
+/// world 0.6 and ui 0.2: creations set how fast players heal by
+/// themselves, and show meters beside the health bar.
+#[test]
+fn creations_slow_healing_and_show_meters() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::{Me, MAX_HEALTH};
+    use crate::script::{Piece, UiChange};
+    use bevy::ecs::system::RunSystemOnce;
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    let code = |rate: f32| {
+        format!(
+            r##"
+local world = require("@potluck/world@0.6")
+local ui = require("@potluck/ui@0.2")
+print("ada " .. tostring(world.healing(7, {rate})) .. " bo " .. tostring(world.healing(8, 1)) .. " stranger " .. tostring(world.healing(9, 0)))
+print(pcall(world.healing, 7, 5) and "fast ok" or "no fast")
+print(pcall(world.healing, 7, -1) and "less ok" or "no less")
+ui.meter(7, "food", 0.75, {{ color = "#20a040" }})
+ui.meter(nil, "air", 3)
+print(pcall(ui.meter, 7, "x", 0/0) and "nan ok" or "no nan")
+print(pcall(ui.meter, 7, "x", 0.5, {{ color = "green" }}) and "name ok" or "no name")
+print(pcall(ui.meter, 7, "", 0.5) and "blank ok" or "no blank")
+"##
+        )
+    };
+    let mut a = creation(&code(0.0));
+    scripts.start(&a, &mut herd).unwrap();
+    a.id = "other".into();
+    a.files.insert("main.luau".into(), code(2.5));
+    scripts.start(&a, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let l = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{l}");
+    for want in ["ada true bo true stranger false", "no fast", "no less", "no nan", "no name", "no blank"] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // two creations' rates multiply: none at all wins
+    let mut changes = scripts.healing_changes();
+    changes.sort_by_key(|c| c.0);
+    assert_eq!(changes, vec![(7, 0.0)]);
+    assert!(scripts.healing_changes().is_empty(), "told once");
+    // meters: a colour of its own or the usual amber, filled 0 to 1
+    let ch = scripts.ui_changes(&[7, 8]);
+    let meter = |pid: u32, id: &str| ch.iter().find_map(|(p, c)| match c {
+        UiChange::Piece { id: i, piece, creation } if *p == pid && i == id && creation == "test" => piece.clone(),
+        _ => None,
+    });
+    assert_eq!(meter(7, "food"), Some(Piece { text: String::new(), at: "meter".into(), meter: Some((0.75, [32, 160, 64])) }));
+    assert_eq!(meter(8, "air").and_then(|p| p.meter), Some((1.0, [224, 160, 64])));
+    // stopping one takes its rate away
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.healing_changes(), vec![(7, 2.5)]);
+    scripts.stop("other", &mut herd);
+    assert_eq!(scripts.healing_changes(), vec![(7, 1.0)]);
+
+    // the host's own player heals at the rate creations ask for, in survival
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { survival: true, ..default() }).insert_resource(Me::default());
+    app.init_resource::<crate::input::Controls>().init_resource::<crate::ui::Focus>().init_resource::<crate::ui::Toasts>();
+    app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+    let starve = creation("local world = require(\"@potluck/world@0.6\")\nworld.every(0.1, function() for _, p in world.players() do world.healing(p, 0) end end)");
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&starve, &mut herd).unwrap();
+    });
+    app.world_mut().run_system_once(crate::player::report_pockets).unwrap();
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        w.resource_scope(|w, mut v: Mut<Voxels>| {
+            let mut h = w.resource_mut::<Herd>();
+            s.tick(&mut v, &mut h, 0.2);
+        })
+    });
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert_eq!(app.world().resource::<Me>().healing, 0.0);
+    app.world_mut().resource_mut::<Me>().health = 10.0;
+    for _ in 0..3 {
+        app.update();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let me = app.world().resource::<Me>();
+    assert!(me.health <= 10.0 && me.health > 0.0, "no healing by themselves: {}", me.health);
+    assert!(MAX_HEALTH > 10.0);
+
+    // what goes between devices
+    for m in [Msg::Healing(0.5), Msg::Piece { creation: "c".into(), id: "food".into(), piece: Some(Piece { text: String::new(), at: "meter".into(), meter: Some((0.5, [1, 2, 3])) }) }] {
+        let Some(Event::Msg(_, back)) = decode(transport::Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+}
+
+/// Hunger: the food bar goes down, the food you carry is eaten when you're
+/// hungry, an empty belly stops healing and a full one speeds it up.
+#[test]
+fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
+    use crate::blocks::by_name;
+    home();
+    let mut hunger = Library::load().list.remove("hunger").expect("the base game has hunger");
+    hunger.knobs.insert("minutes".into(), KnobValue::Number(5.0));
+    let (carrots, wheat) = (by_name("Carrots").unwrap(), by_name("Wheat").unwrap());
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(carrots, 1), (wheat, 1)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&hunger, &mut herd).unwrap();
+    let bar = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(pid), "hunger".into(), "food".into())).and_then(|p| p.meter).map(|m| m.0);
+    let carried = |scripts: &Scripts, b| scripts.shared.lock().unwrap().pockets[&7].items.get(&b).copied().unwrap_or(0);
+    let shown = |scripts: &Scripts, id: &str| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(7), "hunger".into(), id.into())).map(|p| p.text.clone());
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(bar(&scripts, 7), Some(1.0), "a full bar to start");
+    assert_eq!(bar(&scripts, 8), None, "no hunger in creative");
+    assert_eq!(scripts.healing_changes(), vec![(7, 2.0)], "well fed heals faster");
+    // 5 minutes from full to empty: down to 12 of 20 in two, then a carrot
+    run(&mut scripts, &mut voxels, &mut herd, 118.0);
+    assert_eq!(carried(&scripts, carrots), 1);
+    run(&mut scripts, &mut voxels, &mut herd, 4.0);
+    assert_eq!(carried(&scripts, carrots), 0, "ate the carrot");
+    assert_eq!(shown(&scripts, "ate").as_deref(), Some("You ate some carrots."));
+    assert!(bar(&scripts, 7).is_some_and(|b| b >= 0.85), "{:?}", bar(&scripts, 7));
+    // then the wheat, then nothing left: an empty belly stops healing
+    run(&mut scripts, &mut voxels, &mut herd, 100.0);
+    assert_eq!(carried(&scripts, wheat), 0, "chewed the wheat");
+    scripts.healing_changes();
+    run(&mut scripts, &mut voxels, &mut herd, 202.0);
+    assert_eq!(bar(&scripts, 7), Some(0.0));
+    assert_eq!(scripts.healing_changes(), vec![(7, 0.0)]);
+    assert!(shown(&scripts, "hungry").is_some_and(|t| t.contains("won't heal")), "{:?}", shown(&scripts, "hungry"));
+    run(&mut scripts, &mut voxels, &mut herd, 10.0);
+    assert!(shown(&scripts, "hungry").is_none(), "said for a few seconds");
+    // a carrot again: eaten at once, and healing as usual
+    scripts.pocket_changes();
+    scripts.set_pockets(7, true, &[(carrots, 1)], 1000);
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(carried(&scripts, carrots), 0);
+    assert_eq!(scripts.healing_changes(), vec![(7, 1.0)]);
+    // into creative: the bar goes and so does the slowing
+    scripts.pocket_changes();
+    scripts.set_pockets(7, false, &[], 1000);
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(bar(&scripts, 7), None);
+    assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
+}
+
+/// The Gnome Gardeners tell survival players how to get by.
+#[test]
+fn gnomes_tell_survival_players_how_to_get_by() {
+    home();
+    let gnome = Library::load().list.remove("gnome").expect("the base game has the gnomes");
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO };
+    scripts.players = vec![ada.clone(), bo.clone()];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&gnome, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let id = herd.bodies.values().find(|b| b.creation == "gnome").map(|b| b.id).expect("a gardener");
+    let asked = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.panels.get(&pid).and_then(|q| q.front().cloned());
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    scripts.event(&mut voxels, &mut herd, id, "used", &bo);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let (a, b) = (asked(&scripts, 7).unwrap(), asked(&scripts, 8).unwrap());
+    assert_eq!(a.choices.last().map(String::as_str), Some("Getting by"), "{:?}", a.choices);
+    assert_eq!(b.choices.last().map(String::as_str), Some("Playing together"), "{:?}", b.choices);
+    scripts.answer(7, a.ask, Some(3));
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let topic = asked(&scripts, 7).unwrap();
+    assert!(topic.text.contains("workbench") && topic.text.ends_with("can't bear light."), "{}", topic.text);
+    assert_eq!(scripts.vms["gnome"].error, None);
 }

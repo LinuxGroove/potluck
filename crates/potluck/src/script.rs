@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 3), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 6), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -29,13 +29,24 @@ pub const MAX_TIMERS: usize = 64;
 /// Handlers one creation may give `world.on`.
 pub const MAX_HANDLERS: usize = 32;
 /// What `world.on` can listen for.
-pub const EVENTS: &[&str] = &["player_joined", "player_left"];
+pub const EVENTS: &[&str] = &["player_joined", "player_left", "block_placed", "block_broken", "block_used"];
+/// The most block events (`block_placed`, `block_broken`, `block_used`)
+/// creations hear in one tick; past it they wait for the next.
+pub const BLOCK_EVENTS_A_TICK: usize = 64;
+/// The most block events waiting; past it new ones are dropped.
+const BLOCK_EVENTS_WAITING: usize = 512;
 /// What one creation may keep with `@potluck/store`, counted as JSON.
 pub const STORE_QUOTA: usize = 64 << 10;
 /// Pieces (different ids) one creation may show at once with `@potluck/ui`.
 pub const MAX_PIECES: usize = 8;
 /// Where a piece can go: top right, top left, or above the hotbar.
 pub const PLACES: &[&str] = &["right", "left", "bottom"];
+/// A meter's place: a bar beside the health bar (`ui.meter`).
+pub const METER: &str = "meter";
+/// Meters a player's screen shows, from every creation together.
+pub const MAX_METERS: usize = 3;
+/// The fastest `world.healing` makes a player heal by themselves.
+pub const MAX_HEALING: f64 = 4.0;
 /// Choices a panel can offer.
 pub const MAX_CHOICES: usize = 4;
 /// Panels waiting on one player's screen, from every creation together.
@@ -119,6 +130,29 @@ pub struct GameShared {
     pub notes: Vec<(Option<u32>, Note)>,
     /// The blocks each player carries, as their game last said.
     pub pockets: HashMap<u32, Pockets>,
+    /// The time of day (`render::Clock::time`), set by the host each frame;
+    /// none yet is the clock's own start.
+    pub day: Option<f32>,
+    /// Hurts (less than 0) and heals creations gave players since the host
+    /// last looked.
+    pub health: Vec<(u32, f32)>,
+    /// How fast each creation lets each player heal by themselves
+    /// (`world.healing`), where it isn't 1: (player, creation).
+    pub healing: BTreeMap<(u32, String), f32>,
+    /// Players whose healing changed since the host last looked.
+    pub healing_changed: BTreeSet<u32>,
+}
+
+/// The most `world.hurt` or `world.heal` does at once: a whole bar.
+pub const MAX_HURT: f64 = crate::player::MAX_HEALTH as f64;
+
+/// How much `world.hurt` or `world.heal` does, from what the creation
+/// passed.
+fn health_amount(n: f64) -> mlua::Result<f32> {
+    if !n.is_finite() || n < 0.0 {
+        return Err(bad("hurt and heal take a number from 0 to 20"));
+    }
+    Ok(n.min(MAX_HURT) as f32)
 }
 
 /// The most blocks `world.give` or `world.take` moves at once.
@@ -209,8 +243,11 @@ pub(crate) fn note_of(topic: &str, value: &Value) -> mlua::Result<serde_json::Va
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Piece {
     pub text: String,
-    /// One of `PLACES`.
+    /// One of `PLACES`, or `METER`.
     pub at: String,
+    /// A meter's fill (0 to 1) and colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter: Option<(f32, [u8; 3])>,
 }
 
 /// A question a creation asks one player, and the choices they have.
@@ -590,6 +627,9 @@ pub struct Scripts {
     tick_acc: f32,
     /// Who was here last tick, to tell creations who came and went.
     seen: Vec<PlayerInfo>,
+    /// What players did to blocks, for creations' `world.on`: (player,
+    /// event, where, the block).
+    block_events: Vec<(u32, &'static str, IVec3, blocks::BlockId)>,
 }
 
 pub(crate) fn vec_of(v: &Value) -> Option<Vec3> {
@@ -683,7 +723,23 @@ pub(crate) fn piece_of(id: &str, text: &str, opts: Option<Table>) -> mlua::Resul
         return Err(bad(format!("a piece can go at: {}", PLACES.join(", "))));
     }
     let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(60).collect();
-    Ok((!text.is_empty()).then_some(Piece { text, at }))
+    Ok((!text.is_empty()).then_some(Piece { text, at, meter: None }))
+}
+
+/// A meter for `ui.meter`: how full (0 to 1, nil takes it away) and its colour.
+pub(crate) fn meter_of(id: &str, value: Option<f64>, opts: Option<Table>) -> mlua::Result<Option<Piece>> {
+    if id.is_empty() || id.chars().count() > 32 {
+        return Err(bad("a meter's id is 1 to 32 letters"));
+    }
+    let Some(v) = value else { return Ok(None) };
+    if !v.is_finite() {
+        return Err(bad("a meter is a number from 0 to 1"));
+    }
+    let color = match opts.map(|o| o.get::<Option<String>>("color")).transpose()?.flatten() {
+        Some(c) => parse_color(&c).ok_or_else(|| bad("a meter's color is \"#rrggbb\""))?.to_srgba().to_u8_array_no_alpha(),
+        None => [224, 160, 64],
+    };
+    Ok(Some(Piece { text: String::new(), at: METER.into(), meter: Some((v.clamp(0.0, 1.0) as f32, color)) }))
 }
 
 /// (where, volume, pitch, caption) from `sound.play`'s options.
@@ -988,6 +1044,70 @@ impl Vm {
                     })?,
                 )?;
             }
+            // world 0.4: the time of day, and hurting and healing players
+            {
+                let sh = shared.clone();
+                world.set(
+                    "daytime",
+                    lua.create_function(move |_, ()| Ok(sh.lock().unwrap().day.unwrap_or(crate::render::Clock::default().time)))?,
+                )?;
+                let sh = shared.clone();
+                world.set(
+                    "daylight",
+                    lua.create_function(move |_, ()| {
+                        let time = sh.lock().unwrap().day.unwrap_or(crate::render::Clock::default().time);
+                        Ok(crate::render::Clock { time, running: true }.daylight())
+                    })?,
+                )?;
+                for (name, sign) in [("hurt", -1.0f32), ("heal", 1.0)] {
+                    let sh = shared.clone();
+                    world.set(
+                        name,
+                        lua.create_function(move |_, (player, n): (Value, f64)| {
+                            let pid = pid_of(&player)?;
+                            let n = health_amount(n)?;
+                            let mut sh = sh.lock().unwrap();
+                            // only survival players have health to lose
+                            if !sh.pockets.get(&pid).is_some_and(|p| p.survival) {
+                                return Ok(false);
+                            }
+                            if n > 0.0 && sh.health.len() < 1024 {
+                                sh.health.push((pid, sign * n));
+                            }
+                            Ok(true)
+                        })?,
+                    )?;
+                }
+            }
+            // world 0.6: how fast players heal by themselves
+            {
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "healing",
+                    lua.create_function(move |_, (player, rate): (Value, f64)| {
+                        let pid = pid_of(&player)?;
+                        if !rate.is_finite() || !(0.0..=MAX_HEALING).contains(&rate) {
+                            return Err(bad("healing takes a number from 0 to 4 (1 is as usual)"));
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        // anyone whose game has said hello; it matters only in survival
+                        if !sh.pockets.contains_key(&pid) {
+                            return Ok(false);
+                        }
+                        let key = (pid, me.clone());
+                        let before = sh.healing.get(&key).copied().unwrap_or(1.0);
+                        if before != rate as f32 {
+                            if rate == 1.0 {
+                                sh.healing.remove(&key);
+                            } else {
+                                sh.healing.insert(key, rate as f32);
+                            }
+                            sh.healing_changed.insert(pid);
+                        }
+                        Ok(true)
+                    })?,
+                )?;
+            }
             // world 0.2: timers and world events, kept between ticks
             {
                 let w = waiting.clone();
@@ -1088,6 +1208,16 @@ impl Vm {
                     lua.create_function(move |_, (player, id): (Value, String)| {
                         let who = who_of(&player)?;
                         sh.lock().unwrap().ui.set_piece(who, &me, &id, None).map_err(bad)
+                    })?,
+                )?;
+                // ui 0.2: meters beside the health bar
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                ui.set(
+                    "meter",
+                    lua.create_function(move |_, (player, id, value, opts): (Value, String, Option<f64>, Option<Table>)| {
+                        let who = who_of(&player)?;
+                        let piece = meter_of(&id, value, opts)?;
+                        sh.lock().unwrap().ui.set_piece(who, &me, &id, piece).map_err(bad)
                     })?,
                 )?;
                 let (sh, w, me, name) = (shared.clone(), waiting.clone(), creation.id.clone(), creation.manifest.name.clone());
@@ -1411,6 +1541,16 @@ impl Vm {
                 }
                 Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
             })?)?;
+            world.set("find_light", s.create_function(move |_, (p, radius): (Value, f32)| {
+                let p = vec_of(&p).ok_or_else(|| bad("world.find_light needs a position"))?.floor().as_ivec3();
+                let r = radius.clamp(0.0, 16.0) as i32;
+                let ctx = c.borrow();
+                let best = ctx.voxels.lanterns.iter()
+                    .map(|q| ((*q - p).length_squared(), *q))
+                    .filter(|(d, q)| *d <= r * r && (*q - p).abs().max_element() <= r)
+                    .min_by_key(|(d, q)| (*d, q.x, q.y, q.z));
+                Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
+            })?)?;
             world.set("players", s.create_function(move |lua, ()| {
                 let t = lua.create_table()?;
                 for (i, p) in c.borrow().players.iter().enumerate() {
@@ -1731,6 +1871,10 @@ impl Scripts {
         let mut sh = self.shared.lock().unwrap();
         sh.input.forget_creation(id);
         sh.ui.forget_creation(id);
+        // players heal as usual again
+        let slowed: Vec<u32> = sh.healing.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
+        sh.healing.retain(|k, _| k.1 != id);
+        sh.healing_changed.extend(slowed);
         drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
     }
@@ -1890,6 +2034,52 @@ impl Scripts {
         out
     }
 
+    /// A player changed a block (it was `old`, now `new`): creations hear
+    /// `block_placed` or `block_broken`.
+    pub fn player_block(&mut self, player: u32, at: IVec3, old: blocks::BlockId, new: blocks::BlockId) {
+        let event = match (old, new) {
+            (o, n) if o == n => return,
+            // to air, or to water flowing in where it was
+            (o, blocks::AIR | blocks::WATER) if o != blocks::AIR && o != blocks::WATER => ("block_broken", o),
+            (_, blocks::AIR | blocks::WATER) => return,
+            (_, n) => ("block_placed", n),
+        };
+        if self.block_events.len() < BLOCK_EVENTS_WAITING {
+            self.block_events.push((player, event.0, at, event.1));
+        }
+    }
+
+    /// A player used (interacted with) a block: creations hear `block_used`.
+    pub fn use_block(&mut self, player: u32, at: IVec3, block: blocks::BlockId) {
+        if block != blocks::AIR && self.block_events.len() < BLOCK_EVENTS_WAITING {
+            self.block_events.push((player, "block_used", at, block));
+        }
+    }
+
+    /// How fast players heal by themselves now, for those it changed for:
+    /// every creation's `world.healing` multiplied together.
+    pub fn healing_changes(&mut self) -> Vec<(u32, f32)> {
+        let mut sh = self.shared.lock().unwrap();
+        let changed = std::mem::take(&mut sh.healing_changed);
+        changed.into_iter().map(|pid| (pid, sh.healing.iter().filter(|(k, _)| k.0 == pid).map(|(_, r)| *r).product::<f32>().clamp(0.0, MAX_HEALING as f32))).collect()
+    }
+
+    /// The time of day creations see (`world.daytime`).
+    pub fn set_day(&mut self, time: f32) {
+        self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
+    }
+
+    /// How creations hurt or healed players: (player, the change to their
+    /// health), one each, in order of player.
+    pub fn health_changes(&mut self) -> Vec<(u32, f32)> {
+        let list = std::mem::take(&mut self.shared.lock().unwrap().health);
+        let mut out: BTreeMap<u32, f32> = BTreeMap::new();
+        for (p, d) in list {
+            *out.entry(p).or_default() += d;
+        }
+        out.into_iter().filter(|(_, d)| *d != 0.0).collect()
+    }
+
     /// Messages creations sent their client halves, and who each is for:
     /// the player named, or everyone in `players`.
     pub fn net_changes(&mut self, players: &[u32]) -> Vec<(u32, Note)> {
@@ -1919,6 +2109,10 @@ impl Scripts {
         let mut log = Vec::new();
         let p = player.clone();
         let creation = b.creation.clone();
+        if event == "used" {
+            // they came to it, so it may ask them things again
+            self.shared.lock().unwrap().ui.quiet.remove(&(player.id, creation.clone()));
+        }
         let r = vm.session(voxels, herd, &players, &mut self.out, &creation, time.max(0.001), &mut log, |lua, _| {
             if let Some(f) = t.get::<Option<Function>>(event)? {
                 f.call::<()>((t.clone(), player_table(lua, &p)?))?;
@@ -1946,12 +2140,16 @@ impl Scripts {
         let joined: Vec<PlayerInfo> = players.iter().filter(|p| !self.seen.iter().any(|q| q.id == p.id)).cloned().collect();
         let left: Vec<PlayerInfo> = self.seen.iter().filter(|q| !players.iter().any(|p| p.id == q.id)).cloned().collect();
         self.seen = players.clone();
+        let n = self.block_events.len().min(BLOCK_EVENTS_A_TICK);
+        let block_events: Vec<_> = self.block_events.drain(..n).collect();
         {
             let mut sh = self.shared.lock().unwrap();
             for p in &left {
                 sh.input.forget_player(p.id);
                 sh.pockets.remove(&p.id);
                 sh.ui.forget_player(p.id);
+                sh.healing.retain(|k, _| k.0 != p.id);
+                sh.healing_changed.remove(&p.id);
             }
             sh.ui.joined.extend(joined.iter().map(|p| p.id));
             sh.ui.time = time;
@@ -1986,6 +2184,16 @@ impl Scripts {
             let mut log = Vec::new();
             let waiting = vm.waiting.clone();
             {
+                // a player who used a block this creation listens for came to it, so it may ask them things again
+                let listens = waiting.lock().unwrap().on.iter().any(|(e, _)| e == "block_used");
+                if listens {
+                    let mut sh = self.shared.lock().unwrap();
+                    for (pid, ..) in block_events.iter().filter(|e| e.1 == "block_used") {
+                        sh.ui.quiet.remove(&(*pid, id.clone()));
+                    }
+                }
+            }
+            {
                 let mut w = waiting.lock().unwrap();
                 w.sound_budget = (w.sound_budget + step * SOUNDS_A_SECOND).min(SOUNDS_A_SECOND);
                 w.note_budget = (w.note_budget + step * NOTES_A_SECOND).min(NOTES_A_SECOND);
@@ -2010,6 +2218,16 @@ impl Scripts {
                             for (_, f) in on.iter().filter(|(e, _)| e == event) {
                                 f.call::<()>(player_table(lua, p)?)?;
                             }
+                        }
+                    }
+                }
+                // what players did to blocks
+                if !block_events.is_empty() {
+                    let on = waiting.lock().unwrap().on.clone();
+                    for (pid, event, at, b) in &block_events {
+                        let Some(p) = players.iter().find(|p| p.id == *pid) else { continue };
+                        for (_, f) in on.iter().filter(|(e, _)| e == event) {
+                            f.call::<()>((player_table(lua, p)?, vector(at.as_vec3() + Vec3::splat(0.5)), blocks::block(*b).name))?;
                         }
                     }
                 }

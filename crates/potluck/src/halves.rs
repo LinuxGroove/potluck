@@ -24,7 +24,10 @@ pub const FRAME_BUDGET: Duration = Duration::from_millis(4);
 const LOAD_BUDGET: Duration = Duration::from_millis(300);
 
 /// What `@potluck/world` does only on the host, where the world is.
-const HOST_ONLY: &[&str] = &["creature", "block", "set_block", "top", "find_block", "players", "nearest_player", "spawn", "creatures", "say", "on"];
+const HOST_ONLY: &[&str] = &[
+    "creature", "block", "set_block", "top", "find_block", "find_light", "players", "nearest_player", "spawn", "creatures", "say", "on", "pockets", "has", "take",
+    "give", "hurt", "heal", "healing",
+];
 
 /// What a half asked for since it was last looked at.
 #[derive(Default)]
@@ -58,6 +61,8 @@ struct Running {
     out: Arc<Mutex<Out>>,
     me: Arc<Mutex<PlayerInfo>>,
     clock: Arc<Mutex<f64>>,
+    /// The time of day on this game (`render::Clock::time`).
+    day: Arc<Mutex<f32>>,
     deadline: Arc<Mutex<Instant>>,
 }
 
@@ -78,6 +83,8 @@ pub struct Halves {
     pub list: BTreeMap<String, Half>,
     /// Pieces of halves that stopped, to take off the screen.
     hide: Vec<(String, String)>,
+    /// The time of day halves see, from this game's clock.
+    pub day: Option<f32>,
 }
 
 fn host_only(what: &str) -> mlua::Error {
@@ -102,6 +109,7 @@ impl Running {
         let rng = Arc::new(Mutex::new(Rng::new(crate::noise::seed_of(&creation.id) ^ me.id.wrapping_mul(0x9e37_79b9))));
         let me = Arc::new(Mutex::new(me));
         let clock = Arc::new(Mutex::new(0.0f64));
+        let day = Arc::new(Mutex::new(crate::render::Clock::default().time));
         let setup = || -> mlua::Result<()> {
             // world: its timers, its own clock and dice, and named spots
             let world = lua.create_table()?;
@@ -113,6 +121,13 @@ impl Running {
             world.set("cancel", lua.create_function(move |_, id: Option<u32>| Ok(script::cancel_timer(&w, id)))?)?;
             let c = clock.clone();
             world.set("time", lua.create_function(move |_, ()| Ok(*c.lock().unwrap()))?)?;
+            let d = day.clone();
+            world.set("daytime", lua.create_function(move |_, ()| Ok(*d.lock().unwrap()))?)?;
+            let d = day.clone();
+            world.set(
+                "daylight",
+                lua.create_function(move |_, ()| Ok(crate::render::Clock { time: *d.lock().unwrap(), running: true }.daylight()))?,
+            )?;
             let r = rng.clone();
             world.set(
                 "random",
@@ -199,6 +214,24 @@ impl Running {
                     Ok(())
                 })?,
             )?;
+            let (o, m) = (out.clone(), me.clone());
+            ui.set(
+                "meter",
+                lua.create_function(move |_, (player, id, value, opts): (Value, String, Option<f64>, Option<Table>)| {
+                    mine(&m, &player)?;
+                    let piece = script::meter_of(&id, value, opts)?;
+                    let mut o = o.lock().unwrap();
+                    if piece.is_some() && !o.shown.contains(&id) && o.shown.len() >= MAX_PIECES {
+                        return Err(bad(format!("a client half can show at most {MAX_PIECES} pieces at once: ui.hide the ones it's done with")));
+                    }
+                    match piece.is_some() {
+                        true => o.shown.insert(id.clone()),
+                        false => o.shown.remove(&id),
+                    };
+                    o.pieces.push((id, piece));
+                    Ok(())
+                })?,
+            )?;
             for name in ["ask", "close"] {
                 let what = format!("ui.{name}");
                 ui.set(name, lua.create_function(move |_, _: mlua::Variadic<Value>| -> mlua::Result<()> { Err(host_only(&what)) })?)?;
@@ -260,7 +293,7 @@ impl Running {
         setup().map_err(|e| e.to_string())?;
         let src = creation.files.get(file).ok_or_else(|| format!("{} has no {file} for its client half", creation.manifest.name))?;
         lua.load(src.as_str()).set_name(format!("@{file}")).exec().map_err(|e| tidy(&e))?;
-        Ok(Running { lua, waiting, on, out, me, clock, deadline })
+        Ok(Running { lua, waiting, on, out, me, clock, day, deadline })
     }
 
     /// One frame: what its creation sent, then its timers.
@@ -340,6 +373,9 @@ impl Halves {
         }
         for (id, h) in self.list.iter_mut() {
             let Some(r) = &h.run else { continue };
+            if let Some(d) = self.day {
+                *r.day.lock().unwrap() = d;
+            }
             if let Err(e) = r.frame(dt, me, by.remove(id).unwrap_or_default()) {
                 warn!("{id}'s client half stopped: {e}");
                 h.error = Some(e);
@@ -383,8 +419,10 @@ pub fn run(
     me: Option<ResMut<crate::player::Me>>,
     mut actions: ResMut<crate::game::Actions>,
     mut heard: ResMut<crate::sound::Heard>,
+    clock: Res<crate::render::Clock>,
 ) {
     let Some(mut me) = me else { return };
+    halves.day = Some(clock.time);
     let mine = PlayerInfo { id: net.my_id, name: settings.map(|s| s.name.clone()).unwrap_or_default(), pos: me.pos };
     halves.sync(info.in_world.then_some(&*lib), &mine);
     let notes = std::mem::take(&mut me.notes);

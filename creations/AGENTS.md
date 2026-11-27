@@ -13,9 +13,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.3")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.3. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.6")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.6. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.3
+### `@potluck/world` 0.6
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -45,7 +45,7 @@ world.on("player_left", function(player) print(player.name .. " went home") end)
 ```
 
 - `world.after(seconds, fn)` calls `fn` once, `seconds` from now; `world.every(seconds, fn)` calls it every `seconds`. Both return an id for `world.cancel(id)`. Timers run on the world's ticks, ten a second, so 0.1 is the shortest; at most 64 wait at once.
-- `world.on(event, fn)`: `"player_joined"` when someone arrives in the world and `"player_left"` when they go, each with the player. Players already here when the creation starts are in `world.players()`.
+- `world.on(event, fn)`: `"player_joined"` when someone arrives in the world and `"player_left"` when they go, each with the player. Players already here when the creation starts are in `world.players()`. Block events are below (0.5).
 - A creation's top level runs again when it reloads, and sets its timers and handlers up again. Timers started inside handlers don't carry over a reload.
 
 The blocks players carry (new in 0.3), for trading, crafting and prizes:
@@ -64,6 +64,48 @@ local carried = world.pockets(player)     -- { ["Oak log"] = 3, Sand = 2 }, or n
 - `world.give(player, block, n?)` puts `n` in their hotbar and returns how many it gave: 0 if they've nine other kinds already. In creative it returns `n` and gives nothing.
 - `n` is a whole number from 1 to 64. Players can't carry air, water or bedrock.
 - A player's blocks live on their own game, so what a creation sees is what their game last said, a moment ago. A player nobody's heard from yet carries nothing.
+
+Night and day, lights, and players' health (new in 0.4), for things that come out after dark:
+
+```luau
+if world.daylight() < 0.15 and not world.find_light(self.position, 6) then
+	world.hurt(player, 1)                 -- true if they're in survival
+end
+world.heal(player, 4)
+print(world.daytime())                    -- 0.5 is noon
+```
+
+- `world.daytime()` is the time of day, 0 to 1: 0 is midnight, 0.25 sunrise, 0.5 noon and 0.75 sunset. A day is 20 minutes.
+- `world.daylight()` is how light it is, 0 in the dead of night to 1 in full day. It's 1 through most of the day and 0 through most of the night, and moves between them in the minute or so around sunrise and sunset.
+- `world.find_light(pos, radius)` is the middle of the nearest block that gives light (a lantern, brazier or candle) within `radius` (up to 16), or nil.
+- `world.hurt(player, amount)` takes `amount` from a player's health and `world.heal(player, amount)` gives it back. Health is 0 to 20; at 0 the player goes back to the hill. Only players in survival have health, so both return false, and do nothing, for anyone in creative. `amount` is 0 to 20.
+
+What players do to blocks (new in 0.5), for crafting tables, farms and anything a player builds:
+
+```luau
+world.on("block_used", function(player, at, block)
+	if block == "Table" then
+		print(player.name .. " wants to make something")
+	end
+end)
+world.on("block_placed", function(player, at, block) end)
+world.on("block_broken", function(player, at, block) end)
+```
+
+- `world.on("block_placed", fn)` and `world.on("block_broken", fn)` hear a player put a block down or break one; `"block_used"` hears a player Interact on a block (aiming at it, not at a creature). Each calls `fn(player, at, block)`, with the middle of the block and its name (for `block_broken`, what it was).
+- They're only for what players do: blocks creations change with `world.set_block`, and water flowing, aren't heard.
+- At most 64 are heard a tick; more wait their turn, and past a few hundred waiting the rest are dropped.
+
+How fast players heal (new in 0.6), for hunger, rest and healing springs:
+
+```luau
+world.healing(player, 0)                  -- an empty belly: no healing by themselves
+world.healing(player, 2)                  -- well fed: twice as fast
+world.healing(player, 1)                  -- as usual again
+```
+
+- Survival players heal by themselves, one health every 4 seconds. `world.healing(player, rate)` changes how fast for that player: 1 as usual, 0 not at all, up to 4. It stays until the creation changes it again, stops, or the player leaves, and returns false for a player whose game hasn't said hello yet.
+- When several creations set it, their rates multiply, so any creation's 0 means no healing.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 
@@ -144,9 +186,9 @@ end)
 - `input.focus(player)` takes a player's controls, so its actions are live wherever they are; `input.focus(player, false)` gives them back. One creation has a player's controls at a time: the last to ask. `input.focused(player)` says whether this one has them.
 - Players can move any action to other buttons (Settings, Creations' buttons), so say what an action does by its name, never by a button. A creation has at most 8 actions. One with a pad button for every action is **pad friendly** on the market.
 
-### `@potluck/ui` 0.1
+### `@potluck/ui` 0.2
 
-Lines on a player's screen, and questions with choices.
+Lines on a player's screen, meters beside the health bar (new in 0.2), and questions with choices.
 
 ```luau
 local ui = require("@potluck/ui")
@@ -166,9 +208,10 @@ end)
 
 - `ui.show(player, id, text, { at = ... }?)` shows one line, or changes the one with that id. `at` is `"right"` (top right, the default), `"left"` (top left) or `"bottom"` (above the hotbar). `player` nil shows it to everyone in the world, now and when they arrive. A line is up to 60 letters, on one line; a creation shows at most 8 at once (different ids).
 - `ui.hide(player, id)` takes it off; `ui.hide(nil, id)` takes it off every screen, including lines shown to one player with that id.
+- `ui.meter(player, id, value, { color = "#rrggbb" }?)` shows a bar beside the health bar, `value` full from 0 to 1, amber if no colour is given (food, air, a mini game's clock). nil for `value` takes it away, as does `ui.hide`. They share the row above the hotbar with the health bar (which shows only in survival); a screen shows 3 at most, from every creation together. Meters count among a creation's 8 pieces. Give each a colour of its own and say once, with a line, what it means.
 - `ui.ask(player, { title?, text?, choices? }, fn)` asks one player a question. `title` is up to 40 letters (the creation's name if left out), `text` up to 300 (`"\n"` starts a new line), and up to 4 `choices` of 30 letters (`{ "OK" }` if left out). `fn(player, choice)` is called once, on a later tick, with the number of their choice, or nil if they closed it, the creation asked them something else first, or it couldn't be shown. It returns an id.
 - `ui.close(player)` takes this creation's question back off their screen, and `fn` isn't called.
-- The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it.
+- The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it (using one of its creatures, or a block it hears `block_used` for, lets it ask at once).
 - Lines and questions go when the creation stops, and a reload takes its questions away (its lines stay until it shows them again). A player who leaves takes theirs with them, and their `fn` isn't called.
 
 ### `@potluck/sound` 0.1
@@ -220,7 +263,7 @@ net.send("ready", { name = net.me().name })
 - In the client half: `net.send(topic, value?)` sends a message to the main file, `net.on(topic, fn(value))` is called for each message the main file sends this player, and `net.me()` is this player (`id`, `name` and where they stand).
 - A topic is 1 to 32 letters. A value is what the store keeps (numbers, strings, true or false, vectors, and tables of those), at most 4 KB as JSON.
 - The main file sends at most 30 messages a second, and each player's half 10; past that, `send` returns false and the message isn't sent. The host drops what a half sends beyond that too.
-- What a client half has: `@potluck/net`; `@potluck/ui`'s `show` and `hide`, for this player only (`player` is nil, or `net.me()`), at most 8 lines; `@potluck/sound`'s `play`, heard only by this player; and from `@potluck/world` its timers (`after`, `every`, `cancel`), `time` (seconds since this half started, so send it lengths of time rather than the host's times), `random` and `spot`. The rest of the API is the main file's, and says so if a half calls it.
+- What a client half has: `@potluck/net`; `@potluck/ui`'s `show` and `hide`, for this player only (`player` is nil, or `net.me()`), at most 8 lines; `@potluck/sound`'s `play`, heard only by this player; and from `@potluck/world` its timers (`after`, `every`, `cancel`), `time` (seconds since this half started, so send it lengths of time rather than the host's times), `random`, `spot`, `daytime` and `daylight` (this game's clock). The rest of the API is the main file's, and says so if a half calls it.
 - A half starts when its player arrives or the creation loads, and starts again, fresh, whenever any of the creation's files change. If it needs to know what's going on, have it say hello (`net.send("hello")`) and answer that from the main file.
 - Its lines share ids with the main file's lines for that player, so the last to show one wins. Its lines go when it stops.
 - A half has 16 MB and 4 ms of each frame. One that fails or runs too long stops, and Look inside shows why (its prints show there too, marked `client:`).

@@ -70,14 +70,24 @@ local function makes(t: Trade): number
 	return math.floor(t.n * knobs.generous)
 end
 
--- "4 Planks for 1 Oak log"
-local function label(t: Trade): string
+-- what it costs: "1 Glass and 2 Stone"
+local function costs(t: Trade): string
 	local parts = {}
 	for block, n in t.want do
 		table.insert(parts, n .. " " .. block)
 	end
 	table.sort(parts)
-	return makes(t) .. " " .. t.give .. " for " .. table.concat(parts, " and ")
+	return table.concat(parts, " and ")
+end
+
+-- "4 Planks for 1 Oak log", or just "1 Lantern" when that's too long for a
+-- choice (30 letters), with the price said in the question instead
+local function label(t: Trade): (string, string?)
+	local full = makes(t) .. " " .. t.give .. " for " .. costs(t)
+	if #full <= 30 then
+		return full, nil
+	end
+	return makes(t) .. " " .. t.give, makes(t) .. " " .. t.give .. " costs " .. costs(t) .. "."
 end
 
 local function trade(villager, player, t: Trade)
@@ -115,11 +125,19 @@ local function offer(villager, player)
 		return
 	end
 	local trades = TRADES[kind]
-	local choices = {}
+	local choices, prices = {}, {}
 	for _, t in trades do
-		table.insert(choices, label(t))
+		local short, long = label(t)
+		table.insert(choices, short)
+		if long then
+			table.insert(prices, long)
+		end
 	end
-	ui.ask(player, { title = name .. " the " .. string.lower(kind), text = "What can I make you?", choices = choices }, function(who, choice)
+	local text = "What can I make you?"
+	if #prices > 0 then
+		text ..= "\n\n" .. table.concat(prices, "\n")
+	end
+	ui.ask(player, { title = name .. " the " .. string.lower(kind), text = text, choices = choices }, function(who, choice)
 		local t = choice and trades[choice]
 		if t then
 			trade(villager, who, t)

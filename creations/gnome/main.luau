@@ -1,9 +1,10 @@
 --!strict
 -- Gnome Gardener: keeps the Green in flowers, a few at a time, and tells
 -- anyone who asks how things work round here (a question with choices,
--- from @potluck/ui).
+-- from @potluck/ui). Players in survival hear how to get by instead of how
+-- to play together (world.pockets is nil in creative).
 
-local world = require("@potluck/world")
+local world = require("@potluck/world@0.3")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -55,13 +56,23 @@ local TOPICS = {
 	},
 }
 
+-- for survival players, in place of the last
+local GETTING_BY = {
+	"Getting by",
+	"Break blocks to gather them. Any table is a workbench: Interact on it to make planks, lights and more.\n\nInteract on grass to dig farmland, and plant wheat or carrots. Keep food with you, and a lantern by your door: Gloomlings can't bear light.",
+}
+
 local function ask(gnome, player)
+	local topics = table.clone(TOPICS)
+	if world.pockets(player) ~= nil then
+		topics[#topics] = GETTING_BY
+	end
 	local choices = {}
-	for _, t in TOPICS do
+	for _, t in topics do
 		table.insert(choices, t[1])
 	end
 	ui.ask(player, { title = "Gnome Gardener", text = "Hello! What would you like to know?", choices = choices }, function(who, choice)
-		local topic = choice and TOPICS[choice]
+		local topic = choice and topics[choice]
 		if not topic then
 			gnome:say("Happy gardening!")
 			return

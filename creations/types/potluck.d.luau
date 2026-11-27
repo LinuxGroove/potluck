@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.3, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1, @potluck/sound 0.1, @potluck/net 0.1
+-- @potluck/world 0.6, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1
 
 export type Position = vector | { number }
 
@@ -66,12 +66,21 @@ export type World = {
 	after: (seconds: number, fn: () -> ()) -> number,
 	every: (seconds: number, fn: () -> ()) -> number,
 	cancel: (id: number) -> boolean,
-	on: (event: "player_joined" | "player_left", fn: (player: Player) -> ()) -> (),
+	on: ((event: "player_joined" | "player_left", fn: (player: Player) -> ()) -> ())
+		& ((event: "block_placed" | "block_broken" | "block_used", fn: (player: Player, at: vector, block: string) -> ()) -> ()),
 	-- 0.3
 	pockets: (player: Player | number) -> { [string]: number }?,
 	has: (player: Player | number, block: string) -> number,
 	take: (player: Player | number, block: string, n: number?) -> boolean,
 	give: (player: Player | number, block: string, n: number?) -> number,
+	-- 0.4
+	daytime: () -> number,
+	daylight: () -> number,
+	find_light: (pos: Position, radius: number) -> vector?,
+	hurt: (player: Player | number, amount: number) -> boolean,
+	heal: (player: Player | number, amount: number) -> boolean,
+	-- 0.6
+	healing: (player: Player | number, rate: number) -> boolean,
 }
 
 export type Score = { name: string, value: number }
@@ -108,6 +117,8 @@ export type Question = {
 export type UI = {
 	show: (player: Player | number | nil, id: string, text: string, opts: { at: ("right" | "left" | "bottom")? }?) -> (),
 	hide: (player: Player | number | nil, id: string) -> (),
+	-- 0.2
+	meter: (player: Player | number | nil, id: string, value: number?, opts: { color: string? }?) -> (),
 	ask: (player: Player | number, question: Question, fn: (player: Player, choice: number?) -> ()) -> number,
 	close: (player: Player | number) -> boolean,
 }

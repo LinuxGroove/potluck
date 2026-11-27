@@ -74,6 +74,15 @@ pub struct Me {
     /// How many lots of changes to the hotbar creations have made here
     /// (`world.give`, `world.take`), for the host to know a report is new.
     pub pockets_seen: u32,
+    /// Hurts (less than 0) and heals creations sent, for `walk` to apply
+    /// in survival.
+    pub health_due: f32,
+    /// How fast creations let this player heal by themselves
+    /// (`world.healing`): 1 as usual, 0 not at all.
+    pub healing: f32,
+    /// Blocks this player placed and broke since the host last looked:
+    /// (where, what it was, what it is now), for creations' block events.
+    pub built: Vec<(IVec3, BlockId, BlockId)>,
     /// Blocks walked since the last step's sound.
     stride: f32,
     regen: f32,
@@ -113,6 +122,9 @@ impl Default for Me {
             captions: vec![],
             notes: vec![],
             pockets_seen: 0,
+            health_due: 0.0,
+            healing: 1.0,
+            built: vec![],
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
@@ -192,6 +204,13 @@ impl Me {
                 self.counts[i] -= n;
                 left -= n;
             }
+        }
+    }
+
+    /// Notes a block this player changed, for the host to tell creations.
+    fn note_built(&mut self, at: IVec3, old: BlockId, new: BlockId) {
+        if self.built.len() < 256 {
+            self.built.push((at, old, new));
         }
     }
 
@@ -324,6 +343,13 @@ pub fn walk(
     let dt = time.delta_secs().min(0.05);
     let now = time.elapsed_secs_f64();
     me.hurt += dt;
+    // what creations did to your health, in survival
+    let due = std::mem::take(&mut me.health_due);
+    if settings.survival && due < 0.0 {
+        me.hurt(-due);
+    } else if settings.survival && due > 0.0 {
+        me.health = (me.health + due).min(MAX_HEALTH);
+    }
     if me.riding.is_some() {
         me.vel = Vec3::ZERO;
         me.fall_from = me.pos.y;
@@ -429,7 +455,7 @@ pub fn walk(
     }
     // health comes back slowly
     if me.health < MAX_HEALTH {
-        me.regen += dt;
+        me.regen += dt * me.healing;
         if me.regen > 4.0 {
             me.regen = 0.0;
             me.health = (me.health + 1.0).min(MAX_HEALTH);
@@ -490,7 +516,9 @@ pub fn build(
                     _ => dt / hardness.max(0.05),
                 };
                 if progress >= 1.0 {
-                    voxels.set(hit.block, AIR);
+                    if voxels.set(hit.block, AIR) {
+                        me.note_built(hit.block, hit.id, AIR);
+                    }
                     me.give(hit.id);
                     me.breaking = None;
                     if let Some(n) = stuff.breaks() {
@@ -510,7 +538,9 @@ pub fn build(
             } else {
                 me.repeat -= dt;
                 if c.break_pressed || me.repeat <= 0.0 {
-                    voxels.set(hit.block, AIR);
+                    if voxels.set(hit.block, AIR) {
+                        me.note_built(hit.block, hit.id, AIR);
+                    }
                     me.repeat = 0.22;
                     if let Some(n) = stuff.breaks() {
                         heard.game(n, centre, 0.6, 1.0);
@@ -552,6 +582,7 @@ pub fn build(
             return;
         }
         if voxels.set(at, id) {
+            me.note_built(at, here, id);
             heard.game("place", at.as_vec3() + Vec3::splat(0.5), 0.6, crate::sound::material(id).knock());
             if settings.survival {
                 let s = me.slot;
