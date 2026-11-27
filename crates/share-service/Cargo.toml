@@ -1,0 +1,36 @@
+[package]
+name = "potluck-share"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Potluck's share service and web market: creations in git, files by hash, checks, reports and the review queue"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs", "process"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "query"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+maud = "0.27"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+toml_edit = "0.25"
+sha2 = "0.11"
+sha1 = "0.10"
+base64 = "0.22"
+ed25519-dalek = "3"
+getrandom = "0.3"
+rusty-s3 = "0.12"
+url = "2"
+similar = "3"
+mlua = { version = "0.12.3", features = ["luau", "vendored", "send"] }
+futures-util = "0.3"
+
+[[bin]]
+name = "potluck-share"
+path = "src/main.rs"
+test = false
+
+[lib]
+path = "src/lib.rs"

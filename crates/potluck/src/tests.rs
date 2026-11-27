@@ -340,3 +340,173 @@ fn grass_grows_tufts_that_sway_and_hangs_over_edges() {
     assert!(cover.into_mesh(false).has_morph_targets(), "tufts sway in the wind");
     assert!(!lips.into_mesh(false).has_morph_targets(), "grass lips don't");
 }
+
+// ---------- the market, from the game ----------
+
+#[test]
+fn a_qr_code_has_its_quiet_edge_and_dark_squares() {
+    let img = crate::ui::qr_image("http://192.168.1.20:47180/signin/abcdefghijklmnopqrstuvwxyz012345").expect("a QR code");
+    let size = img.texture_descriptor.size.width as usize;
+    assert_eq!(size, img.texture_descriptor.size.height as usize);
+    let data = img.data.as_ref().unwrap();
+    assert_eq!(&data[..4], &[255, 255, 255, 255], "white round the edge");
+    let dark = data.chunks(4).filter(|p| p[0] < 128).count();
+    assert!(dark > size * size / 5 && dark < size * size * 2 / 3, "{dark} dark pixels of {}", size * size);
+}
+
+#[test]
+fn remixes_know_what_they_came_from() {
+    home();
+    let mut lib = Library::load();
+    let id = lib.remix("mossback", "Tester").unwrap();
+    let m = &lib.list[&id].manifest;
+    assert_eq!(m.from, Some(crate::creations::FromRef { code: None, base: Some("mossback".into()), version: 0 }));
+    let toml: Manifest = toml::from_str(&lib.list[&id].files["potluck.toml"]).unwrap();
+    assert_eq!(toml.from, m.from, "and say so in their potluck.toml");
+    let mut c = creation(BOX);
+    c.id = "from-a-code".into();
+    c.origin = Origin::Code("ABCD2345".into());
+    lib.add(c);
+    lib.marks.insert("from-a-code".into(), crate::creations::Mark { code: "ABCD2345".into(), version: 3, everyone: false });
+    let id = lib.remix("from-a-code", "Tester").unwrap();
+    assert_eq!(lib.list[&id].manifest.from, Some(crate::creations::FromRef { code: Some("ABCD2345".into()), base: None, version: 3 }));
+}
+
+/// A stand-in for the game server's device sign-in, enough for the market's
+/// dev accounts: the session token for a device is `dev:DEVICE:DEVICE`.
+fn fake_game_server() -> String {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = format!("http://{}", l.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = s.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                if buf.len() < end + 4 + len {
+                    continue;
+                }
+                let body: serde_json::Value = serde_json::from_slice(&buf[end + 4..end + 4 + len]).unwrap_or_default();
+                let id = body["id"].as_str().unwrap_or("someone");
+                let out = serde_json::json!({ "token": format!("dev:{id}:{id}") }).to_string();
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
+                break;
+            }
+        }
+    });
+    addr
+}
+
+/// The market, in this process, against the Forgejo the environment names.
+fn start_market(forgejo: &str, token: &str, run: &str) -> String {
+    let (tx, rx) = channel();
+    let (forgejo, token, run) = (forgejo.to_string(), token.to_string(), run.to_string());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            use potluck_share::{checks, config, market};
+            let dir = std::env::temp_dir().join(format!("potluck-market-{run}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let mut cfg = config::Config::default();
+            cfg.public_url = url.clone();
+            cfg.data = dir.clone();
+            cfg.dev_accounts = true;
+            cfg.invite_only = false;
+            cfg.forgejo.url = forgejo.trim_end_matches('/').to_string();
+            cfg.forgejo.token = token;
+            cfg.forgejo.email_domain = "test.invalid".into();
+            let app = Arc::new(market::App::open(cfg, checks::Words::parse("grumbleweed\n")).unwrap());
+            app.db().execute("INSERT INTO accounts (user_id, handle, name, created, beta, trusted) VALUES ('potluck', ?1, 'Potluck', 0, 1, 1)", [format!("potluck-{run}")]).unwrap();
+            app.seed_base().await.unwrap();
+            tx.send(url).unwrap();
+            potluck_share::serve(listener, app).await.unwrap();
+        });
+    });
+    rx.recv_timeout(Duration::from_secs(60)).expect("the market starts")
+}
+
+fn done(jobs: &crate::share::ShareJobs, what: &str) -> crate::share::Done {
+    let start = Instant::now();
+    loop {
+        if let Some(d) = jobs.poll().into_iter().next() {
+            if let crate::share::Done::Failed(e) = &d {
+                panic!("{what}: {e}");
+            }
+            return d;
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "{what} took too long");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The market's done test, played from the game: Ada remixes Mossback and
+/// shares it to Everyone, Bo loads it by its code, remixes it and suggests
+/// his change, and Ada merges it from the game into her folder. Needs a
+/// Forgejo: set POTLUCK_TEST_FORGEJO and POTLUCK_TEST_FORGEJO_TOKEN.
+#[test]
+fn a_remix_of_a_remix_is_suggested_and_merged_from_the_game() {
+    use crate::creations::Mark;
+    use crate::share::{Done, ShareJobs, Who};
+    let (Ok(fj), Ok(token)) = (std::env::var("POTLUCK_TEST_FORGEJO"), std::env::var("POTLUCK_TEST_FORGEJO_TOKEN")) else {
+        eprintln!("skipped: set POTLUCK_TEST_FORGEJO and POTLUCK_TEST_FORGEJO_TOKEN (deploy/market/test.sh does)");
+        return;
+    };
+    home();
+    let run = crate::settings::random_hex(5);
+    let market = start_market(&fj, &token, &run);
+    let server = fake_game_server();
+    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
+    let (ada, bo) = (who("Ada"), who("Bo"));
+    let (ada_jobs, bo_jobs) = (ShareJobs::default(), ShareJobs::default());
+    let mut lib = Library::load();
+
+    let a_id = lib.remix("mossback", &ada.name).unwrap();
+    let mut a = lib.list[&a_id].clone();
+    a.files.get_mut("main.luau").unwrap().push_str("\n-- Ada's: a little greener\n");
+    lib.replace_files(&a_id, a.files.clone()).unwrap();
+    ada_jobs.share(&ada, a.payload(), true, None, a.manifest.from.clone());
+    let Done::Shared { code: a_code, version, everyone, message, .. } = done(&ada_jobs, "Ada shares") else { panic!("not a share") };
+    assert_eq!((version, everyone), (1, true));
+    assert!(message.contains("moderator"), "{message}");
+    lib.mark(&a_id, Mark { code: a_code.clone(), version, everyone });
+
+    bo_jobs.load(&bo, &a_code, None);
+    let Done::Loaded { code, version, payload } = done(&bo_jobs, "Bo loads Ada's") else { panic!("not a load") };
+    let c = Creation::from_payload(payload, Origin::Code(code.clone())).unwrap();
+    assert!(c.files["main.luau"].contains("a little greener"));
+    let loaded = lib.add(c);
+    lib.marks.insert(loaded.clone(), Mark { code: code.clone(), version, everyone: false });
+    let b_id = lib.remix(&loaded, &bo.name).unwrap();
+    let mut b = lib.list[&b_id].clone();
+    assert_eq!(b.manifest.from.as_ref().and_then(|f| f.code.clone()), Some(a_code.clone()), "Bo's remix knows it came from Ada's");
+    b.files.get_mut("main.luau").unwrap().push_str("-- Bo's: they hum when you pat them\n");
+    bo_jobs.suggest(&bo, b.payload(), false, None, b.manifest.from.clone(), "Humming".into());
+    let Done::Suggested { .. } = done(&bo_jobs, "Bo suggests") else { panic!("not a suggestion") };
+
+    ada_jobs.suggestions(&ada, &a_id, &a_code);
+    let Done::Suggestions { list, .. } = done(&ada_jobs, "Ada's suggestions") else { panic!("not a list") };
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].title, "Humming");
+    ada_jobs.merge(&ada, &a_id, list[0].id);
+    let Done::Merged { files, version, .. } = done(&ada_jobs, "Ada merges") else { panic!("not a merge") };
+    assert_eq!(version, 2);
+    lib.replace_files(&a_id, files).unwrap();
+    let dir = lib.list[&a_id].dir.clone().unwrap();
+    let main = std::fs::read_to_string(dir.join("main.luau")).unwrap();
+    assert!(main.contains("they hum when you pat them") && main.contains("a little greener"), "both changes are in Ada's folder");
+    let toml: Manifest = toml::from_str(&std::fs::read_to_string(dir.join("potluck.toml")).unwrap()).unwrap();
+    assert_eq!(toml.by, ada.name, "and it's still Ada's");
+
+    ada_jobs.link(&ada, "/me/profile", "Your profile");
+    let Done::Link { url, .. } = done(&ada_jobs, "the profile link") else { panic!("not a link") };
+    assert!(url.starts_with(&format!("{market}/signin/")), "{url}");
+    assert!(crate::ui::qr_image(&url).is_some());
+}

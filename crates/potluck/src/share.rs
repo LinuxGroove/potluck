@@ -1,38 +1,89 @@
-//! Share codes through the LinuxGroove game server: a creation goes up as
-//! one share of kind `creation` and comes back by its 8 character code.
-//! Network calls run on their own thread and report back by channel.
+//! Sharing creations. The market (potluck-share, in crates/share-service)
+//! keeps them, lists the ones shared to Everyone, and carries remixes and
+//! suggested changes; the LinuxGroove game server signs the player in (with
+//! no email or password: a random id for this device) and still loads the
+//! codes made before the market. Network calls run on their own thread and
+//! report back by channel.
 
+use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
 use bevy::prelude::*;
+use serde::Deserialize;
+use serde_json::{json, Value};
 
-use crate::creations::Payload;
+use crate::creations::{FromRef, Manifest, Payload};
 
 pub const DEFAULT_SERVER: &str = "https://play.linuxgroove.com";
+pub const DEFAULT_MARKET: &str = "https://potluck.linuxgroove.com";
 /// The game server's key; CI puts the real one in release builds.
 const SERVER_KEY: &str = match option_env!("POTLUCK_SERVER_KEY") {
     Some(k) => k,
     None => "defaultkey",
 };
+/// The market's public signing key (its /api/key). Release builds carry it,
+/// so a code only ever brings what the market signed. Without it the first
+/// key a market shows is kept, and a different one later is refused.
+const MARKET_KEY: Option<&str> = option_env!("POTLUCK_MARKET_KEY");
 pub const GAME_ID: &str = "potluck";
 
 pub fn version() -> &'static str {
     option_env!("POTLUCK_VERSION").unwrap_or(concat!("0.0.0+", env!("CARGO_PKG_VERSION")))
 }
 
+/// A change someone suggested to one of the player's creations, from their remix.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Suggestion {
+    pub id: i64,
+    pub title: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub from_code: String,
+    #[serde(default)]
+    pub from_name: String,
+    #[serde(default)]
+    pub from_version: u32,
+}
+
 pub enum Done {
-    Shared { id: String, code: String },
-    Loaded { code: String, payload: Payload },
+    /// Shared: on the market (`version` 1 or more), or as a game server code (0).
+    Shared { id: String, code: String, version: u32, everyone: bool, message: String },
+    Loaded { code: String, version: u32, payload: Payload },
+    /// A one-time sign-in link to the market, to show as a QR code.
+    Link { url: String, title: String },
+    Suggested { id: String, code: String },
+    Suggestions { id: String, list: Vec<Suggestion> },
+    /// A suggestion merged on the market: the creation's new version.
+    Merged { id: String, suggestion: i64, code: String, version: u32, files: BTreeMap<String, String> },
+    Said(String),
     Failed(String),
+}
+
+/// Where to and as whom: the game server, the market, this device's id and
+/// the player's name.
+#[derive(Clone, Debug)]
+pub struct Who {
+    pub server: String,
+    pub market: String,
+    pub device: String,
+    pub name: String,
+}
+
+impl Who {
+    pub fn of(s: &crate::settings::Settings) -> Who {
+        Who { server: s.server.clone(), market: s.market.clone(), device: s.device.clone(), name: s.name.clone() }
+    }
 }
 
 #[derive(Resource)]
 pub struct ShareJobs {
     tx: Sender<Done>,
     rx: Mutex<Receiver<Done>>,
-    token: std::sync::Arc<Mutex<Option<String>>>,
+    token: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for ShareJobs {
@@ -50,23 +101,6 @@ pub fn clean_code(s: &str) -> String {
         .collect()
 }
 
-fn b64(s: &str) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let b = s.as_bytes();
-    let mut out = String::new();
-    for chunk in b.chunks(3) {
-        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 fn platform() -> &'static str {
     if cfg!(target_os = "windows") {
         "windows"
@@ -77,18 +111,18 @@ fn platform() -> &'static str {
     }
 }
 
-struct Client {
+fn agent(secs: u64) -> ureq::Agent {
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(secs))).http_status_as_error(false).build().into()
+}
+
+/// The game server: signing in, and the codes made before the market.
+struct Server {
     agent: ureq::Agent,
     base: String,
 }
 
-impl Client {
-    fn new(server: &str) -> Self {
-        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(12))).http_status_as_error(false).build().into();
-        Self { agent, base: server.trim_end_matches('/').to_string() }
-    }
-
-    fn post(&self, path: &str, auth: &str, body: &str) -> Result<serde_json::Value, String> {
+impl Server {
+    fn post(&self, path: &str, auth: &str, body: &str) -> Result<Value, String> {
         let mut r = self
             .agent
             .post(format!("{}{path}", self.base))
@@ -98,7 +132,7 @@ impl Client {
             .map_err(|e| format!("couldn't reach the game server ({e})"))?;
         let status = r.status().as_u16();
         let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
-        let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text.clone()));
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
         if status >= 400 {
             let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or(&text).to_string();
             return Err(explain(&msg));
@@ -107,12 +141,13 @@ impl Client {
     }
 
     fn sign_in(&self, device: &str) -> Result<String, String> {
-        let body = serde_json::json!({ "id": device, "vars": { "game": GAME_ID, "version": version(), "platform": platform() } });
-        let v = self.post("/v2/account/authenticate/device?create=true", &format!("Basic {}", b64(&format!("{SERVER_KEY}:"))), &body.to_string())?;
+        let body = json!({ "id": device, "vars": { "game": GAME_ID, "version": version(), "platform": platform() } });
+        let basic = base64::engine::general_purpose::STANDARD.encode(format!("{SERVER_KEY}:"));
+        let v = self.post("/v2/account/authenticate/device?create=true", &format!("Basic {basic}"), &body.to_string())?;
         v.get("token").and_then(|t| t.as_str()).map(|s| s.to_string()).ok_or_else(|| "the game server didn't sign us in".into())
     }
 
-    fn rpc(&self, token: &str, name: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn rpc(&self, token: &str, name: &str, payload: Value) -> Result<Value, String> {
         self.post(&format!("/v2/rpc/{name}?unwrap"), &format!("Bearer {token}"), &payload.to_string())
     }
 }
@@ -134,62 +169,371 @@ fn explain(msg: &str) -> String {
     }
 }
 
+/// Why a market call didn't work: it couldn't be reached, or it said no.
+#[derive(Debug)]
+enum Fail {
+    Offline(String),
+    Said(u16, String),
+}
+
+impl Fail {
+    fn text(self) -> String {
+        match self {
+            Fail::Offline(e) => format!("couldn't reach the market ({e})"),
+            Fail::Said(_, m) => m,
+        }
+    }
+}
+
+/// The market's API (crates/share-service/src/api.rs).
+struct Market {
+    agent: ureq::Agent,
+    base: String,
+}
+
+impl Market {
+    fn call(&self, method: &str, path: &str, token: Option<&str>, name: &str, body: Option<&Value>) -> Result<Value, Fail> {
+        let url = format!("{}{path}", self.base);
+        let res = if method == "GET" {
+            let mut r = self.agent.get(&url);
+            if let Some(t) = token {
+                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
+            }
+            r.call()
+        } else {
+            let mut r = self.agent.post(&url).header("Content-Type", "application/json");
+            if let Some(t) = token {
+                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
+            }
+            r.send(body.map(|b| b.to_string()).unwrap_or_else(|| "{}".into()))
+        };
+        let mut r = res.map_err(|e| Fail::Offline(e.to_string()))?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().map_err(|e| Fail::Offline(e.to_string()))?;
+        // a proxy in front with the market behind it down
+        if matches!(status, 502..=504) {
+            return Err(Fail::Offline(format!("it answered {status}")));
+        }
+        let v: Value = serde_json::from_str(&text).map_err(|_| Fail::Offline("that address isn't a Potluck market".into()))?;
+        if status >= 400 {
+            return Err(Fail::Said(status, v.get("error").and_then(|e| e.as_str()).unwrap_or("the market said no").to_string()));
+        }
+        Ok(v)
+    }
+
+    fn file(&self, sha: &str) -> Result<Vec<u8>, Fail> {
+        let mut r = self.agent.get(format!("{}/f/{sha}", self.base)).call().map_err(|e| Fail::Offline(e.to_string()))?;
+        if r.status().as_u16() != 200 {
+            return Err(Fail::Said(r.status().as_u16(), "a file of that creation is missing".into()));
+        }
+        r.body_mut().with_config().limit(crate::creations::MAX_SIZE as u64).read_to_vec().map_err(|e| Fail::Offline(e.to_string()))
+    }
+}
+
+/// One job's connections and sign-in.
+struct Ctx {
+    server: Server,
+    market: Market,
+    who: Who,
+    token: Arc<Mutex<Option<String>>>,
+}
+
+impl Ctx {
+    fn token(&self, fresh: bool) -> Result<String, String> {
+        if !fresh {
+            if let Some(t) = self.token.lock().unwrap().clone() {
+                return Ok(t);
+            }
+        }
+        let t = self.server.sign_in(&self.who.device)?;
+        *self.token.lock().unwrap() = Some(t.clone());
+        Ok(t)
+    }
+
+    /// A market call as this player, signing in again once if the market
+    /// says the session ran out.
+    fn market(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, Fail> {
+        let t = self.token(false).map_err(Fail::Offline)?;
+        match self.market.call(method, path, Some(&t), &self.who.name, body.as_ref()) {
+            Err(Fail::Said(401, _)) => {
+                let t = self.token(true).map_err(Fail::Offline)?;
+                self.market.call(method, path, Some(&t), &self.who.name, body.as_ref())
+            }
+            r => r,
+        }
+    }
+
+    /// Signed in when the game server answers, and anonymous when it doesn't:
+    /// anyone may load what's on the market.
+    fn market_get(&self, path: &str) -> Result<Value, Fail> {
+        match self.market("GET", path, None) {
+            Err(Fail::Offline(_)) => self.market.call("GET", path, None, "", None),
+            r => r,
+        }
+    }
+
+    /// A creation from the market: its manifest must carry the market's
+    /// signature, and every file must match the hash the manifest gives.
+    fn load(&self, code: &str, version: Option<u32>) -> Result<(u32, Payload), Fail> {
+        let path = match version {
+            Some(n) => format!("/api/c/{code}?v={n}"),
+            None => format!("/api/c/{code}"),
+        };
+        let r = self.market_get(&path)?;
+        let text = r["manifest"].as_str().unwrap_or("");
+        let key = trusted_key(&self.who.market, r["key"].as_str().unwrap_or("")).map_err(|e| Fail::Said(0, e))?;
+        if !verify(&key, text, r["signature"].as_str().unwrap_or("")) {
+            return Err(Fail::Said(0, "that creation isn't signed by the market, so it stays out".into()));
+        }
+        let m: MarketManifest = serde_json::from_str(text).map_err(|_| Fail::Said(0, "the market sent something that isn't a creation".into()))?;
+        if m.code != code {
+            return Err(Fail::Said(0, "the market sent a different creation".into()));
+        }
+        let mut files = BTreeMap::new();
+        let mut total = 0;
+        for (path, f) in &m.files {
+            total += f.size;
+            if total > crate::creations::MAX_SIZE || m.files.len() > 64 {
+                return Err(Fail::Said(0, "that creation is too big".into()));
+            }
+            let bytes = cached_file(&f.sha256).map(Ok).unwrap_or_else(|| self.market.file(&f.sha256))?;
+            if sha256_hex(&bytes) != f.sha256 {
+                return Err(Fail::Said(0, format!("{path} isn't what the market signed, so it stays out")));
+            }
+            cache_file(&f.sha256, &bytes);
+            files.insert(path.clone(), String::from_utf8_lossy(&bytes).to_string());
+        }
+        let manifest: Manifest = files.get("potluck.toml").and_then(|t| toml::from_str(t).ok()).unwrap_or_default();
+        let id = crate::creations::slug(&manifest.name);
+        Ok((m.version, Payload { format: 1, id, manifest, files, knobs: BTreeMap::new(), code: Some(code.to_string()) }))
+    }
+}
+
+#[derive(Deserialize)]
+struct MarketManifest {
+    code: String,
+    version: u32,
+    files: BTreeMap<String, FileRef>,
+}
+
+#[derive(Deserialize)]
+struct FileRef {
+    sha256: String,
+    size: usize,
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Checks a manifest's Ed25519 signature against the market's public key.
+pub fn verify(public: &str, text: &str, signature: &str) -> bool {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let (Ok(k), Ok(sig)) = (b64.decode(public), b64.decode(signature)) else { return false };
+    let (Ok(k), Ok(sig)) = (<[u8; 32]>::try_from(k.as_slice()), <[u8; 64]>::try_from(sig.as_slice())) else { return false };
+    let Ok(k) = ed25519_dalek::VerifyingKey::from_bytes(&k) else { return false };
+    k.verify_strict(text.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig)).is_ok()
+}
+
+/// The key to check a market's signatures with: the one built in, or the
+/// one this market showed the first time, kept in market-keys.json.
+fn trusted_key(market: &str, shown: &str) -> Result<String, String> {
+    if let Some(k) = MARKET_KEY.filter(|_| market.trim_end_matches('/') == DEFAULT_MARKET) {
+        return Ok(k.to_string());
+    }
+    let path = crate::settings::data_dir().join("market-keys.json");
+    let mut keys: BTreeMap<String, String> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    match keys.get(market) {
+        Some(k) if k == shown => Ok(k.clone()),
+        Some(_) => Err("the market's signing key changed, so nothing from it loads. If that's expected, delete market-keys.json in Potluck's folder".into()),
+        None if shown.len() == 44 => {
+            keys.insert(market.to_string(), shown.to_string());
+            let _ = std::fs::create_dir_all(crate::settings::data_dir());
+            let _ = std::fs::write(&path, serde_json::to_string_pretty(&keys).unwrap_or_default());
+            Ok(shown.to_string())
+        }
+        None => Err("the market didn't say how to check its signatures".into()),
+    }
+}
+
+fn cache_dir() -> std::path::PathBuf {
+    crate::settings::data_dir().join("cache").join("files")
+}
+
+fn cached_file(sha: &str) -> Option<Vec<u8>> {
+    if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    std::fs::read(cache_dir().join(sha)).ok()
+}
+
+fn cache_file(sha: &str, bytes: &[u8]) {
+    let _ = std::fs::create_dir_all(cache_dir());
+    let _ = std::fs::write(cache_dir().join(sha), bytes);
+}
+
+/// The market says things in lower case for the game to put in a sentence.
+fn sentence(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 impl ShareJobs {
-    fn run(&self, server: &str, device: &str, job: impl FnOnce(&Client, &str) -> Done + Send + 'static) {
+    fn run(&self, who: &Who, job: impl FnOnce(&Ctx) -> Done + Send + 'static) {
         let tx = self.tx.clone();
-        let server = server.to_string();
-        let device = device.to_string();
-        let token = self.token.clone();
+        let ctx = Ctx {
+            server: Server { agent: agent(12), base: who.server.trim_end_matches('/').to_string() },
+            market: Market { agent: agent(30), base: who.market.trim_end_matches('/').to_string() },
+            who: who.clone(),
+            token: self.token.clone(),
+        };
         std::thread::spawn(move || {
-            let client = Client::new(&server);
-            let have = token.lock().unwrap().clone();
-            let t = match have {
-                Some(t) => t,
-                None => match client.sign_in(&device) {
-                    Ok(t) => {
-                        *token.lock().unwrap() = Some(t.clone());
-                        t
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Done::Failed(e));
-                        return;
-                    }
-                },
-            };
-            let _ = tx.send(job(&client, &t));
+            let _ = tx.send(job(&ctx));
         });
     }
 
-    pub fn share(&self, server: &str, device: &str, payload: Payload) {
-        self.run(server, device, move |c, t| {
-            let data = serde_json::to_string(&payload).unwrap_or_default();
-            let req = serde_json::json!({
-                "kind": "creation",
-                "title": payload.manifest.name,
-                "data": data,
-                "meta": { "by": payload.manifest.by, "kind": payload.manifest.kind, "id": payload.id },
-            });
-            match c.rpc(t, "core.share_create", req) {
-                Ok(v) => match v.get("code").and_then(|c| c.as_str()) {
-                    Some(code) => Done::Shared { id: payload.id.clone(), code: code.to_string() },
-                    None => Done::Failed("the game server gave no code back".into()),
+    /// Shares a creation: to the market, for Everyone or by its code. The
+    /// market keeps one code per creation, so `code` (the one it had) makes
+    /// this the next version. With the market out of reach, sharing by code
+    /// still works through the game server.
+    pub fn share(&self, who: &Who, payload: Payload, everyone: bool, code: Option<String>, from: Option<FromRef>) {
+        self.run(who, move |c| {
+            let req = json!({ "code": code, "files": payload.files, "visibility": if everyone { "everyone" } else { "code" }, "from": from });
+            match c.market("POST", "/api/share", Some(req)) {
+                Ok(v) => Done::Shared {
+                    id: payload.id.clone(),
+                    code: v["code"].as_str().unwrap_or("").to_string(),
+                    version: v["version"].as_u64().unwrap_or(0) as u32,
+                    everyone,
+                    message: sentence(v["message"].as_str().unwrap_or("")),
                 },
-                Err(e) => Done::Failed(e),
+                Err(Fail::Offline(e)) if !everyone => {
+                    let t = match c.token(false) {
+                        Ok(t) => t,
+                        Err(e) => return Done::Failed(e),
+                    };
+                    let data = serde_json::to_string(&payload).unwrap_or_default();
+                    let req = json!({ "kind": "creation", "title": payload.manifest.name, "data": data, "meta": { "by": payload.manifest.by, "kind": payload.manifest.kind, "id": payload.id } });
+                    match c.server.rpc(&t, "core.share_create", req) {
+                        Ok(v) => match v.get("code").and_then(|c| c.as_str()) {
+                            Some(code) => Done::Shared {
+                                id: payload.id.clone(),
+                                code: code.to_string(),
+                                version: 0,
+                                everyone: false,
+                                message: format!("The market isn't answering ({e}), so the game server keeps it by its code for now."),
+                            },
+                            None => Done::Failed("the game server gave no code back".into()),
+                        },
+                        Err(e) => Done::Failed(e),
+                    }
+                }
+                Err(e) => Done::Failed(e.text()),
             }
         });
     }
 
-    pub fn load(&self, server: &str, device: &str, code: &str) {
+    /// Loads a code: from the market, or from the game server for the codes
+    /// made before it. `version` picks one version of it.
+    pub fn load(&self, who: &Who, code: &str, version: Option<u32>) {
         let code = clean_code(code);
-        self.run(server, device, move |c, t| match c.rpc(t, "core.share_get", serde_json::json!({ "code": code })) {
-            Ok(v) => {
-                let data = v.get("data").and_then(|d| d.as_str()).unwrap_or("");
-                match serde_json::from_str::<Payload>(data) {
-                    Ok(p) => Done::Loaded { code: code.clone(), payload: p },
-                    Err(_) => Done::Failed("that code isn't a Potluck creation".into()),
+        self.run(who, move |c| match c.load(&code, version) {
+            Ok((version, payload)) => Done::Loaded { code: code.clone(), version, payload },
+            Err(Fail::Said(s, m)) if s != 404 => Done::Failed(m),
+            Err(first) => {
+                let t = match c.token(false) {
+                    Ok(t) => t,
+                    Err(e) => return Done::Failed(e),
+                };
+                match c.server.rpc(&t, "core.share_get", json!({ "code": code })) {
+                    Ok(v) => {
+                        let data = v.get("data").and_then(|d| d.as_str()).unwrap_or("");
+                        match serde_json::from_str::<Payload>(data) {
+                            Ok(p) => Done::Loaded { code: code.clone(), version: 0, payload: p },
+                            Err(_) => Done::Failed("that code isn't a Potluck creation".into()),
+                        }
+                    }
+                    Err(e) if e == "no creation has that code" => Done::Failed(match first {
+                        Fail::Offline(m) => format!("couldn't reach the market ({m}), and the game server doesn't know that code"),
+                        Fail::Said(_, m) => m,
+                    }),
+                    Err(e) => Done::Failed(e),
                 }
             }
-            Err(e) => Done::Failed(e),
+        });
+    }
+
+    /// A one-time link that signs the market in a browser in as this player
+    /// and opens `next` there: the game shows it as a QR code for a phone.
+    pub fn link(&self, who: &Who, next: &str, title: &str) {
+        let next = next.to_string();
+        let title = title.to_string();
+        self.run(who, move |c| match c.market("POST", "/api/signin", Some(json!({ "next": next }))) {
+            Ok(v) => Done::Link { url: v["url"].as_str().unwrap_or("").to_string(), title },
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// Suggests a remix's change to the creation it was remixed from: shares
+    /// it first if it changed, then opens the suggestion.
+    pub fn suggest(&self, who: &Who, payload: Payload, everyone: bool, code: Option<String>, from: Option<FromRef>, title: String) {
+        self.run(who, move |c| {
+            let req = json!({ "code": code, "files": payload.files, "visibility": if everyone { "everyone" } else { "code" }, "from": from });
+            let code = match c.market("POST", "/api/share", Some(req)) {
+                Ok(v) => v["code"].as_str().unwrap_or("").to_string(),
+                // already shared just as it is
+                Err(Fail::Said(409, _)) if code.is_some() => code.clone().unwrap_or_default(),
+                Err(e) => return Done::Failed(e.text()),
+            };
+            match c.market("POST", &format!("/api/c/{code}/suggest"), Some(json!({ "title": title }))) {
+                Ok(_) => Done::Suggested { id: payload.id.clone(), code },
+                Err(e) => Done::Failed(e.text()),
+            }
+        });
+    }
+
+    pub fn suggestions(&self, who: &Who, id: &str, code: &str) {
+        let (id, code) = (id.to_string(), code.to_string());
+        self.run(who, move |c| match c.market_get(&format!("/api/c/{code}/suggestions")) {
+            Ok(v) => Done::Suggestions { id, list: serde_json::from_value(v["suggestions"].clone()).unwrap_or_default() },
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// Merges a suggestion into the player's creation on the market, then
+    /// brings back the new version to put in its folder.
+    pub fn merge(&self, who: &Who, id: &str, suggestion: i64) {
+        let id = id.to_string();
+        self.run(who, move |c| {
+            let v = match c.market("POST", &format!("/api/suggestions/{suggestion}/merge"), None) {
+                Ok(v) => v,
+                Err(e) => return Done::Failed(e.text()),
+            };
+            let code = v["code"].as_str().unwrap_or("").to_string();
+            let version = v["version"].as_u64().unwrap_or(0) as u32;
+            match c.load(&code, Some(version)) {
+                Ok((version, p)) => Done::Merged { id, suggestion, code, version, files: p.files },
+                Err(e) => Done::Failed(e.text()),
+            }
+        });
+    }
+
+    pub fn close_suggestion(&self, who: &Who, suggestion: i64) {
+        self.run(who, move |c| match c.market("POST", &format!("/api/suggestions/{suggestion}/close"), None) {
+            Ok(_) => Done::Said("Closed. It stays in their remix.".into()),
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    pub fn report(&self, who: &Who, code: &str, reason: &str) {
+        let (code, reason) = (code.to_string(), reason.to_string());
+        self.run(who, move |c| match c.market("POST", &format!("/api/c/{code}/report"), Some(json!({ "reason": reason }))) {
+            Ok(_) => Done::Said("Thanks. A moderator will look at it.".into()),
+            Err(e) => Done::Failed(e.text()),
         });
     }
 

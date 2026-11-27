@@ -1,0 +1,4 @@
+# Words the market keeps out of names and descriptions (and warns about in
+# code's strings and comments). One a line; word* matches any word starting
+# with it. Look-alike spellings (b4d, baaad) are folded before matching.
+# Fill this in before opening the market to Everyone.
