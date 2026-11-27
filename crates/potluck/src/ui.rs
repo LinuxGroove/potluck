@@ -360,7 +360,14 @@ pub fn menu_input(
     mut lib_mut: ResMut<crate::KnobEdits>,
     buttons: Query<(&Interaction, &MenuButton), Changed<Interaction>>,
     time: Res<Time>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut last_cursor: Local<Option<Vec2>>,
 ) {
+    // a button drawn again under a resting pointer counts as hovered; only a
+    // pointer that moved should take the selection from the keys or the pad
+    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+    let moved = cursor.is_some() && cursor != *last_cursor;
+    *last_cursor = cursor;
     if focus.playing() {
         return;
     }
@@ -380,11 +387,12 @@ pub fn menu_input(
                     clicked = true;
                 }
             }
-            Interaction::Hovered => {
+            Interaction::Hovered if moved => {
                 if let Some(p) = selectable.iter().position(|&i| i == b.0) {
                     pos = p;
                 }
             }
+            Interaction::Hovered => {}
             Interaction::None => {}
         }
     }
