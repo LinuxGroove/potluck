@@ -13,9 +13,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.6")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.6. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.7")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.7. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.6
+### `@potluck/world` 0.7
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -106,6 +106,15 @@ world.healing(player, 1)                  -- as usual again
 
 - Survival players heal by themselves, one health every 4 seconds. `world.healing(player, rate)` changes how fast for that player: 1 as usual, 0 not at all, up to 4. It stays until the creation changes it again, stops, or the player leaves, and returns false for a player whose game hasn't said hello yet.
 - When several creations set it, their rates multiply, so any creation's 0 means no healing.
+
+Hurting only so far (new in 0.7), for hunger, thorns and anything that should sting but not send a player back to the hill:
+
+```luau
+world.hurt(player, 1, { down_to = 10 })   -- never below half health
+```
+
+- `down_to` is the least health the hurt leaves, 0 to 20 (0, or leaving it out, is no limit). A player already at or below it isn't hurt at all.
+- Only the player's own game knows their health, so it works out how much to take when the hurt arrives.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 

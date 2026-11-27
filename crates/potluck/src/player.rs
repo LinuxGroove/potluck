@@ -77,6 +77,9 @@ pub struct Me {
     /// Hurts (less than 0) and heals creations sent, for `walk` to apply
     /// in survival.
     pub health_due: f32,
+    /// Hurts creations sent that stop at some health (`world.hurt`'s
+    /// `down_to`): (how much, the least it leaves), for `walk`.
+    pub hurts: Vec<(f32, f32)>,
     /// How fast creations let this player heal by themselves
     /// (`world.healing`): 1 as usual, 0 not at all.
     pub healing: f32,
@@ -123,6 +126,7 @@ impl Default for Me {
             notes: vec![],
             pockets_seen: 0,
             health_due: 0.0,
+            hurts: vec![],
             healing: 1.0,
             built: vec![],
             stride: 0.0,
@@ -349,6 +353,12 @@ pub fn walk(
         me.hurt(-due);
     } else if settings.survival && due > 0.0 {
         me.health = (me.health + due).min(MAX_HEALTH);
+    }
+    for (n, down_to) in std::mem::take(&mut me.hurts) {
+        if settings.survival && me.health > down_to {
+            let n = n.min(me.health - down_to);
+            me.hurt(n);
+        }
     }
     if me.riding.is_some() {
         me.vel = Vec3::ZERO;
