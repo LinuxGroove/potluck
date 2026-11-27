@@ -1,6 +1,10 @@
 //! The base game's block textures, drawn from code at 32 px: albedo, a normal
 //! map from each texture's height, and glow. They go into one atlas with its
 //! own mip levels, made tile by tile so neighbours never bleed together.
+//!
+//! Blocks baked by `tools/blocks.py` (in `assets/blocks`, built in by
+//! build.rs) take the place of the drawn ones, with their own normal,
+//! roughness and see-through maps; drawn tiles are scaled up to match.
 
 use std::collections::HashMap;
 
@@ -13,10 +17,15 @@ use bevy::{
 
 use crate::noise::{seed_of, tfbm, tnoise, Rng};
 
+/// How big the drawn textures are.
 pub const TILE: usize = 32;
 pub const GRID: usize = 8; // 8 x 8 tiles
 pub const SIZE: usize = TILE * GRID;
-const MIPS: u32 = 4; // 32, 16, 8, 4 px per tile
+/// How rough drawn blocks are (0 is a mirror).
+const ROUGH: f32 = 0.92;
+
+// pub const BAKED: &[(&str, &[u8])]: each baked map's file name and PNG
+include!(concat!(env!("OUT_DIR"), "/baked_blocks.rs"));
 
 /// One drawn texture: colours with alpha, and a height for the normal map.
 struct Tex {
@@ -30,6 +39,8 @@ struct Tex {
 pub struct BlockAtlas {
     pub color: Handle<Image>,
     pub normal: Handle<Image>,
+    /// Roughness in green, as `StandardMaterial` reads it.
+    pub rough: Handle<Image>,
     pub glow: Handle<Image>,
     tiles: HashMap<&'static str, u16>,
     /// Each tile's colour at full size, for item icons in the UI.
@@ -305,12 +316,14 @@ fn normal_of(t: &Tex) -> Vec<[f32; 4]> {
     out
 }
 
-/// Builds one atlas image, with each tile's mips made from that tile alone.
-fn atlas_image(tiles: &[Vec<[f32; 4]>], srgb: bool) -> Image {
+/// Builds one atlas image from tiles `full` px square, with each tile's
+/// mips made from that tile alone, down to 4 px.
+fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool) -> Image {
+    let mips = full.trailing_zeros() - 1;
     let mut data = Vec::new();
-    for level in 0..MIPS {
-        let tile = TILE >> level;
-        let size = SIZE >> level;
+    for level in 0..mips {
+        let tile = full >> level;
+        let size = full * GRID >> level;
         let mut img = vec![0u8; size * size * 4];
         for (i, src) in tiles.iter().enumerate() {
             let (ox, oy) = ((i % GRID) * tile, (i / GRID) * tile);
@@ -321,7 +334,7 @@ fn atlas_image(tiles: &[Vec<[f32; 4]>], srgb: bool) -> Image {
                     let (mut c, mut a, mut w) = ([0.0f32; 3], 0.0f32, 0.0f32);
                     for sy in 0..step {
                         for sx in 0..step {
-                            let p = src[(y * step + sy) * TILE + x * step + sx];
+                            let p = src[(y * step + sy) * full + x * step + sx];
                             let k = p[3] / 255.0;
                             for j in 0..3 {
                                 let v = if srgb { (p[j] / 255.0).powf(2.2) } else { p[j] / 255.0 };
@@ -344,13 +357,9 @@ fn atlas_image(tiles: &[Vec<[f32; 4]>], srgb: bool) -> Image {
         data.extend(img);
     }
     let format = if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm };
-    let mut image = Image::new_uninit(
-        Extent3d { width: SIZE as u32, height: SIZE as u32, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        format,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.texture_descriptor.mip_level_count = MIPS;
+    let size = (full * GRID) as u32;
+    let mut image = Image::new_uninit(Extent3d { width: size, height: size, depth_or_array_layers: 1 }, TextureDimension::D2, format, RenderAssetUsages::RENDER_WORLD);
+    image.texture_descriptor.mip_level_count = mips;
     image.data = Some(data);
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         mipmap_filter: bevy::image::ImageFilterMode::Linear,
@@ -359,13 +368,13 @@ fn atlas_image(tiles: &[Vec<[f32; 4]>], srgb: bool) -> Image {
     image
 }
 
-fn icon_image(t: &Tex) -> Image {
-    let mut data = Vec::with_capacity(TILE * TILE * 4);
-    for p in &t.rgba {
+fn icon_image(rgba: &[[f32; 4]], full: usize) -> Image {
+    let mut data = Vec::with_capacity(full * full * 4);
+    for p in rgba {
         data.extend(p.iter().map(|v| v.round().clamp(0.0, 255.0) as u8));
     }
     let mut image = Image::new(
-        Extent3d { width: TILE as u32, height: TILE as u32, depth_or_array_layers: 1 },
+        Extent3d { width: full as u32, height: full as u32, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
         TextureFormat::Rgba8UnormSrgb,
@@ -375,8 +384,76 @@ fn icon_image(t: &Tex) -> Image {
     image
 }
 
+/// One block's maps at the atlas's size.
+struct Maps {
+    color: Vec<[f32; 4]>,
+    normal: Vec<[f32; 4]>,
+    rough: Vec<[f32; 4]>,
+}
+
+/// A drawn tile's texels, scaled up to `full` px by repeating them.
+fn upscale(src: &[[f32; 4]], full: usize) -> Vec<[f32; 4]> {
+    let k = full / TILE;
+    (0..full * full).map(|i| src[(i / full / k) * TILE + (i % full) / k]).collect()
+}
+
+/// The baked maps in `BAKED`, decoded: name (with its `_n`, `_r` or `_a`) to
+/// texels, all `size` px square. Files of another size are left out.
+pub(crate) fn baked() -> (HashMap<&'static str, Vec<[f32; 4]>>, usize) {
+    use bevy::image::{CompressedImageFormats, ImageType};
+    let mut out = HashMap::new();
+    let mut size = 0;
+    for (file, bytes) in BAKED {
+        let name = file.trim_end_matches(".png");
+        let Ok(img) = Image::from_buffer(bytes, ImageType::Extension("png"), CompressedImageFormats::NONE, false, ImageSampler::Default, RenderAssetUsages::MAIN_WORLD) else {
+            warn!("Couldn't read the baked block texture {file}");
+            continue;
+        };
+        // PNGs come out as 8-bit RGBA
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let Some(data) = img.data.as_ref().filter(|d| d.len() == w * h * 4) else {
+            warn!("The baked block texture {file} isn't 8-bit colour; leaving it out");
+            continue;
+        };
+        if size == 0 && w.is_power_of_two() && w >= TILE {
+            size = w;
+        }
+        if w != size || h != size {
+            warn!("The baked block texture {file} is {w} px, not {size}; leaving it out");
+            continue;
+        }
+        out.insert(name, data.chunks_exact(4).map(|p| [p[0] as f32, p[1] as f32, p[2] as f32, p[3] as f32]).collect());
+    }
+    (out, size.max(TILE))
+}
+
 pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
     let drawn = draw_all();
+    let (baked, full) = baked();
+    let maps: Vec<Maps> = drawn
+        .iter()
+        .map(|(name, t)| match baked.get(*name).filter(|_| !t.glow) {
+            Some(color) => {
+                let mut color = color.clone();
+                // leaves: the see-through map sets alpha
+                if let Some(a) = baked.get(format!("{name}_a").as_str()) {
+                    for (c, a) in color.iter_mut().zip(a) {
+                        c[3] = if a[0] > 127.0 { 255.0 } else { 0.0 };
+                    }
+                }
+                let normal = baked.get(format!("{name}_n").as_str()).cloned().unwrap_or_else(|| vec![[128.0, 128.0, 255.0, 255.0]; full * full]);
+                let rough = baked
+                    .get(format!("{name}_r").as_str())
+                    .map(|r| r.iter().map(|p| [0.0, p[0], 0.0, 255.0]).collect())
+                    .unwrap_or_else(|| vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full]);
+                Maps { color, normal, rough }
+            }
+            None => Maps { color: upscale(&t.rgba, full), normal: upscale(&normal_of(t), full), rough: vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full] },
+        })
+        .collect();
+    if full > TILE {
+        info!("Block textures at {full} px ({} baked)", drawn.iter().filter(|(n, t)| !t.glow && baked.contains_key(*n)).count());
+    }
     // Glowing tiles go at the far end of the atlas with empty tiles beside
     // them: at a distance, a face's edge can sample its neighbour in the
     // atlas, and a lantern's glow there shows as sparks on far hills.
@@ -392,31 +469,32 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         }
     }
     assert!(next + GRID <= far, "too many block textures for the atlas");
-    let empty = vec![[0.0, 0.0, 0.0, 0.0]; TILE * TILE];
-    let pick = |f: &dyn Fn(&Tex) -> Vec<[f32; 4]>| -> Vec<Vec<[f32; 4]>> { slots.iter().map(|s| s.map(|i| f(&drawn[i].1)).unwrap_or_else(|| empty.clone())).collect() };
-    let colors = pick(&|t| t.rgba.clone());
-    let normals = pick(&|t| normal_of(t));
+    let empty = vec![[0.0, 0.0, 0.0, 0.0]; full * full];
+    let pick = |f: &dyn Fn(usize) -> Vec<[f32; 4]>| -> Vec<Vec<[f32; 4]>> { slots.iter().map(|s| s.map(f).unwrap_or_else(|| empty.clone())).collect() };
+    let colors = pick(&|i| maps[i].color.clone());
+    let normals = pick(&|i| maps[i].normal.clone());
+    let roughs = pick(&|i| maps[i].rough.clone());
     // only the bright parts of a glowing tile glow, not its frame
-    let glows = pick(&|t| {
-        if t.glow {
-            t.rgba.iter().map(|p| if p[0] + p[1] > 300.0 { *p } else { [0.0, 0.0, 0.0, 255.0] }).collect()
+    let glows = pick(&|i| {
+        if drawn[i].1.glow {
+            maps[i].color.iter().map(|p| if p[0] + p[1] > 300.0 { *p } else { [0.0, 0.0, 0.0, 255.0] }).collect()
         } else {
-            vec![[0.0, 0.0, 0.0, 255.0]; TILE * TILE]
+            vec![[0.0, 0.0, 0.0, 255.0]; full * full]
         }
     });
     let mut tiles = HashMap::new();
     let mut icons = HashMap::new();
     for (slot, s) in slots.iter().enumerate() {
         if let Some(i) = s {
-            let (name, t) = &drawn[*i];
-            tiles.insert(*name, slot as u16);
-            icons.insert(*name, images.add(icon_image(t)));
+            tiles.insert(drawn[*i].0, slot as u16);
+            icons.insert(drawn[*i].0, images.add(icon_image(&maps[*i].color, full)));
         }
     }
     BlockAtlas {
-        color: images.add(atlas_image(&colors, true)),
-        normal: images.add(atlas_image(&normals, false)),
-        glow: images.add(atlas_image(&glows, true)),
+        color: images.add(atlas_image(&colors, full, true)),
+        normal: images.add(atlas_image(&normals, full, false)),
+        rough: images.add(atlas_image(&roughs, full, false)),
+        glow: images.add(atlas_image(&glows, full, true)),
         tiles,
         icons,
     }

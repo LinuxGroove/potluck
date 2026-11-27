@@ -95,9 +95,12 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>) -
     let solid = StandardMaterial {
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
+        metallic_roughness_texture: Some(atlas.rough.clone()),
         emissive_texture: Some(atlas.glow.clone()),
         emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * 600.0,
-        perceptual_roughness: 0.92,
+        // the texture says how rough each block is
+        perceptual_roughness: 1.0,
+        metallic: 0.0,
         reflectance: 0.3,
         ..default()
     };

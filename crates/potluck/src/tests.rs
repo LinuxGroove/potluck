@@ -317,3 +317,10 @@ fn a_friend_joins_a_hosted_world_and_gets_it_with_its_creations() {
     assert!(mossback, "the creations running in the world come with it");
     assert_eq!(herd, 3, "and so do its creatures");
 }
+
+#[test]
+fn every_baked_block_texture_is_read() {
+    let (maps, size) = crate::textures::baked();
+    assert_eq!(maps.len(), crate::textures::BAKED.len(), "some baked block textures couldn't be read");
+    assert!(size.is_power_of_two() && size >= crate::textures::TILE);
+}
