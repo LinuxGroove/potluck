@@ -58,6 +58,11 @@ fn boards_file() -> PathBuf {
     settings::data_dir().join("boards.json")
 }
 
+/// What creations keep with `@potluck/store`.
+fn store_file() -> PathBuf {
+    settings::data_dir().join("store.json")
+}
+
 const HELP: &str = "Options (or the POTLUCK_* environment variables; these win over server.toml):
   --config=FILE        the settings file (POTLUCK_CONFIG), server.toml in the data folder by default
   --name=NAME          what players see (POTLUCK_NAME)
@@ -179,6 +184,7 @@ fn main() {
         let scripts = app.world().resource::<script::Scripts>();
         let mut shared = scripts.shared.lock().unwrap();
         shared.boards = hosting::Boards::load(&boards_file());
+        shared.store = script::Store::load(&store_file());
         shared.links = cfg.links.keys().cloned().collect();
     }
     let listing = cfg.list.then(|| (cfg.clone(), Arc::new(link)));
@@ -335,7 +341,11 @@ fn autosave(time: Res<Time>, mut saving: ResMut<Saving>, voxels: Res<world::Voxe
     }
     saving.since = 0.0;
     save(&voxels, &lib);
-    scripts.shared.lock().unwrap().boards.save(&boards_file());
+    {
+        let mut shared = scripts.shared.lock().unwrap();
+        shared.boards.save(&boards_file());
+        shared.store.save(&store_file());
+    }
     if stopping {
         info!("Saved the world; stopping");
         exit.write(AppExit::Success);
