@@ -27,6 +27,23 @@ impl MeshData {
         self.idx.is_empty()
     }
 
+    /// Turns each quad's normal to the way it faces. Plants are shaded as if
+    /// they faced up, which reads well with shadow maps, but the ray tracer
+    /// checks normals against the surface and turns those pixels black.
+    pub fn face_normals(&mut self) {
+        for q in 0..self.pos.len() / 4 {
+            let k = q * 4;
+            let [a, b, c] = [self.pos[k], self.pos[k + 1], self.pos[k + 2]].map(Vec3::from);
+            let n = (b - a).cross(c - a).normalize_or_zero();
+            let up = Vec3::from(self.pos[k + 3]) - a;
+            for i in k..k + 4 {
+                self.nrm[i] = n.into();
+                let t = Vec3::new(self.tan[i][0], self.tan[i][1], self.tan[i][2]);
+                self.tan[i][3] = if n.cross(t).dot(up) >= 0.0 { 1.0 } else { -1.0 };
+            }
+        }
+    }
+
     fn quad(&mut self, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], light: [f32; 4], flip: bool) {
         let base = self.pos.len() as u32;
         let [u0, v0, u1, v1] = rect;
@@ -66,11 +83,15 @@ impl MeshData {
     }
 }
 
-/// A chunk's three meshes: opaque blocks, cut-out blocks (leaves, glass,
-/// plants) and water.
+/// A chunk's meshes: opaque blocks, cut-out blocks (leaves, glass), water
+/// and plants (cut out too, but kept apart so ray tracing can leave them out:
+/// it counts everything as solid, so plants would cast shadows like cards).
 pub struct ChunkMesh {
-    pub layers: [MeshData; 3],
+    pub layers: [MeshData; 4],
 }
+
+/// Which material each layer of a chunk uses.
+pub const LAYER_MATERIAL: [usize; 4] = [0, 1, 2, 1];
 
 struct Face {
     n: [i32; 3],
@@ -91,7 +112,7 @@ const FACES: [Face; 6] = [
 const AO: [f32; 4] = [1.0, 0.78, 0.6, 0.45];
 
 pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
-    let mut layers = [MeshData::default(), MeshData::default(), MeshData::default()];
+    let mut layers = [MeshData::default(), MeshData::default(), MeshData::default(), MeshData::default()];
     let o = c * CHUNK;
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
     for y in o.y..o.y + CHUNK {
@@ -134,8 +155,8 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3) -> ChunkMesh {
                             let b = [cx + ax, fy, cz + az];
                             let up = [0.0, 1.0, 0.0];
                             let q = [a, b, [b[0], fy + tall, b[2]], [a[0], fy + tall, a[2]]];
-                            layers[1].quad(q, up, rect, [1.0; 4], false);
-                            layers[1].quad([q[1], q[0], q[3], q[2]], up, rect, [1.0; 4], false);
+                            layers[3].quad(q, up, rect, [1.0; 4], false);
+                            layers[3].quad([q[1], q[0], q[3], q[2]], up, rect, [1.0; 4], false);
                         }
                     }
                     Shape::Solid | Shape::Cutout => {
@@ -188,7 +209,7 @@ pub struct BlockMaterials {
 
 #[derive(Resource, Default)]
 pub struct ChunkEntities {
-    pub map: HashMap<IVec3, [Option<Entity>; 3]>,
+    pub map: HashMap<IVec3, [Option<Entity>; 4]>,
     /// How many chunks have been meshed since the world loaded.
     pub meshed: usize,
 }
@@ -236,22 +257,31 @@ pub fn remesh(
     });
     for (c, m) in done {
         chunks.meshed += 1;
-        let slot = chunks.map.entry(c).or_insert([None; 3]);
-        for (i, data) in m.layers.into_iter().enumerate() {
+        let slot = chunks.map.entry(c).or_insert([None; 4]);
+        for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
                 commands.entity(e).despawn();
             }
             if data.is_empty() {
                 continue;
             }
+            if rt.0 && i == 3 {
+                data.face_normals();
+            }
             let mut e = commands.spawn((
                 Mesh3d(meshes.add(data.into_mesh(rt.0))),
-                MeshMaterial3d(mats.layers[i].clone()),
+                MeshMaterial3d(mats.layers[LAYER_MATERIAL[i]].clone()),
                 Transform::IDENTITY,
                 ChunkPart,
             ));
-            if i == 2 {
-                e.insert((bevy::light::NotShadowCaster, crate::render::NotRaytraced));
+            match i {
+                2 => {
+                    e.insert((bevy::light::NotShadowCaster, crate::render::NotRaytraced));
+                }
+                3 => {
+                    e.insert(crate::render::NotRaytraced);
+                }
+                _ => {}
             }
             slot[i] = Some(e.id());
         }
