@@ -22,8 +22,9 @@ type Recipe = { want: { [string]: number }, give: string, n: number }
 
 -- Up to eight kinds of thing, each with up to eight recipes (a question has
 -- eight choices at most). Tools and swords do their work through the Tools
--- creation; without it they're only things to hold.
-local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons" }
+-- creation, and a basket fills up into a balloon through the Hot air
+-- balloon creation.
+local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel" }
 local RECIPES: { [string]: { Recipe } } = {
 	Building = {
 		{ want = { ["Oak log"] = 1 }, give = "Planks", n = 4 },
@@ -59,6 +60,10 @@ local RECIPES: { [string]: { Recipe } } = {
 	Weapons = {
 		{ want = { Planks = 2 }, give = "Wooden sword", n = 1 },
 		{ want = { Cobblestone = 2, Planks = 1 }, give = "Stone sword", n = 1 },
+	},
+	-- put down, a basket fills up into a hot air balloon (the balloon creation)
+	Travel = {
+		{ want = { ["Cream wool"] = 6, Planks = 4, Lantern = 1 }, give = "Balloon basket", n = 1 },
 	},
 }
 

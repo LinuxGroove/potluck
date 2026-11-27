@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 8), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 9), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -92,6 +92,8 @@ pub struct KindDef {
     pub speed: f32,
     pub rideable: bool,
     pub seat: f32,
+    /// Floats with no gravity, as `creature:climb` says (world 0.9).
+    pub flies: bool,
     pub count: u32,
     pub home: Vec3,
 }
@@ -920,6 +922,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
         speed: def.get::<Option<f32>>("speed")?.unwrap_or(2.0).clamp(0.0, 20.0),
         rideable: def.get::<Option<bool>>("rideable")?.unwrap_or(false),
         seat: def.get::<Option<f32>>("seat")?.unwrap_or(half.y).clamp(0.2, 5.0),
+        flies: def.get::<Option<bool>>("flies")?.unwrap_or(false),
         count: def.get::<Option<u32>>("count")?.unwrap_or(1).min(32),
         home,
         parts,
@@ -1718,6 +1721,42 @@ impl Vm {
                     if b.on_ground {
                         b.vel.y = 7.0 * power.unwrap_or(1.0).clamp(0.0, 3.0);
                     }
+                }
+                Ok(())
+            })?)?;
+            // world 0.9: fliers, and changing into another kind
+            base.set("climb", s.create_function(move |_, (me, speed): (Table, f32)| {
+                let id = id_of(&me)?;
+                if !speed.is_finite() {
+                    return Err(bad("climb takes a speed in blocks a second"));
+                }
+                let mut ctx = c.borrow_mut();
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(false) };
+                if !b.flies {
+                    return Ok(false);
+                }
+                b.climb = speed.clamp(-crate::creatures::MAX_CLIMB, crate::creatures::MAX_CLIMB);
+                Ok(true)
+            })?)?;
+            base.set("on_ground", s.create_function(move |_, me: Table| {
+                let id = id_of(&me)?;
+                Ok(c.borrow().herd.bodies.get(&id).is_some_and(|b| b.on_ground))
+            })?)?;
+            base.set("become", s.create_function(move |lua, (me, kind): (Table, Table)| {
+                let id = id_of(&me)?;
+                let name: String = kind.get::<Option<String>>("name")?.ok_or_else(|| bad("become needs a creature made with world.creature"))?;
+                let mut ctx = c.borrow_mut();
+                let def = ctx.kinds.iter().find(|k| k.name == name).cloned().ok_or_else(|| bad("become needs a creature made with world.creature in this creation"))?;
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(()) };
+                if b.kind != def.name {
+                    b.kind = def.name.clone();
+                    b.restyle(&def);
+                    b.rev += 1;
+                    // its handlers are the new kind's from now on
+                    let mt = lua.create_table()?;
+                    mt.set("__index", kind)?;
+                    me.set_metatable(Some(mt))?;
+                    me.raw_set("kind", def.name.as_str())?;
                 }
                 Ok(())
             })?)?;

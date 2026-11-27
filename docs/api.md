@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.8")
+local world = require("@potluck/world@0.9")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.8"
+world = "0.9"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.8 | Blocks and lights, creatures, players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.9 | Blocks and lights, creatures (walking or flying, and changing kind), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -81,6 +81,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Sounds | 10 a second; heard within 40 blocks |
 | Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
+| Flying (`flies`, `creature:climb`) | -4 to 4 blocks a second, eased into; no higher than 24 blocks over the world's highest blocks |
 | Digging speeds (`world.digging`) | 0 to 10 times as fast for each kind of block, every creation's multiplied and kept to that |
 | Looking for blocks (`world.find_block`, `world.find_light`) | 16 blocks away |
 | Block events (`block_placed`, `block_broken`, `block_used`) | 64 heard a tick; past 512 waiting, the rest are dropped |
@@ -98,6 +99,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields).
 - **0.8**: `world.held` (what's in a player's hand), `world.kind` (what a block is made of) and `world.digging` (a thing held breaks some kinds of block faster, 0 to 10 times; creations' speeds multiply). Tools and swords are things to hold, never put down: `world.set_block` with one is an error.
 - **0.7**: `down_to` for `world.hurt`, the least health a hurt leaves (0 to 20).
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
