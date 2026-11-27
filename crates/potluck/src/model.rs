@@ -24,6 +24,9 @@ pub struct ModelPart {
     pub head: bool,
     pub leg: bool,
     pub glow: bool,
+    /// Its picture: which texture, and each face's rectangle of it (0 to 1,
+    /// in `creatures::FACES`' order), when it has one.
+    pub picture: Option<(u32, [Option<[f32; 4]>; 6])>,
 }
 
 /// Blockbench's marker colours, for cubes with no texture on them.
@@ -44,6 +47,25 @@ struct Texture {
     image: image::RgbaImage,
     per_u: f32,
     per_v: f32,
+}
+
+/// The `index`th texture of a model, decoded, for drawing.
+pub fn image(text: &str, index: u32) -> Option<image::RgbaImage> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let t = v.get("textures")?.as_array()?.get(index as usize)?;
+    decode(t)
+}
+
+fn decode(t: &serde_json::Value) -> Option<image::RgbaImage> {
+    use base64::Engine;
+    let b = t.get("source")?.as_str()?.strip_prefix("data:image/png;base64,")?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b.trim()).ok()?;
+    image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok().map(|i| i.to_rgba8())
+}
+
+/// A number that changes when a model's file does.
+pub fn stamp(text: &str) -> u32 {
+    text.bytes().fold(0x811c9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x01000193))
 }
 
 /// Reads a Blockbench model into body parts, scaled by `scale` (1 is 16
@@ -92,21 +114,17 @@ pub fn read(file: &str, text: &str, scale: f32) -> Result<(Vec<ModelPart>, Vec<S
     let res_w = v.pointer("/resolution/width").and_then(|w| w.as_f64()).unwrap_or(16.0) as f32;
     let res_h = v.pointer("/resolution/height").and_then(|h| h.as_f64()).unwrap_or(16.0) as f32;
     let mut textures: Vec<Option<Texture>> = vec![];
+    let mut uv_sizes: Vec<(f32, f32)> = vec![];
     for t in v.get("textures").and_then(|t| t.as_array()).into_iter().flatten() {
-        let image = t.get("source").and_then(|s| s.as_str()).and_then(|s| s.strip_prefix("data:image/png;base64,")).and_then(|b| {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.decode(b.trim()).ok()
-        });
-        let image = image.and_then(|bytes| image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).ok()).map(|i| i.to_rgba8());
+        let image = decode(t);
         if image.is_none() {
             let name = t.get("name").and_then(|n| n.as_str()).unwrap_or("a texture");
             notes.push(format!("{file}: {name} isn't a PNG kept in the model, so its cubes take their marker colours"));
         }
-        textures.push(image.map(|image| {
-            let uw = t.get("uv_width").and_then(|w| w.as_f64()).map(|w| w as f32).unwrap_or(res_w).max(1.0);
-            let uh = t.get("uv_height").and_then(|h| h.as_f64()).map(|h| h as f32).unwrap_or(res_h).max(1.0);
-            Texture { per_u: image.width() as f32 / uw, per_v: image.height() as f32 / uh, image }
-        }));
+        let uw = t.get("uv_width").and_then(|w| w.as_f64()).map(|w| w as f32).unwrap_or(res_w).max(1.0);
+        let uh = t.get("uv_height").and_then(|h| h.as_f64()).map(|h| h as f32).unwrap_or(res_h).max(1.0);
+        uv_sizes.push((uw, uh));
+        textures.push(image.map(|image| Texture { per_u: image.width() as f32 / uw, per_v: image.height() as f32 / uh, image }));
     }
 
     let mut parts = vec![];
@@ -142,7 +160,9 @@ pub fn read(file: &str, text: &str, scale: f32) -> Result<(Vec<ModelPart>, Vec<S
         said.push(name.clone());
         let says = |word: &str| said.iter().any(|s| s.to_lowercase().contains(word));
         let marker = e.get("color").and_then(|c| c.as_u64()).unwrap_or(0) as usize % MARKERS.len();
+        let picture = picture_of(e, from.min(to), from.max(to), &textures, &uv_sizes);
         parts.push(ModelPart {
+            picture,
             size: ((hi - lo) * scale).max(Vec3::splat(0.02)),
             at: (lo + hi) / 2.0 * scale,
             color: colour_of(e, &textures).unwrap_or(MARKERS[marker]),
@@ -165,6 +185,53 @@ pub fn read(file: &str, text: &str, scale: f32) -> Result<(Vec<ModelPart>, Vec<S
         notes.push(format!("{file}: only the first {MAX_PARTS} cubes are used, so {over} are left out"));
     }
     Ok((parts, notes))
+}
+
+/// A cube's faces on its texture, 0 to 1 across it: each face's own
+/// rectangle, or for an older box UV cube with none, where Blockbench lays
+/// a box's faces out from its `uv_offset`. Only faces on the texture most of
+/// them use are kept, and only if that texture can be drawn.
+fn picture_of(e: &serde_json::Value, lo: Vec3, hi: Vec3, textures: &[Option<Texture>], uv_sizes: &[(f32, f32)]) -> Option<(u32, [Option<[f32; 4]>; 6])> {
+    let faces = e.get("faces")?.as_object()?;
+    let mut uses: HashMap<u64, usize> = HashMap::new();
+    for f in faces.values() {
+        if let Some(t) = f.get("texture").and_then(|t| t.as_u64()) {
+            *uses.entry(t).or_default() += 1;
+        }
+    }
+    let (&tex, _) = uses.iter().max_by_key(|(t, n)| (**n, std::cmp::Reverse(**t)))?;
+    textures.get(tex as usize)?.as_ref()?;
+    let (uw, uh) = uv_sizes[tex as usize];
+    // Blockbench's box UV layout, from the cube's size in whole pixels
+    let box_uv = e.get("uv_offset").and_then(|o| o.as_array()).filter(|_| e.get("box_uv").and_then(|b| b.as_bool()) == Some(true)).map(|o| {
+        let n = |i: usize| o.get(i).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        let d = (hi - lo).floor().max(Vec3::ZERO);
+        let (u, v, w, h, z) = (n(0), n(1), d.x, d.y, d.z);
+        move |face: &str| -> [f32; 4] {
+            match face {
+                "east" => [u, v + z, u + z, v + z + h],
+                "north" => [u + z, v + z, u + z + w, v + z + h],
+                "west" => [u + z + w, v + z, u + 2.0 * z + w, v + z + h],
+                "south" => [u + 2.0 * z + w, v + z, u + 2.0 * (z + w), v + z + h],
+                "up" => [u + z + w, v + z, u + z, v],
+                _ => [u + z + w, v, u + z + 2.0 * w, v + z],
+            }
+        }
+    });
+    let mut out = [None; 6];
+    for (i, name) in crate::creatures::FACES.iter().enumerate() {
+        let Some(f) = faces.get(*name) else { continue };
+        if f.get("texture").and_then(|t| t.as_u64()) != Some(tex) {
+            continue;
+        }
+        let uv = f.get("uv").and_then(|u| u.as_array()).filter(|u| u.len() == 4).map(|u| {
+            let n = |i: usize| u[i].as_f64().unwrap_or(0.0) as f32;
+            [n(0), n(1), n(2), n(3)]
+        });
+        let Some(uv) = uv.or_else(|| box_uv.as_ref().map(|b| b(name))) else { continue };
+        out[i] = Some([uv[0] / uw, uv[1] / uh, uv[2] / uw, uv[3] / uh].map(|x| x.clamp(0.0, 1.0)));
+    }
+    out.iter().any(|f| f.is_some()).then_some((tex as u32, out))
 }
 
 fn vec3(v: Option<&serde_json::Value>) -> Option<Vec3> {

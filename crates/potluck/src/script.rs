@@ -943,6 +943,32 @@ pub(crate) fn from_json(lua: &Lua, j: &serde_json::Value) -> mlua::Result<Value>
 
 const RESERVED: &[&str] = &["id", "position", "rider", "kind"];
 
+/// A part's `texture` from `world.model`: which model, texture and
+/// rectangles, and how far its colour is from the model's, as a tint.
+fn painted(t: &Table, color: Color) -> mlua::Result<crate::creatures::Painted> {
+    let file: String = t.get::<Option<String>>("file")?.ok_or_else(|| bad("a part's texture needs the model's file"))?;
+    let own = t.get::<Option<String>>("color")?.and_then(|c| parse_color(&c)).unwrap_or(color).to_srgba();
+    let now = color.to_srgba();
+    let tint = |a: f32, b: f32| if b < 0.02 { a.max(0.02) / 0.02 } else { a / b }.clamp(0.0, 4.0);
+    let mut faces = [None; 6];
+    if let Some(fs) = t.get::<Option<Table>>("faces")? {
+        for (i, name) in crate::creatures::FACES.iter().enumerate() {
+            if let Some(r) = fs.get::<Option<Vec<f32>>>(*name)? {
+                if r.len() == 4 {
+                    faces[i] = Some([r[0], r[1], r[2], r[3]].map(|x| x.clamp(0.0, 1.0)));
+                }
+            }
+        }
+    }
+    Ok(crate::creatures::Painted {
+        file,
+        texture: t.get::<Option<u32>>("index")?.unwrap_or(0),
+        faces,
+        tint: [tint(now.red, own.red), tint(now.green, own.green), tint(now.blue, own.blue)],
+        stamp: t.get::<Option<u32>>("stamp")?.unwrap_or(0),
+    })
+}
+
 /// `world.model(file, scale)`: a Blockbench model in the creation's folder as
 /// a body, the same list of boxes `world.creature`'s `body` takes, so code can
 /// change it before using it. What was left out goes to the log.
@@ -959,13 +985,31 @@ fn model_body(lua: &Lua, models: &BTreeMap<String, String>, file: &str, scale: f
             print.call::<()>(n)?;
         }
     }
+    let stamp = crate::model::stamp(text);
     let body = lua.create_table()?;
     for p in parts {
         let t = lua.create_table()?;
         t.set(1, p.name)?;
         t.set("size", vector(p.size))?;
         t.set("at", vector(p.at))?;
-        t.set("color", format!("#{:02x}{:02x}{:02x}", p.color[0], p.color[1], p.color[2]))?;
+        let color = format!("#{:02x}{:02x}{:02x}", p.color[0], p.color[1], p.color[2]);
+        t.set("color", color.as_str())?;
+        // where its picture is in the model, for the games that draw it
+        if let Some((index, faces)) = p.picture {
+            let pic = lua.create_table()?;
+            pic.set("file", file)?;
+            pic.set("index", index)?;
+            pic.set("color", color.as_str())?;
+            pic.set("stamp", stamp)?;
+            let fs = lua.create_table()?;
+            for (name, rect) in crate::creatures::FACES.iter().zip(faces) {
+                if let Some(r) = rect {
+                    fs.set(*name, lua.create_sequence_from(r)?)?;
+                }
+            }
+            pic.set("faces", fs)?;
+            t.set("texture", pic)?;
+        }
         for (key, on) in [("head", p.head), ("leg", p.leg), ("glow", p.glow)] {
             if on {
                 t.set(key, true)?;
@@ -987,7 +1031,12 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
             let at = vec_of(&part.get::<Value>("at")?).unwrap_or(Vec3::ZERO).clamp(Vec3::splat(-8.0), Vec3::splat(8.0));
             let color = part.get::<Option<String>>("color")?.and_then(|c| parse_color(&c)).unwrap_or(Color::srgb(0.6, 0.6, 0.6));
             let glow = part.get::<Option<bool>>("glow")?.unwrap_or(false);
+            let paint = match part.get::<Option<Table>>("texture")? {
+                Some(t) => Some(Box::new(painted(&t, color)?)),
+                None => None,
+            };
             parts.push(Part {
+                paint,
                 name: pname,
                 size,
                 at,
