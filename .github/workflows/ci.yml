@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# a new push to a pull request cancels the run it replaces
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   # Bevy with full debug info fills the runner's disk (the linker dies with a bus error)

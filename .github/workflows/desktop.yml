@@ -1,12 +1,11 @@
 name: Windows and macOS
 
 # Builds the game and the server for Windows (x86_64) and macOS (a universal,
-# ad-hoc signed app). Pull requests and pushes to main keep the zips as
-# artifacts for 5 days; releases also attach them. Linux players get snaps.
+# ad-hoc signed app). Pushes to main keep the zips as artifacts for 5 days;
+# releases also attach them. Run it by hand to try a branch. Linux players get snaps.
 on:
   push:
     branches: [main]
-  pull_request:
   release:
     types: [published]
   workflow_dispatch:

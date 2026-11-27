@@ -12,6 +12,11 @@ on:
     types: [published]
   workflow_dispatch:
 
+# a new push to a pull request cancels the run it replaces
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   snap:
     name: ${{ matrix.snap }} (${{ matrix.arch }})
