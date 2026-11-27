@@ -16,7 +16,9 @@ cargo run --bin potluck-server -- --test=balloon|path/to/folder|all   # creation
 cargo run --bin potluck-bots -- --address=ws://127.0.0.1:47126 --bots=50 --minutes=60 --build --report=/tmp/soak.jsonl   # bot players for soak tests
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1280x720x24" target/debug/potluck --demo=/tmp/demo --size=1280x720   # scripted play-through, recorded (about 1.5 s a frame on 4 CPUs)
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 1600x900x24" target/debug/potluck --shot=/tmp/a.png --after=8 [--at=x,y,z,yaw,pitch] [--time=0.8] [--at=creature:N] [--person[=hue]] [--screen=play|inside|tweak|pause|title|map|chat|keyboard] [--lines] [--lighting=low|medium|high|ultra] [--no-vsync | --present=immediate|mailbox|fifo|relaxed] [--latency=N] [--onscreen] [--timings]   # logs the frame rate too; --timings adds where frames go (lengths, main and render world, waiting for the screen) and each render pass's CPU and GPU time
-tools/tiers.sh [out=/tmp/potluck-tiers] [size=2560x1440] [binary]   # every lighting tier from four places, with frame rates (on a real graphics card)
+tools/tiers.sh [out=/tmp/potluck-tiers] [size=2560x1440] [binary]   # every lighting tier from four places, with frame rates and memory (on a real graphics card)
+POTLUCK_MEMORY=30 cargo run --bin potluck -- --play   # a line of RAM and graphics memory every 30 s (--memory=30 too); every run logs the full report when it quits
+python3 tools/memory_watch.py [~/potluck-memory] [2]   # writes down every Potluck process's RAM, graphics memory and CPU on this machine, from outside
 tools/server-snap.sh build/potluck-server && (cd build/potluck-server && snapcraft pack)   # the server snap
 CYCLES_DEVICE=OPTIX python tools/blocks.py -- assets/blocks 256 [only=grass_top,dirt]   # bake block textures (bpy wheel in a venv; drop CYCLES_DEVICE without a GPU)
 ```
@@ -47,6 +49,7 @@ Run the tests before every commit. Set `POTLUCK_HOME` to a scratch folder for ru
 | `src/testing.rs` | Creations' own tests (`@potluck/test`, `test.luau`): the module's Luau, and the harness that plays each case in a world of its own |
 | `src/map.rs`, `waypoints.rs` | The map (minimap, full map, the level under a roof) and waypoints, trips to them and their rules |
 | `src/chat.rs`, `keyboard.rs`, `assets/chat_words.txt` | Chat through the host (filter, quick lines, places, the seam for a bridge), the keyboard on the screen for pads, the words chat hides |
+| `src/memory.rs` | What the game holds, logged on quitting: RAM (heap, files, shared), graphics memory by texture and buffer from wgpu's allocator and how full its blocks are, the driver's count where the kernel keeps one, and the chunk meshes' sizes by layer |
 | `src/demo.rs` | The scripted, recorded play-through |
 | `src/tests.rs` | Tests that need no window |
 | `src/textures/art.rs`, `art/props.rs` | The blocks' 64 px pixel art, painted from code (palettes, cells, heights for the normal map, roughness per texel); it wins over the bakes. `props.rs` paints the block models' tiles. `POTLUCK_DUMP_TEX=<dir> cargo test dump_textures` writes every drawn texture out |
