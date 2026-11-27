@@ -253,6 +253,8 @@ pub struct PartMaterials {
     mats: HashMap<([u8; 3], bool, Skin), Handle<StandardMaterial>>,
     skins: HashMap<Skin, [Handle<Image>; 3]>,
     meshes: HashMap<([u16; 3], Skin), Handle<Mesh>>,
+    /// The catchlight dark eyes wear: a unit box and its glossy white.
+    glint: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
 
 /// A part's box, `size` across, with its skin tiling at the same scale on
@@ -282,8 +284,11 @@ pub fn part_mesh(size: Vec3, skin: Skin, colours: bool) -> Mesh {
             pos.push(p.to_array());
             norm.push(n.to_array());
             uv.push([(a + 1.0) * hr / tile, (1.0 - b) * hu / tile]);
-            // lighter on top, darker underneath
-            let k = if skin.shaded() { 0.74 + 0.26 * ((p.y + h.y) / size.y.max(1e-3)).clamp(0.0, 1.0) } else { 1.0 };
+            // lighter on top, darker underneath, and the sides a little
+            // darker than the top, so a body keeps its shape in the shade
+            // and far off
+            let face = if n.y > 0.5 { 1.0 } else if n.y < -0.5 { 0.8 } else { 0.92 };
+            let k = if skin.shaded() { face * (0.66 + 0.34 * ((p.y + h.y) / size.y.max(1e-3)).clamp(0.0, 1.0)) } else { 1.0 };
             col.push([k, k, k, 1.0]);
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -400,6 +405,27 @@ impl Looks<'_> {
         m
     }
 
+    /// A small glossy highlight for a dark eye, high on its front.
+    fn glint(&mut self, p: &Part) -> Option<(Handle<Mesh>, Handle<StandardMaterial>, Transform)> {
+        let dark = p.color[0] * 0.3 + p.color[1] * 0.59 + p.color[2] * 0.11 < 0.35;
+        if Skin::of(&p.name) != Skin::Eye || !dark {
+            return None;
+        }
+        let rt = self.rt;
+        let (mesh, mat) = self
+            .cache
+            .glint
+            .get_or_insert_with(|| {
+                let mesh = self.meshes.add(part_mesh(Vec3::ONE, Skin::Eye, !rt));
+                let mat = self.mats.add(StandardMaterial { base_color: Color::srgb(0.95, 0.95, 0.95), perceptual_roughness: 0.15, ..default() });
+                (mesh, mat)
+            })
+            .clone();
+        let s = p.size.x.min(p.size.y) * 0.34;
+        let at = Vec3::new(p.size.x * 0.2, p.size.y * 0.2, -p.size.z / 2.0 - 0.003);
+        Some((mesh, mat, Transform::from_translation(at).with_scale(Vec3::new(s, s, 0.004))))
+    }
+
     fn mesh(&mut self, p: &Part, skin: Skin) -> Handle<Mesh> {
         let key = (p.size.to_array().map(|v| (v * 256.0).round().clamp(1.0, 65535.0) as u16), skin);
         let rt = self.rt;
@@ -409,7 +435,7 @@ impl Looks<'_> {
 }
 
 fn spawn_parts(commands: &mut Commands, e: Entity, b: &Body, looks: &mut Looks) {
-    let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>, Transform)> = b
+    let parts: Vec<_> = b
         .parts
         .iter()
         .enumerate()
@@ -417,12 +443,15 @@ fn spawn_parts(commands: &mut Commands, e: Entity, b: &Body, looks: &mut Looks) 
             let skin = Skin::of(&p.name);
             let mut t = Transform::from_translation(p.at);
             pose(p, i, b.phase, &mut t);
-            (looks.mesh(p, skin), looks.material(p, skin), t)
+            (looks.mesh(p, skin), looks.material(p, skin), t, looks.glint(p))
         })
         .collect();
     commands.entity(e).with_children(|c| {
-        for (i, (mesh, mat, t)) in parts.into_iter().enumerate() {
-            c.spawn((Mesh3d(mesh), MeshMaterial3d(mat), t, PartView { index: i }));
+        for (i, (mesh, mat, t, glint)) in parts.into_iter().enumerate() {
+            let mut part = c.spawn((Mesh3d(mesh), MeshMaterial3d(mat), t, PartView { index: i }));
+            if let Some((mesh, mat, t)) = glint {
+                part.with_child((Mesh3d(mesh), MeshMaterial3d(mat), t));
+            }
         }
     });
 }
@@ -521,10 +550,13 @@ pub fn people(
     for (e, mut p, t, children) in &mut people {
         if !p.dressed {
             p.dressed = true;
-            let parts: Vec<_> = p.parts.iter().map(|q| (looks.mesh(q, Skin::of(&q.name)), looks.material(q, Skin::of(&q.name)), Transform::from_translation(q.at))).collect();
+            let parts: Vec<_> = p.parts.iter().map(|q| (looks.mesh(q, Skin::of(&q.name)), looks.material(q, Skin::of(&q.name)), Transform::from_translation(q.at), looks.glint(q))).collect();
             commands.entity(e).with_children(|c| {
-                for (i, (mesh, mat, t)) in parts.into_iter().enumerate() {
-                    c.spawn((Mesh3d(mesh), MeshMaterial3d(mat), t, PartView { index: i }));
+                for (i, (mesh, mat, t, glint)) in parts.into_iter().enumerate() {
+                    let mut part = c.spawn((Mesh3d(mesh), MeshMaterial3d(mat), t, PartView { index: i }));
+                    if let Some((mesh, mat, t)) = glint {
+                        part.with_child((Mesh3d(mesh), MeshMaterial3d(mat), t));
+                    }
                 }
             });
             continue;
