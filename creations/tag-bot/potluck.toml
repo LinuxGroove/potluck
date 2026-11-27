@@ -7,6 +7,7 @@ version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.1"
+world = "0.2"
 tweak = "0.1"
 game = "0.1"
+store = "0.1"

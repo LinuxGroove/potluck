@@ -964,6 +964,91 @@ fn creations_keep_boards_and_send_players_on() {
     assert_eq!(scripts.out.sends, vec![(7, "rodeo".to_string(), "Off to the rodeo!".to_string())]);
 }
 
+/// `@potluck/world` 0.2: a creation with no creatures runs on timers and
+/// hears who comes and goes.
+#[test]
+fn timers_and_world_events_run_a_creation_with_no_creatures() {
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.2")
+local ticks, once = 0, 0
+world.every(0.1, function() ticks += 1 end)
+world.after(0.5, function() once += 1; print("once " .. once) end)
+local gone = world.after(0.3, function() print("a cancelled timer ran") end)
+assert(world.cancel(gone) == true and world.cancel(gone) == false)
+world.after(2, function() print("ticks " .. ticks) end)
+world.on("player_joined", function(p) print("hello " .. p.name) end)
+world.on("player_left", function(p) print("bye " .. p.name) end)
+print(pcall(world.on, "lunch", function() end) and "lunch heard" or "no lunch")
+local many = 0
+while pcall(world.after, 60, function() end) do many += 1 end
+print("waiting " .. many)
+"#;
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) }];
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 2.1);
+    scripts.players.clear();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains("no lunch"), "world.on knows its events: {log}");
+    // three timers were waiting when it filled up
+    assert!(log.contains(&format!("waiting {}", crate::script::MAX_TIMERS - 3)), "{log}");
+    assert_eq!(log.matches("hello Ada").count(), 1, "{log}");
+    assert_eq!(log.matches("once").count(), 1, "world.after runs once: {log}");
+    assert!(!log.contains("cancelled timer ran"), "{log}");
+    let ticks: u32 = log.lines().find_map(|l| l.strip_prefix("ticks ")).and_then(|n| n.parse().ok()).expect("the two second timer");
+    assert!((19..=21).contains(&ticks), "world.every(0.1) ran {ticks} times in two seconds");
+    assert!(log.contains("bye Ada"), "{log}");
+}
+
+/// `@potluck/store`: what a creation keeps lasts across a reload and a
+/// server's restart, stays its own, and has a quota.
+#[test]
+fn creations_keep_things_in_the_store() {
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local store = require("@potluck/store@0.1")
+local n = (store.get("starts") or 0) + 1
+store.set("starts", n)
+store.set("best", { name = "Ada", laps = { 31.5, 29.25 }, at = vector.create(1, 2, 3) })
+store.set("gone", true)
+store.set("gone", nil)
+print("starts " .. n .. " keys " .. table.concat(store.keys(), ","))
+print(pcall(store.set, "big", string.rep("x", 70000)) and "too big kept" or "full")
+print(pcall(store.set, "f", function() end) and "kept a function" or "no functions")
+local best = store.get("best")
+print(best.name .. " " .. best.laps[2] .. " " .. best.at.y .. " " .. store.used())
+"#;
+    let c = creation(code);
+    scripts.start(&c, &mut herd).unwrap();
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("starts 1 keys best,starts"), "{log}");
+    assert!(log.contains("full") && log.contains("no functions"), "{log}");
+    assert!(log.contains("Ada 29.25 2 "), "lists and vectors come back: {log}");
+    // a reload keeps it
+    scripts.start(&c, &mut herd).unwrap();
+    assert!(scripts.vms["test"].log.join("\n").contains("starts 2"));
+    // another creation can't see it
+    let mut other = c.clone();
+    other.id = "other".into();
+    scripts.start(&other, &mut herd).unwrap();
+    assert!(scripts.vms["other"].log.join("\n").contains("starts 1"), "each creation keeps its own");
+    // a server saves it with the world and reads it when it starts again
+    let file = std::env::temp_dir().join(format!("potluck-store-{}.json", std::process::id()));
+    scripts.shared.lock().unwrap().store.save(&file);
+    let mut again = Scripts::default();
+    again.shared.lock().unwrap().store = crate::script::Store::load(&file);
+    let _ = std::fs::remove_file(&file);
+    again.start(&c, &mut herd).unwrap();
+    assert!(again.vms["test"].log.join("\n").contains("starts 3"), "{:?}", again.vms["test"].log);
+}
+
 /// The base game is creations: a dozen of them load, run a minute of the
 /// world while a player walks up to one creature after another, pats or
 /// bops it (and rides the rideable ones), and none of them errors.

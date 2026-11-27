@@ -79,6 +79,8 @@ The status page's `/status.json` has what a soak test needs: players, creatures,
 
 Remix anything from Look inside, or put a folder in `creations/` of your Potluck folder (`~/snap/potluck/common` for the snap, `~/.local/share/potluck` from source). A creation is a `potluck.toml` and Luau files; [creations/AGENTS.md](creations/AGENTS.md) describes the API, and every remix gets a copy of it and of the API's types, so editors and AI helpers know what's there. [creations/mossback](creations/mossback) is the worked example.
 
+The API comes in modules, each with its own version (`@potluck/world` 0.2, `tweak` 0.1, `game` 0.1, `store` 0.1), never tied to the game's version. [docs/api.md](docs/api.md) is the promise that goes with them: what stays working as the API grows, and the sandbox's limits.
+
 ## Building from source
 
 Rust 1.97 or newer, and on Linux Bevy's usual dependencies:

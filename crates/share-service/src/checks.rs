@@ -24,7 +24,7 @@ pub struct Toml {
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.1"), ("tweak", "0.1"), ("game", "0.1")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.2"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -161,8 +161,9 @@ fn version_ok(want: &str, have: &str) -> bool {
         Some((it.next()?.parse().ok()?, it.next().unwrap_or("0").parse().ok()?))
     };
     match (p(want), p(have)) {
-        // 0.x minors can break things, so they must match; from 1.0, any minor up to ours
-        (Some((wm, wn)), Some((hm, hn))) => wm == hm && if wm == 0 { wn == hn } else { wn <= hn },
+        // the same major, and any minor up to ours: minors only add, in 0.x
+        // as from 1.0 (docs/api.md), as the game's require() checks it
+        (Some((wm, wn)), Some((hm, hn))) => wm == hm && wn <= hn,
         _ => false,
     }
 }
@@ -389,8 +390,9 @@ mod tests {
     #[test]
     fn module_versions() {
         assert!(version_ok("0.1", "0.1"));
+        assert!(version_ok("0.1", "0.2"), "made for 0.1, runs on 0.2");
         assert!(!version_ok("0.2", "0.1"));
-        assert!(!version_ok("0.0", "0.1"));
+        assert!(!version_ok("1.0", "0.2"));
         assert!(version_ok("1.2", "1.4"));
         assert!(!version_ok("1.5", "1.4"));
         assert!(!version_ok("2.0", "1.4"));

@@ -1,11 +1,13 @@
 --!strict
 -- Tag Bot: a mini game. A little robot runs from anyone who comes close;
--- catch it and hit it to tag it. Each player's tags go on the board.
--- Interact with it to hear who's tagged it most.
+-- catch it and hit it to tag it. Each player's tags go on the board, and
+-- the world keeps count (in the store) even after it restarts. Interact
+-- with it to hear who's tagged it most.
 
-local world = require("@potluck/world")
+local world = require("@potluck/world@0.2")
 local tweak = require("@potluck/tweak")
 local game = require("@potluck/game@0.1")
+local store = require("@potluck/store@0.1")
 
 local knobs = tweak {
 	paint = { "#d9dde3", label = "Paint", order = 1 },
@@ -30,8 +32,15 @@ local Bot = world.creature {
 	},
 }
 
--- tags this world has seen, by player
-local tags: { [number]: number } = {}
+-- tags this world has seen, by player name, kept with the world
+local tags: { [string]: number } = store.get("tags") or {}
+
+world.on("player_joined", function(player)
+	local n = tags[player.name]
+	if n then
+		world.say("Tag Bot remembers " .. player.name .. ": " .. n .. " tags so far.")
+	end
+end)
 
 function Bot:spawned()
 	self.dizzy = 0
@@ -61,8 +70,9 @@ function Bot:hit(player)
 	if self.dizzy > 0 then
 		return
 	end
-	local n = (tags[player.id] or 0) + 1
-	tags[player.id] = n
+	local n = (tags[player.name] or 0) + 1
+	tags[player.name] = n
+	store.set("tags", tags)
 	game.score("tags", player, n)
 	self.dizzy = 1.5
 	self:hop(0.8)
