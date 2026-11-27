@@ -1,6 +1,6 @@
 //! How the menus look. Short menus are words on a shade over the world
 //! ("open air": no box, the chosen line marked in mint); screens you browse
-//! or read (Creations, the market, Look inside, servers, suggestions) get a
+//! or read (Creations, Blocks, the market, Look inside, servers, suggestions) get a
 //! near-solid sheet so pictures and code stay readable. Sizes are for a
 //! 720-line window and scale with the window's height.
 
@@ -41,7 +41,7 @@ pub fn look(s: &Screen) -> Look {
     match s {
         Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) => Look::Map,
         Screen::Chat => Look::Chat,
-        Screen::Library | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
+        Screen::Library | Screen::Blocks | Screen::Link | Screen::Inside(_) | Screen::Suggestions(_) | Screen::Servers => Look::Sheet,
         _ => Look::Air,
     }
 }
@@ -152,7 +152,7 @@ fn head_notes(screen: &Screen, items: &[Item]) -> (Option<String>, Option<String
             Some(k) => (Some(k), None, 1),
             None => (None, None, 0),
         },
-        Screen::Settings | Screen::Library | Screen::Controls | Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => (None, None, 0),
+        Screen::Settings | Screen::Library | Screen::Blocks | Screen::Controls | Screen::Map | Screen::Waypoint(_) | Screen::Shared(_) | Screen::Chat => (None, None, 0),
         _ => match note_at(0) {
             Some(sub) => (None, Some(sub), 1),
             None => (None, None, 0),
@@ -166,12 +166,13 @@ fn prompts(screen: &Screen, item: Option<&Item>, info: &WorldInfo) -> Vec<(MenuP
         Some(Kind::Slider { .. } | Kind::Toggle { .. } | Kind::Choice { .. } | Kind::Swatch { .. }) => "Change",
         Some(Kind::Field { .. }) => "Type",
         Some(Kind::Card(_)) => "Look inside",
+        Some(Kind::Tile(_)) => "Hold it",
         _ => "Choose",
     };
     let mut v = vec![(MenuPrompt::Accept, "A", "Enter", choose)];
     match screen {
         Screen::Title => return v,
-        Screen::Settings | Screen::Library => v.push((MenuPrompt::Page, "LB RB", "Tab", "Pages")),
+        Screen::Settings | Screen::Library | Screen::Blocks => v.push((MenuPrompt::Page, "LB RB", "Tab", "Pages")),
         Screen::Tweak(_) => v.push((MenuPrompt::Accept, "\u{2039} \u{203a}", "\u{2039} \u{203a}", "Turn")),
         _ => {}
     }
@@ -202,6 +203,7 @@ pub fn draw_menu(
     windows: Query<&Window, With<PrimaryWindow>>,
     controls: Res<Controls>,
     photos: Res<crate::photos::Photos>,
+    atlas: Option<Res<BlockAtlas>>,
 ) {
     let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
     if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
@@ -255,9 +257,9 @@ pub fn draw_menu(
         Screen::Settings => width - 340.0 * s,
         _ => width,
     } / s;
-    // what fits: cards by rows, anything else by height
-    let cards: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i.kind, Kind::Card(_))).map(|(n, _)| n).collect();
-    let grid = Grid::new(win, s, !cards.is_empty() && look == Look::Sheet);
+    // what fits: cards (or blocks) by rows, anything else by height
+    let cards: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i.kind, Kind::Card(_) | Kind::Tile(_))).map(|(n, _)| n).collect();
+    let grid = if focus.screen == Screen::Blocks { Grid::tiles(win, s) } else { Grid::new(win, s, !cards.is_empty() && look == Look::Sheet) };
     let (first, end) = if grid.on {
         let k = cards.iter().position(|&i| i == focus.sel).unwrap_or(0);
         let row = k / grid.cols;
@@ -281,7 +283,8 @@ pub fn draw_menu(
         (a + skip, b + skip)
     };
     let running: Vec<&String> = if focus.screen == Screen::Library { lib.running.iter().collect() } else { vec![] };
-    let pictures = photos.version;
+    // made blocks' pictures arrive after their tiles
+    let pictures = photos.version + atlas.as_ref().map_or(0, |a| a.icons.len() as u64);
     let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}|{first}|{end}|{s}|{}|{}|{pages:?}|{running:?}|{pictures}|{}", focus.screen, focus.sel, focus.scroll, side, ctx.pad, info.in_world, grid.cols);
     if sig == focus.sig {
         return;
@@ -304,7 +307,7 @@ pub fn draw_menu(
     let m = Menu { title, items: &items, skip, first, end, sel, kicker, sub, rows, width, pages, prompts: bottom };
     match look {
         Look::Air => air(&mut commands, &ctx, &m, &focus, &info),
-        Look::Sheet => sheet(&mut commands, &ctx, &m, &focus, &lib, &photos, side, &grid, &cards),
+        Look::Sheet => sheet(&mut commands, &ctx, &m, &focus, &lib, &photos, side, &grid, &cards, atlas.as_deref()),
         Look::Map | Look::Chat => panel(&mut commands, &ctx, &m, look),
     }
 }
@@ -351,6 +354,17 @@ struct Grid {
 impl Grid {
     /// The detail beside the cards is this wide, before scaling.
     const DETAIL: f32 = 330.0;
+    /// A block on the Blocks sheet is this wide (and tall), before scaling.
+    const TILE: f32 = 84.0;
+    /// The Blocks sheet's squares: as many across as fit beside the detail.
+    fn tiles(win: Vec2, s: f32) -> Grid {
+        let inner = win.x - (2.0 * 40.0 + 2.0 * 30.0 + Self::DETAIL + 24.0) * s;
+        let cols = ((inner + 10.0 * s) / ((Self::TILE + 10.0) * s)).floor().clamp(3.0, 14.0) as usize;
+        let tile = (inner - 10.0 * s * (cols as f32 - 1.0)) / cols as f32;
+        let room = win.y - (2.0 * 24.0 + 22.0 + 18.0 + 48.0 + 16.0 + 52.0 + 10.0) * s;
+        let rows = ((room + 10.0 * s) / (tile + 10.0 * s)).floor().max(1.0) as usize;
+        Grid { on: true, cols, rows }
+    }
     fn new(win: Vec2, s: f32, on: bool) -> Grid {
         let inner = win.x - (2.0 * 40.0 + 2.0 * 30.0 + Self::DETAIL + 24.0) * s;
         let cols = ((inner + 14.0 * s) / (194.0 * s)).floor().clamp(2.0, 6.0) as usize;
@@ -714,7 +728,8 @@ fn prompt_bar(p: &mut ChildSpawnerCommands, ctx: &Ctx, prompts: &[(MenuPrompt, &
 
 /// The sheet: a near-solid card over the softened world.
 #[allow(clippy::too_many_arguments)]
-fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Library, photos: &crate::photos::Photos, side: Option<Side>, grid: &Grid, cards: &[usize]) {
+#[allow(clippy::too_many_arguments)]
+fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Library, photos: &crate::photos::Photos, side: Option<Side>, grid: &Grid, cards: &[usize], atlas: Option<&BlockAtlas>) {
     let full = grid.on || side.is_some() || focus.screen == Screen::Library;
     let mut r = root(commands);
     r.insert((BackgroundColor(slate(0.32)), Node { width: percent(100), height: percent(100), position_type: PositionType::Absolute, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }));
@@ -740,6 +755,8 @@ fn sheet(commands: &mut Commands, ctx: &Ctx, m: &Menu, focus: &Focus, lib: &Libr
         root.spawn((node, BackgroundColor(slate(0.965)), BoxShadow(vec![ShadowStyle { color: Color::srgba(0.0, 0.0, 0.0, 0.45), x_offset: px(0), y_offset: ctx.u(20.0), spread_radius: px(0), blur_radius: ctx.u(60.0) }]))).with_children(|sh| {
             if focus.screen == Screen::Library {
                 creations(sh, ctx, m, focus, lib, photos, grid, cards);
+            } else if focus.screen == Screen::Blocks {
+                block_sheet(sh, ctx, m, lib, grid, cards, atlas);
             } else if let Some(side) = side {
                 inside(sh, ctx, m, side, focus.scroll);
             } else {
@@ -842,6 +859,91 @@ fn creations(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, focus: &Focus, 
         }
     });
     let _ = focus;
+}
+
+/// The Blocks sheet: pages across the top, every block as its picture, and
+/// the chosen one's name and what it is beside them.
+fn block_sheet(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, lib: &Library, grid: &Grid, tiles: &[usize], atlas: Option<&BlockAtlas>) {
+    let icon = |id: blocks::BlockId| atlas.and_then(|a| a.icons.get(blocks::block(id).faces[1]).cloned());
+    sh.spawn(Node { align_items: AlignItems::Center, justify_content: JustifyContent::SpaceBetween, column_gap: ctx.u(20.0), flex_shrink: 0.0, ..default() }).with_children(|top| {
+        top.spawn((Text::new(m.title.clone()), ctx.round(36.0, 700), TextColor(INK), ctx.shadow(3.0, 0.28)));
+        if let Some((pages, on)) = m.pages {
+            tabs_across(top, ctx, pages, on);
+        }
+    });
+    sh.spawn(Node { column_gap: ctx.u(24.0), flex_grow: 1.0, min_height: px(0), margin: UiRect::top(ctx.u(16.0)), ..default() }).with_children(|body| {
+        body.spawn(Node { flex_direction: FlexDirection::Column, flex_grow: 1.0, min_width: px(0), row_gap: ctx.u(10.0), ..default() }).with_children(|left| {
+            for it in m.items.iter().filter(|i| i.kind == Kind::Note) {
+                left.spawn((Node { padding: UiRect::axes(ctx.u(14.0), ctx.u(10.0)), border_radius: BorderRadius::all(ctx.u(10.0)), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(1.0, 0.77, 0.36, 0.12))))
+                    .with_child((Text::new(it.label.clone()), ctx.plain(14.5), TextColor(SOFT)));
+            }
+            left.spawn(Node { display: Display::Grid, grid_template_columns: RepeatedGridTrack::flex(grid.cols as u16, 1.0), column_gap: ctx.u(10.0), row_gap: ctx.u(10.0), padding: UiRect::all(ctx.u(4.0)), margin: UiRect::all(ctx.u(-4.0)), ..default() }).with_children(|g| {
+                for k in m.first..m.end {
+                    let Some(&n) = tiles.get(k) else { continue };
+                    let Kind::Tile(id) = m.items[n].kind else { continue };
+                    let picked = n == m.sel;
+                    let mut e = g.spawn((
+                        Interaction::default(),
+                        MenuButton(n),
+                        Node { aspect_ratio: Some(1.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(12.0)), min_width: px(0), ..default() },
+                        BackgroundColor(white(if picked { 0.12 } else { 0.05 })),
+                    ));
+                    if picked {
+                        e.insert((Outline::new(ctx.u(3.0), px(0), MINT), BoxShadow(vec![ShadowStyle { color: mint(0.35), x_offset: px(0), y_offset: px(0), spread_radius: px(0), blur_radius: ctx.u(18.0) }])));
+                    }
+                    if let Some(h) = icon(id) {
+                        e.with_child((ImageNode::new(h), Node { width: percent(66), height: percent(66), ..default() }));
+                    }
+                }
+            });
+            let more = (m.first > 0, m.end < tiles.len());
+            if more.0 || more.1 {
+                let rows = tiles.len().div_ceil(grid.cols);
+                left.spawn((Text::new(format!("Row {} of {}", m.first / grid.cols + 1, rows.max(1))), ctx.plain(12.0), TextColor(FAINT)));
+            }
+        });
+        let Some(Kind::Tile(id)) = m.items.get(m.sel).map(|i| i.kind.clone()) else { return };
+        let b = blocks::block(id);
+        let from = crate::made::table().into_iter().find(|e| e.id == id).map(|e| lib.list.get(&e.creation).map(|c| c.manifest.name.clone()).unwrap_or(e.creation));
+        let mut facts = vec![];
+        if b.light {
+            facts.push("Gives light");
+        }
+        facts.push(match b.shape {
+            blocks::Shape::Cross => "A plant",
+            blocks::Shape::Water => "Flows",
+            blocks::Shape::Cutout => "See-through",
+            blocks::Shape::Model if !b.solid => "Walk through it",
+            blocks::Shape::Model => "Smaller than a block",
+            _ => "A full block",
+        });
+        if b.hardness == 0.0 {
+            facts.push("Breaks at once");
+        }
+        body.spawn((
+            Node { flex_direction: FlexDirection::Column, width: ctx.u(Grid::DETAIL), flex_shrink: 0.0, padding: UiRect::all(ctx.u(18.0)), row_gap: ctx.u(10.0), border_radius: BorderRadius::all(ctx.u(16.0)), overflow: Overflow::clip(), ..default() },
+            BackgroundColor(white(0.05)),
+        ))
+        .with_children(|d| {
+            d.spawn((Node { width: percent(100), aspect_ratio: Some(1.6), justify_content: JustifyContent::Center, align_items: AlignItems::Center, border_radius: BorderRadius::all(ctx.u(12.0)), flex_shrink: 0.0, ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.25))))
+                .with_children(|pic| {
+                    if let Some(h) = icon(id) {
+                        pic.spawn((ImageNode::new(h), Node { height: percent(70), aspect_ratio: Some(1.0), ..default() }));
+                    }
+                });
+            let whose = match &from {
+                Some(c) => format!("From {c}"),
+                None => "Potluck's own".into(),
+            };
+            d.spawn((Text::new(whose.to_uppercase()), ctx.plain(12.5), TextColor(MINT), LetterSpacing::Px(1.4 * ctx.s)));
+            d.spawn((Text::new(b.name), ctx.round(30.0, 700), TextColor(INK)));
+            d.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: ctx.u(6.0), row_gap: ctx.u(6.0), ..default() }).with_children(|f| {
+                for fact in facts {
+                    f.spawn((Node { padding: UiRect::axes(ctx.u(8.0), ctx.u(4.0)), border_radius: BorderRadius::all(ctx.u(6.0)), ..default() }, BackgroundColor(white(0.08)))).with_child((Text::new(fact), ctx.plain(12.0), TextColor(SOFT)));
+                }
+            });
+        });
+    });
 }
 
 /// The colours behind a creation that has no picture yet, by kind.

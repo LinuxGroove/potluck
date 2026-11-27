@@ -4620,3 +4620,100 @@ fn made_blocks_are_drawn_into_the_atlas() {
     }
     assert!(n > 40, "room for plenty of made blocks: {n}");
 }
+
+#[test]
+fn creative_has_every_block_to_choose_from() {
+    use crate::blocks::{self, BlockId};
+    use crate::input::Controls;
+    use crate::settings::Settings;
+    use crate::ui::{block_shelf, menu_items, pages, Act, Acts, Focus, Kind, Screen, Toasts, WorldInfo, BLOCK_PAGES};
+    use bevy::ecs::system::RunSystemOnce;
+    // every block of the game's own on one page, and never air, bedrock or a tool
+    let mut seen: Vec<BlockId> = BLOCK_PAGES[..3].iter().flat_map(|p| block_shelf(p)).collect();
+    let n = seen.len();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), n, "each on one page");
+    for id in 1..blocks::BLOCKS.len() as BlockId {
+        let b = blocks::block(id);
+        let shown = seen.contains(&id);
+        assert_eq!(shown, b.shape != blocks::Shape::Air && !b.item && id != blocks::BEDROCK, "{}", b.name);
+    }
+    for (page, id) in [("Building", blocks::GLASS), ("Building", blocks::PLANKS), ("Nature", blocks::GRASS), ("Nature", blocks::FLOWER_RED), ("Nature", blocks::WATER), ("Things", blocks::LANTERN), ("Things", blocks::TABLE)] {
+        assert!(block_shelf(page).contains(&id), "{} on {page}", blocks::block(id).name);
+    }
+    // a creation's blocks have a page of their own
+    let tile = serde_json::json!({ "name": "Picker test tile", "colors": { "a": "#c86432" }, "picture": vec!["aaaaaaaa"; 8] });
+    let made = crate::made::register("picker-test", &BTreeMap::from([("tile".to_string(), tile)])).unwrap();
+    assert!(block_shelf("From creations").contains(&made[0]));
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    let act = |app: &mut App, a: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(a);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    let press = |app: &mut App, f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        app.insert_resource(c);
+        app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    };
+    // it opens on the block in your hand, on its page
+    app.world_mut().resource_mut::<crate::player::Me>().slot = 4;
+    let held = app.world().resource::<crate::player::Me>().hotbar[4];
+    act(&mut app, Act::OpenBlocks);
+    let f = app.world().resource::<Focus>();
+    assert_eq!(f.screen, Screen::Blocks);
+    let info = app.world().resource::<WorldInfo>();
+    let (page, _) = pages(f, info).map(|(list, n)| (list[n], n)).unwrap();
+    assert!(block_shelf(page).contains(&held), "{page}");
+    let (title, items) = menu_items(f, app.world().resource::<Library>(), app.world().resource::<Scripts>(), app.world().resource::<Settings>(), info);
+    assert_eq!(title, "Blocks");
+    assert_eq!(items[f.sel].kind, Kind::Tile(held));
+    // along the row and A: the next one goes in your hand, in the slot chosen
+    app.world_mut().resource_mut::<Focus>().cols = 6;
+    press(&mut app, &|c| c.right = true);
+    let sel = app.world().resource::<Focus>().sel;
+    let Kind::Tile(next) = items[sel].kind else { panic!("a block") };
+    press(&mut app, &|c| c.accept = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Hold(next)]);
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!((me.hotbar[4], me.slot), (next, 4));
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing, "and back to the world");
+    // one already in the hotbar: that slot is chosen instead
+    let first = me.hotbar[0];
+    act(&mut app, Act::Hold(first));
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!((me.slot, me.hotbar[4]), (0, next));
+    // tools and the unknown aren't put in a hand
+    act(&mut app, Act::Hold(blocks::WOODEN_PICKAXE));
+    assert!(!app.world().resource::<crate::player::Me>().hotbar.contains(&blocks::WOODEN_PICKAXE));
+    // the middle button puts the block aimed at in your hand
+    app.world_mut().resource_mut::<crate::player::Me>().target = Some(crate::player::Hit { block: IVec3::new(3, 40, 3), normal: IVec3::Y, id: blocks::SAND });
+    let mut c = Controls::default();
+    c.pick = true;
+    app.insert_resource(c);
+    app.world_mut().run_system_once(crate::game::interact).unwrap();
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    let me = app.world().resource::<crate::player::Me>();
+    assert_eq!(me.hotbar[me.slot], blocks::SAND);
+    // B or the key that opened it close it
+    act(&mut app, Act::OpenBlocks);
+    press(&mut app, &|c| c.back = true);
+    press(&mut app, &|c| c.blocks = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Resume, Act::Resume]);
+    app.world_mut().resource_mut::<Acts>().0.clear();
+    // in survival there's no such sheet: what you carry is what you have
+    app.world_mut().resource_mut::<Focus>().go(Screen::Playing);
+    app.world_mut().resource_mut::<Settings>().survival = true;
+    act(&mut app, Act::OpenBlocks);
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Playing);
+    assert!(app.world().resource::<Toasts>().0.iter().any(|(t, _)| t.contains("make more at a table")));
+    act(&mut app, Act::Hold(blocks::STONE));
+    assert!(!app.world().resource::<crate::player::Me>().hotbar.contains(&blocks::STONE), "nothing new in survival");
+}
