@@ -23,7 +23,7 @@ const BAND: &[u32] = &[0x1d1c1e, 0x2e2d30, 0x434145, 0x5d5a5c, 0x7c776f];
 const STEM: &[u32] = &[0x3e3a33, 0x58524a, 0x6f685d, 0x857c6e];
 const CAP: &[u32] = &[0x0f3a40, 0x17585c, 0x23807a, 0x3aaa98, 0x6ad4b8, 0xa8f4dc];
 
-fn clear() -> Px {
+pub(super) fn clear() -> Px {
     Px { pal: 0, t: 0.0, h: 0.0, rough: 1.0, alpha: 0.0 }
 }
 
@@ -127,7 +127,7 @@ fn ore(name: &'static str, kind: Ore) -> Tex {
 
 /// Draws a dark line round what's painted, so an icon reads on any
 /// background.
-fn outline(a: &mut Art, pal: usize) {
+pub(super) fn outline(a: &mut Art, pal: usize) {
     let shown: Vec<bool> = a.px.iter().map(|p| p.alpha > 0.0).collect();
     for y in 0..N {
         for x in 0..N {
@@ -149,7 +149,7 @@ fn outline(a: &mut Art, pal: usize) {
 /// A rough lump of something, as an icon: round but knobbly, lit from the
 /// top left, with pits where its cells meet. Coal glints; raw metal is
 /// duller with darker pits.
-fn chunk(name: &'static str, pal: &'static [u32], glints: bool) -> Tex {
+pub(super) fn chunk(name: &'static str, pal: &'static [u32], glints: bool) -> Tex {
     let s = seed_of(name);
     let mut a = Art::new(name, &[pal, OUTLINE]);
     a.fill(|x, y, _| {

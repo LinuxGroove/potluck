@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.13")
+local world = require("@potluck/world@0.14")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.13"
+world = "0.14"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.13 | Blocks (the game's and the creation's own, drawn in `potluck.toml`) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.14 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -104,6 +104,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/world`
 
 - **Every version**, from 27 November 2026: the world goes on past the island in every direction (to 30,000 blocks out) and down to bedrock at y = -128, where it stopped at the island's edge and y = 0. Land is made as players come near it, so far from everyone `world.block` says `"Air"` and `world.top` says where the ground will be; `world.set_block` there makes the land first. The island, 0 to 384 each way, is always there.
+- **0.14**: moving blocks: a block of a creation's own can give `frames`, more pictures it shows in turn (up to 8 in all), and `speed`, how many a second (0.5 to 8). Players with the new Reduce flashing setting on see only the first. The game's items gain charcoal, flint, copper, iron, gold and moonsilver ingots, a flint and steel, bread and roasted carrots.
 - **0.13**: `world.drops`, what breaking a block gives in survival (another thing, a number of them or a range, or nothing) and the level of tool it needs before it breaks; and `level` for `world.digging`, how hard a block a thing in hand reaches among the kinds it digs faster (0 to 9; creations' levels take the highest). A block that needs a better tool doesn't break, and the player is told what would.
 - **0.12**: blocks of a creation's own, `[blocks.name]` in `potluck.toml`: pictures drawn in letters with a colour for each, a shape (solid, see-through, a plant, or boxes in sixteenths), how hard it is to break, its kind, and light and glow. Every block function takes their names; a world keeps their ids for as long as it lasts, and sends them to everyone who joins.
 - **0.11**: `world.model`, a Blockbench model (a `.bbmodel` in the creation's folder) as the list of boxes a body is, 16 pixels to a block, drawn with the model's texture (a part's `texture`; its `color` tints it), with `head`, `leg` and `glow` from its cubes' and groups' names; and `body = "file.bbmodel"` for `world.creature` as short for it. Creations may carry `.bbmodel` files.

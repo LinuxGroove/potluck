@@ -7,8 +7,10 @@
 -- Old chests are left in old workings underground. Use one and it gives
 -- you its prizes and falls apart; the deeper it was, the better they are.
 -- PRIZES below says what can be in one.
+--
+-- Breaking gravel turns up flint now and then, for a flint and steel.
 
-local world = require("@potluck/world@0.13")
+local world = require("@potluck/world@0.14")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -17,6 +19,7 @@ local knobs = tweak {
 	levels = { true, label = "Ores need the right pickaxe", order = 1 },
 	more = { 1, min = 1, max = 3, label = "How much each ore gives", order = 2 },
 	prizes = { 1, min = 0.5, max = 3, label = "How generous old chests are", order = 3 },
+	flint = { 0.15, min = 0, max = 1, label = "Chance gravel turns up flint", order = 4 },
 }
 
 type Ore = { gives: string, least: number, most: number, level: number }
@@ -53,8 +56,12 @@ local PRIZES: { Prize } = {
 	{ thing = "Glowcap", least = 1, most = 3, chance = 0.25 },
 	{ thing = "Stone pickaxe", least = 1, most = 1, chance = 0.2 },
 	{ thing = "Stone sword", least = 1, most = 1, chance = 0.15 },
+	{ thing = "Flint", least = 1, most = 3, chance = 0.3 },
+	{ thing = "Bread", least = 1, most = 3, chance = 0.25 },
+	{ thing = "Flint and steel", least = 1, most = 1, chance = 0.1 },
 	{ thing = "Raw copper", least = 1, most = 4, chance = 0.5, below = 60 },
 	{ thing = "Raw iron", least = 1, most = 4, chance = 0.45, below = 20 },
+	{ thing = "Iron ingot", least = 1, most = 3, chance = 0.25, below = 0 },
 	{ thing = "Raw gold", least = 1, most = 3, chance = 0.35, below = -10 },
 	{ thing = "Crystal", least = 1, most = 3, chance = 0.3, below = -40 },
 	{ thing = "Raw moonsilver", least = 1, most = 2, chance = 0.15, below = -80 },
@@ -113,6 +120,13 @@ end
 
 world.on("player_left", function(p)
 	shown[p.id] = nil
+end)
+
+-- flint, now and then, as well as the gravel
+world.on("block_broken", function(player, _at: vector, block: string)
+	if block == "Gravel" and world.pockets(player) ~= nil and world.random() < knobs.flint then
+		world.give(player, "Flint", 1)
+	end
 end)
 
 world.on("block_used", function(player, at: vector, block: string)

@@ -15,6 +15,7 @@ use super::{hex, Tex, ART};
 
 mod ores;
 mod props;
+mod smelting;
 mod tools;
 mod travel;
 mod wilds;
@@ -732,5 +733,6 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     .chain(travel::tiles())
     .chain(wilds::tiles())
     .chain(ores::tiles())
+    .chain(smelting::tiles())
     .collect()
 }
