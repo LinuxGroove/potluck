@@ -116,6 +116,15 @@ impl Raytraced {
 #[derive(Component)]
 pub struct NotRaytraced;
 
+/// Puts a mesh in the ray traced scene only, as a child of `e`: the tracer
+/// sees it and nothing draws it.
+pub fn trace_only(e: &mut EntityCommands, mesh: Handle<Mesh>, material: Handle<StandardMaterial>) {
+    #[cfg(feature = "raytracing")]
+    e.with_child((bevy::solari::prelude::RaytracingMesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY));
+    #[cfg(not(feature = "raytracing"))]
+    let _ = (e, mesh, material);
+}
+
 /// Every mesh drawn joins the ray traced scene, when there is one.
 #[cfg(feature = "raytracing")]
 pub fn raytrace_meshes(rt: Res<Raytraced>, added: Query<(Entity, &Mesh3d), (Added<Mesh3d>, Without<NotRaytraced>)>, mut commands: Commands) {
@@ -211,7 +220,8 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
     // colour of a block or two of water instead of showing bare sand
     let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
     let own = waters.add(WaterMaterial { base: water.clone(), extension: OwnNormals {} });
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], water: own }
+    let canopy = mats.add(StandardMaterial { base_color: Color::srgb(0.22, 0.4, 0.15), perceptual_roughness: 0.9, ..default() });
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], canopy, water: own }
 }
 
 /// The open sea round the island, out past the far end of the view: a ring of
@@ -464,7 +474,7 @@ pub fn sky(
         // under trees or a roof by day the eye opens up: a little where the
         // sky's fill still reaches in, more where ray tracing finds the
         // shade truly dark
-        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 2.8 } else { 1.0 };
+        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.2 } else { 1.0 };
         let day_fog = Vec3::new(0.62, 0.74, 0.88);
         let night_fog = Vec3::new(0.03, 0.045, 0.09);
         let f = night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day);
