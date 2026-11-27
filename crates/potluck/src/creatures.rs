@@ -197,6 +197,10 @@ pub const MAX_CLIMB: f32 = 4.0;
 pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
     let riders = herd.riders.clone();
     for b in herd.bodies.values_mut() {
+        // where the land isn't made (nobody's near), it waits for it
+        if !voxels.loaded(b.pos.x.floor() as i32, b.pos.z.floor() as i32) {
+            continue;
+        }
         let mut want = Vec3::ZERO;
         if let Some(r) = b.rider {
             // a flier is steered in the air; on the ground it stays put
@@ -282,7 +286,7 @@ pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
                 b.says = None;
             }
         }
-        if b.pos.y < -10.0 {
+        if b.pos.y < crate::world::MIN_Y as f32 - 10.0 {
             b.pos = b.home + Vec3::Y * 3.0;
             b.vel = Vec3::ZERO;
         }

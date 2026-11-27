@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use super::{Voxels, WX, WZ};
+use super::{Area, WX, WZ};
 use crate::blocks::{self, *};
 use crate::noise::Rng;
 
@@ -25,14 +25,14 @@ pub fn keep_clear(x: i32, z: i32) -> bool {
     camp || inside(FARM, 3) || inside(VILLA, 4)
 }
 
-pub(super) fn build(w: &mut Voxels, hs: &[i32], r: &mut Rng) {
+pub(super) fn build(w: &mut Area, hs: &[i32], r: &mut Rng) {
     let ground = |x: i32, z: i32| hs[(z.clamp(0, WZ - 1) * WX + x.clamp(0, WX - 1)) as usize];
     camp(w, &ground, r);
     farm(w, &ground, r);
     villa(w, &ground);
 }
 
-fn fill(w: &mut Voxels, x: std::ops::RangeInclusive<i32>, y: std::ops::RangeInclusive<i32>, z: std::ops::RangeInclusive<i32>, id: BlockId) {
+fn fill(w: &mut Area, x: std::ops::RangeInclusive<i32>, y: std::ops::RangeInclusive<i32>, z: std::ops::RangeInclusive<i32>, id: BlockId) {
     for zz in z {
         for yy in y.clone() {
             for xx in x.clone() {
@@ -44,7 +44,7 @@ fn fill(w: &mut Voxels, x: std::ops::RangeInclusive<i32>, y: std::ops::RangeIncl
 
 /// Sets a column's ground to `top`: filled with dirt (stone deeper down)
 /// up to it, `cap` on it, and nothing above for `clear` blocks.
-fn level(w: &mut Voxels, x: i32, z: i32, top: i32, cap: BlockId, clear: i32) {
+fn level(w: &mut Area, x: i32, z: i32, top: i32, cap: BlockId, clear: i32) {
     for y in 1..top {
         let b = w.get(x, y, z);
         if matches!(b, AIR | WATER) || blocks::shape(b) == Shape::Cross || matches!(b, LEAVES | BIRCH_LEAVES | PINE | LOG | BIRCH) {
@@ -60,7 +60,7 @@ fn level(w: &mut Voxels, x: i32, z: i32, top: i32, cap: BlockId, clear: i32) {
 // ---------- the camp ----------
 
 /// A palisade of sharpened stakes round tents, a watchtower and a fire.
-fn camp(w: &mut Voxels, ground: &dyn Fn(i32, i32) -> i32, r: &mut Rng) {
+fn camp(w: &mut Area, ground: &dyn Fn(i32, i32) -> i32, r: &mut Rng) {
     let (cx, cz, rad) = CAMP;
     // the camp stands level, at the height most of its ground is
     let mut hs: Vec<i32> = (-rad..=rad).flat_map(|z| (-rad..=rad).map(move |x| (x, z))).filter(|(x, z)| x * x + z * z <= rad * rad).map(|(x, z)| ground(cx + x, cz + z)).collect();
@@ -154,7 +154,7 @@ fn camp(w: &mut Voxels, ground: &dyn Fn(i32, i32) -> i32, r: &mut Rng) {
 }
 
 /// An A-frame tent of wool along z, open at both ends.
-fn tent(w: &mut Voxels, x: i32, y0: i32, z: i32, c: BlockId) {
+fn tent(w: &mut Area, x: i32, y0: i32, z: i32, c: BlockId) {
     for dz in -2i32..=2 {
         for (dy, dx) in [(1, 2), (2, 1), (3, 0)] {
             let id = if dz.rem_euclid(2) == 0 { c } else { WOOL_CREAM };
@@ -169,7 +169,7 @@ fn tent(w: &mut Voxels, x: i32, y0: i32, z: i32, c: BlockId) {
 /// Terraces stepping down the hill's east slope: rows of wheat and carrots
 /// on ploughed soil, a channel of water down each, stone walls between,
 /// braziers along the walls and a scarecrow.
-fn farm(w: &mut Voxels, ground: &dyn Fn(i32, i32) -> i32, r: &mut Rng) {
+fn farm(w: &mut Area, ground: &dyn Fn(i32, i32) -> i32, r: &mut Rng) {
     let (x0, x1, z0, z1) = FARM;
     const WIDE: i32 = 6;
     let strips = (x1 - x0 + 1) / WIDE;
@@ -225,7 +225,7 @@ fn farm(w: &mut Voxels, ground: &dyn Fn(i32, i32) -> i32, r: &mut Rng) {
 }
 
 /// A fence post in a hay coat, with a wool hat.
-fn scarecrow(w: &mut Voxels, x: i32, y: i32, z: i32) {
+fn scarecrow(w: &mut Area, x: i32, y: i32, z: i32) {
     w.put(x, y + 1, z, FENCE);
     w.put(x, y + 2, z, HAY);
     w.put(x, y + 3, z, WOOL_CREAM);
@@ -238,7 +238,7 @@ fn scarecrow(w: &mut Voxels, x: i32, y: i32, z: i32) {
 
 /// A sandstone villa facing the sea: a colonnade on the west, a library
 /// behind it with a skylight, and a roof terrace with a parapet.
-fn villa(w: &mut Voxels, ground: &dyn Fn(i32, i32) -> i32) {
+fn villa(w: &mut Area, ground: &dyn Fn(i32, i32) -> i32) {
     let (x0, x1, z0, z1) = VILLA;
     // the terrace it stands on
     let base = 25;
