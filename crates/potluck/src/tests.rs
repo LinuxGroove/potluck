@@ -1730,6 +1730,15 @@ fn write_the_sounds() {
 }
 
 #[test]
+fn clouds_keep_their_mesh_to_recolour() {
+    // `clouds::drift` recolours the disc as the sun moves, long after it has
+    // gone to the GPU, so its data has to stay in the main world too
+    let disc = crate::render::clouds::disc();
+    assert!(disc.asset_usage.contains(bevy::asset::RenderAssetUsages::MAIN_WORLD));
+    assert!(disc.attribute(Mesh::ATTRIBUTE_COLOR).is_some());
+}
+
+#[test]
 fn a_creation_talks_to_its_client_half_on_each_players_game() {
     use bevy::ecs::system::RunSystemOnce;
     use crate::game::{Action, Actions};
