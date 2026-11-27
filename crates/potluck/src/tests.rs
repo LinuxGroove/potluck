@@ -2037,6 +2037,38 @@ end)
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     assert!(!scripts.shared.lock().unwrap().pockets.contains_key(&7));
 
+    // on the host's own game: the hotbar reports itself, and a gift lands in it
+    {
+        use bevy::ecs::system::RunSystemOnce;
+        use crate::settings::Settings;
+        use crate::ui::WorldInfo;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        crate::sim(&mut app, crate::SEED);
+        let mut me = Me::default();
+        me.hotbar[0] = log_id;
+        me.counts[0] = 2;
+        app.insert_resource(Settings { survival: true, ..default() }).insert_resource(me);
+        app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+        let gift = creation("local world = require(\"@potluck/world@0.3\")\nworld.after(0.1, function() for _, p in world.players() do world.give(p, \"Lantern\", world.has(p, \"Oak log\")) end end)");
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            let mut herd = w.resource_mut::<Herd>();
+            s.start(&gift, &mut herd).unwrap();
+        });
+        app.world_mut().run_system_once(crate::player::report_pockets).unwrap();
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            w.resource_scope(|w, mut v: Mut<Voxels>| {
+                let mut h = w.resource_mut::<Herd>();
+                s.tick(&mut v, &mut h, 0.2);
+            })
+        });
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        let me = app.world().resource::<Me>();
+        assert!(me.carried().contains(&(crate::blocks::by_name("Lantern").unwrap(), 2)), "{:?}", me.carried());
+        assert_eq!(me.pockets_seen, 1);
+    }
+
     // what goes between devices
     for m in [Msg::Pockets { seq: 2, changes: vec![(PLANKS, 4), (log_id, -1)] }, Msg::Act(Action::Pockets { survival: true, items: vec![(PLANKS, 4)], seen: 2 })] {
         let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
