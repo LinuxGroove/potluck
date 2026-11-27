@@ -653,6 +653,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Mouse speed".into(), kind: Kind::Slider { key: "mouse".into(), value: settings.mouse_sensitivity as f64, min: 0.2, max: 3.0 } },
                 Item { label: "Stick speed".into(), kind: Kind::Slider { key: "stick".into(), value: settings.stick_sensitivity as f64, min: 0.2, max: 3.0 } },
                 Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
+                Item { label: "Full screen (F11)".into(), kind: Kind::Toggle { key: "fullscreen".into(), value: settings.fullscreen } },
                 Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
                 Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
@@ -905,6 +906,7 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("survival", KnobValue::Toggle(b)) => settings.survival = b,
         ("volume", KnobValue::Number(n)) => settings.volume = n.clamp(0.0, 1.0) as f32,
         ("subtitles", KnobValue::Toggle(b)) => settings.subtitles = b,
+        ("fullscreen", KnobValue::Toggle(b)) => settings.fullscreen = b,
         // a parent's, once unlocked
         ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
         ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,

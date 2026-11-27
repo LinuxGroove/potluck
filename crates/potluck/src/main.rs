@@ -4,19 +4,96 @@
 
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::prelude::*;
-use bevy::window::{PresentMode, WindowResolution};
+use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode, WindowResolution};
 
 use potluck::*;
 
-/// How frames reach the screen in play. On Linux, mailbox: the screen shows
-/// the newest finished frame at each refresh without tearing, and the game
-/// never stops to wait for one. With plain vsync, laptops whose graphics card
-/// hands each frame to another chip for the screen (the p16g3) missed many
-/// refreshes: 35 to 46 fps where mailbox holds 60. Mesa and NVIDIA offer
-/// mailbox on Linux; where it's missing Bevy falls back to tearing, so other
-/// systems keep plain vsync.
+/// How frames reach the screen in play: waiting for the screen (vsync),
+/// except where the game draws on another graphics card than the desktop's
+/// (laptops that hand each frame to another chip for the screen, like the
+/// p16g3). There plain vsync missed many refreshes, 35 to 46 fps where
+/// mailbox holds 60, so `pick_present` switches to mailbox once the card is
+/// known: the screen shows the newest finished frame at each refresh and the
+/// game never waits. Mailbox draws as many frames as it can, so on the
+/// desktop's own card it takes all of it and the desktop can't keep up (on
+/// amd-halo the window stopped updating until it lost focus).
 fn smooth_present() -> PresentMode {
-    if cfg!(target_os = "linux") { PresentMode::Mailbox } else { PresentMode::AutoVsync }
+    if cfg!(target_os = "linux") { PresentMode::Fifo } else { PresentMode::AutoVsync }
+}
+
+/// Play's window, which `pick_present` and `full_screen` look after (the
+/// tools draw at their own size and pace).
+#[derive(Resource)]
+struct PlayWindow {
+    /// The present mode is still to be chosen.
+    pick: bool,
+}
+
+/// Switches play to mailbox once the graphics card is known, if no screen is
+/// plugged into it (`smooth_present`).
+fn pick_present(
+    mut play: ResMut<PlayWindow>,
+    info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let (Some(info), Ok(mut window)) = (info, windows.single_mut()) else { return };
+    play.pick = false;
+    if drawn_off_screen(&info) {
+        info!("{} has no screen of its own, so frames go to the screen by mailbox", info.name);
+        window.present_mode = PresentMode::Mailbox;
+    }
+}
+
+/// Whether the game draws on a graphics card with no screen plugged in while
+/// another card has one, from the connectors in /sys/class/drm.
+#[cfg(target_os = "linux")]
+fn drawn_off_screen(info: &bevy::render::renderer::RenderAdapterInfo) -> bool {
+    use std::path::Path;
+    // software renderers (lavapipe) have no PCI vendor id
+    if info.vendor > 0xffff {
+        return false;
+    }
+    let drm = Path::new("/sys/class/drm");
+    let id = |p: &Path| std::fs::read_to_string(p).ok().and_then(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok());
+    let mut showing = Vec::new();
+    for e in std::fs::read_dir(drm).into_iter().flatten().flatten() {
+        // connectors are card1-HDMI-A-1 and the like
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some((card, _)) = name.split_once('-') else { continue };
+        if std::fs::read_to_string(e.path().join("status")).is_ok_and(|s| s.trim() == "connected") {
+            let dev = drm.join(card).join("device");
+            if let (Some(v), Some(d)) = (id(&dev.join("vendor")), id(&dev.join("device"))) {
+                showing.push((v, d));
+            }
+        }
+    }
+    !showing.is_empty() && !showing.contains(&(info.vendor, info.device))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drawn_off_screen(_: &bevy::render::renderer::RenderAdapterInfo) -> bool {
+    false
+}
+
+/// Fills the screen or plays in a window, as the setting says; F11 switches.
+fn full_screen(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut settings: ResMut<settings::Settings>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut was: Local<Option<bool>>,
+) {
+    if keys.just_pressed(KeyCode::F11) {
+        settings.fullscreen = !settings.fullscreen;
+        settings.save();
+    }
+    let now = settings.fullscreen;
+    // the window starts as main() opened it (--windowed keeps it a window
+    // until the player switches)
+    if was.replace(now).is_some_and(|w| w != now)
+        && let Ok(mut window) = windows.single_mut()
+    {
+        window.mode = if now { WindowMode::BorderlessFullscreen(MonitorSelection::Current) } else { WindowMode::Windowed };
+    }
 }
 
 fn main() {
@@ -47,11 +124,18 @@ fn main() {
     if onscreen {
         resolution = resolution.with_scale_factor_override(1.0);
     }
+    // play fills the screen unless the setting says otherwise; --windowed or
+    // --size opens a window this once
+    let play = !offscreen && !onscreen;
+    let windowed = args.iter().any(|a| a == "--windowed") || opt("size").is_some();
+    let mode = if play && settings.fullscreen && !windowed { WindowMode::BorderlessFullscreen(MonitorSelection::Primary) } else { WindowMode::Windowed };
+    let present_asked = opt("present").is_some() || args.iter().any(|a| a == "--no-vsync");
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Potluck".into(),
             resolution,
+            mode,
             // --latency=N lets N frames queue for the screen (2 unless asked)
             desired_maximum_frame_latency: opt("latency").and_then(|n| n.parse().ok()).and_then(std::num::NonZero::new),
             // --no-vsync to see how fast a card really draws; the tools draw
@@ -73,6 +157,10 @@ fn main() {
     app.add_plugins(MaterialPlugin::<render::WaterMaterial>::default());
     if offscreen {
         app.insert_resource(OffscreenSize(size));
+    }
+    if play {
+        app.insert_resource(PlayWindow { pick: !present_asked })
+            .add_systems(Update, (pick_present.run_if(|p: Res<PlayWindow>| p.pick), full_screen));
     }
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
