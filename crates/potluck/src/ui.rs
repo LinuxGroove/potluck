@@ -41,6 +41,13 @@ pub enum Screen {
     Code,
     Library,
     Settings,
+    /// Suggesting a remix's change to the creation it came from.
+    Suggest(String),
+    /// The changes others suggested to one of mine.
+    Suggestions(String),
+    Report(String),
+    /// A sign-in link to the market, as a QR code.
+    Link,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +75,20 @@ pub enum Act {
     Survival,
     InvertY,
     Lighting,
+    /// Share to the market: to Everyone (true) or by code only.
+    ShareTo(String, bool),
+    Suggest(String),
+    SendSuggestion(String),
+    OpenSuggestions(String),
+    /// Load a suggestion's remix (code, version) to try it.
+    TrySuggestion(String, u32),
+    Merge(String, i64),
+    CloseSuggestion(String, i64),
+    Report(String),
+    SendReport(String, String),
+    /// A sign-in link to a market page (path, what it's for).
+    Market(String, String),
+    OpenUrl(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,6 +101,8 @@ pub enum Kind {
     Field { key: String, value: String },
     Note,
     Big,
+    /// A QR code of the label, for a phone's camera.
+    Qr,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,7 +120,7 @@ fn note(label: impl Into<String>) -> Item {
 
 impl Item {
     fn selectable(&self) -> bool {
-        !matches!(self.kind, Kind::Note | Kind::Big)
+        !matches!(self.kind, Kind::Note | Kind::Big | Kind::Qr)
     }
 }
 
@@ -115,6 +138,11 @@ pub struct Focus {
     pub reload_at: Option<(String, f32)>,
     sig: String,
     pub items: Vec<Item>,
+    /// Suggested changes to the creation on the Suggestions screen.
+    pub suggestions: Vec<crate::share::Suggestion>,
+    /// The market link on the Link screen: (address, what it's for).
+    pub link: Option<(String, String)>,
+    qr: Option<(String, Handle<Image>)>,
 }
 
 impl Default for Focus {
@@ -129,6 +157,9 @@ impl Default for Focus {
             reload_at: None,
             sig: String::new(),
             items: vec![],
+            suggestions: vec![],
+            link: None,
+            qr: None,
         }
     }
 }
@@ -196,6 +227,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 button("Join a friend's world", Act::OpenJoin),
                 button("Load a creation from a code", Act::OpenCode),
                 button("Creations", Act::OpenLibrary),
+                button("The market", Act::Market("/".into(), "The market".into())),
                 button("Settings", Act::OpenSettings),
                 button("Quit", Act::Quit),
             ],
@@ -203,6 +235,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Playing => (String::new(), vec![]),
         Screen::Pause => {
             let mut v = vec![note(info.line.clone()), button("Back to the world", Act::Resume), button("Creations in this world", Act::OpenLibrary), button("Load a creation from a code", Act::OpenCode)];
+            v.push(button("The market", Act::Market("/".into(), "The market".into())));
             v.push(button("Settings", Act::OpenSettings));
             v.push(button("Leave this world", Act::Leave));
             ("Paused".into(), v)
@@ -226,7 +259,22 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             } else {
                 v.push(button("Remix (make my own copy)", Act::Remix(id.clone())));
             }
-            v.push(button("Share with a code", Act::Share(id.clone())));
+            let mark = lib.marks.get(id).filter(|m| m.version > 0);
+            if c.editable() {
+                v.push(button(if mark.is_some() { "Share a new version" } else { "Share" }, Act::Share(id.clone())));
+                if m.from.as_ref().is_some_and(|f| f.code.is_some() || f.base.is_some()) {
+                    v.push(button("Suggest my change to the original", Act::Suggest(id.clone())));
+                }
+                if mark.is_some() {
+                    v.push(button("Changes others suggested", Act::OpenSuggestions(id.clone())));
+                }
+            }
+            if let Some(mk) = mark {
+                v.push(button("See it on the market", Act::Market(format!("/c/{}", mk.code), m.name.clone())));
+            }
+            if !c.editable() && matches!(c.origin, Origin::Code(_)) {
+                v.push(button("Report it", Act::Report(id.clone())));
+            }
             if info.in_world {
                 if lib.running.contains(id) {
                     v.push(button("Take out of this world", Act::Stop(id.clone())));
@@ -261,16 +309,79 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             (format!("Tweak {name}"), v)
         }
         Screen::Share(id) => {
-            let name = lib.list.get(id).map(|c| c.manifest.name.clone()).unwrap_or_default();
+            let c = lib.list.get(id);
+            let name = c.map(|c| c.manifest.name.clone()).unwrap_or_default();
             let mut v = vec![];
-            if let Some(code) = lib.list.get(id).and_then(|c| c.code.clone()) {
+            if let Some(code) = c.and_then(|c| c.code.clone()) {
                 v.push(Item { label: pretty_code(&code), kind: Kind::Big });
-                v.push(note(format!("potluck.linuxgroove.com/c/{code}")));
+                if lib.marks.get(id).is_some_and(|m| m.version > 0) {
+                    v.push(note(format!("{}/c/{code}", host(&settings.market))));
+                }
                 v.push(note("Say it or type it: anyone can load it from Load a creation from a code."));
+            }
+            if c.is_some_and(|c| c.editable()) {
+                let everyone = lib.marks.get(id).is_some_and(|m| m.everyone);
+                v.push(button(if everyone { "Share this version to Everyone" } else { "Share to Everyone" }, Act::ShareTo(id.clone(), true)));
+                v.push(note("On the market for anyone to find, once a moderator has looked at it."));
+                v.push(button("Share by code only", Act::ShareTo(id.clone(), false)));
+                v.push(note("Only people you give the code to can load it."));
+            } else {
+                v.push(note("Remix it to share a version of your own."));
             }
             v.push(note(focus.status.clone()));
             v.push(button("Back", Act::Inside(id.clone())));
             (format!("Share {name}"), v)
+        }
+        Screen::Suggest(id) => {
+            let orig = lib.list.get(id).and_then(|c| c.manifest.remix_of.clone()).unwrap_or_else(|| "the original".into());
+            let v = vec![
+                note(format!("Your remix goes to the maker of {orig} as a suggestion. If they like it, they merge it into theirs, with your name on the change.")),
+                Item { label: "What does it change?".into(), kind: Kind::Field { key: "suggest".into(), value: focus.fields.get("suggest").cloned().unwrap_or_default() } },
+                button("Send it", Act::SendSuggestion(id.clone())),
+                note(focus.status.clone()),
+                button("Back", Act::Inside(id.clone())),
+            ];
+            ("Suggest a change".into(), v)
+        }
+        Screen::Suggestions(id) => {
+            let mut v = vec![];
+            if focus.suggestions.is_empty() && focus.status.is_empty() {
+                v.push(note("Nothing yet. When someone remixes it and suggests their change, it shows up here."));
+            }
+            for s in &focus.suggestions {
+                v.push(note(format!("\u{201c}{}\u{201d} from {}, in their {}", s.title, s.by, s.from_name)));
+                v.push(button("Try it in this world", Act::TrySuggestion(s.from_code.clone(), s.from_version)));
+                v.push(button("Merge it into mine", Act::Merge(id.clone(), s.id)));
+                v.push(button("No thanks", Act::CloseSuggestion(id.clone(), s.id)));
+            }
+            v.push(note(focus.status.clone()));
+            v.push(button("Back", Act::Inside(id.clone())));
+            ("Suggested changes".into(), v)
+        }
+        Screen::Report(id) => {
+            let mut v = vec![note("What's wrong with it? A moderator looks at every report, and enough of them hide it until then.")];
+            for (reason, label) in [("unkind", "It's unkind or rude"), ("unsafe", "It isn't safe"), ("broken", "It's broken"), ("copied", "It's copied from someone"), ("other", "Something else")] {
+                v.push(button(label, Act::SendReport(id.clone(), reason.into())));
+            }
+            v.push(button("Back", Act::Inside(id.clone())));
+            ("Report it".into(), v)
+        }
+        Screen::Link => {
+            let mut v = vec![];
+            let title = match &focus.link {
+                Some((url, title)) => {
+                    v.push(Item { label: url.clone(), kind: Kind::Qr });
+                    v.push(note("Point a phone's camera at it to carry on there, signed in as you. It works once, in the next five minutes."));
+                    v.push(button("Open it on this screen", Act::OpenUrl(url.clone())));
+                    title.clone()
+                }
+                None => {
+                    v.push(note(if focus.status.is_empty() { "Asking the market for a link...".to_string() } else { focus.status.clone() }));
+                    "The market".into()
+                }
+            };
+            v.push(button("Back", Act::Back));
+            (title, v)
         }
         Screen::Join => {
             let mut v = vec![];
@@ -327,7 +438,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
+                button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
                 Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
+                Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
                 button("Back", Act::Back),
             ];
             ("Settings".into(), v)
@@ -341,6 +454,41 @@ fn cap(s: &str) -> String {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
     }
+}
+
+/// An address without its https://, as people say it.
+fn host(url: &str) -> &str {
+    url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/')
+}
+
+/// A QR code as a picture: black on white with the quiet edge readers need.
+pub fn qr_image(text: &str) -> Option<Image> {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::image::ImageSampler;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    let w = code.width();
+    let colors = code.to_colors();
+    let (quiet, scale) = (4, 6);
+    let size = (w + quiet * 2) * scale;
+    let mut data = vec![255u8; size * size * 4];
+    for y in 0..w {
+        for x in 0..w {
+            if colors[y * w + x] != qrcode::Color::Dark {
+                continue;
+            }
+            for dy in 0..scale {
+                let row = ((y + quiet) * scale + dy) * size;
+                for dx in 0..scale {
+                    let i = (row + (x + quiet) * scale + dx) * 4;
+                    data[i..i + 3].copy_from_slice(&[20, 24, 30]);
+                }
+            }
+        }
+    }
+    let mut image = Image::new(Extent3d { width: size as u32, height: size as u32, depth_or_array_layers: 1 }, TextureDimension::D2, data, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD);
+    image.sampler = ImageSampler::nearest();
+    Some(image)
 }
 
 pub fn pretty_code(code: &str) -> String {
@@ -461,6 +609,7 @@ pub fn menu_input(
                 match key.as_str() {
                     "name" => settings.name = v.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == ' ').take(20).collect(),
                     "server" => settings.server = v,
+                    "market" => settings.market = v,
                     _ => {}
                 }
             }
@@ -483,7 +632,7 @@ pub fn menu_input(
         let back = match &focus.screen {
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
-            Screen::Tweak(id) | Screen::Share(id) => Some(Act::Inside(id.clone())),
+            Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {
@@ -525,8 +674,15 @@ pub fn draw_menu(
     info: Res<WorldInfo>,
     fonts: Res<Fonts>,
     roots: Query<Entity, With<MenuRoot>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+    if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
+        if focus.qr.as_ref().map(|q| &q.0) != Some(&url) {
+            focus.qr = qr_image(&url).map(|img| (url, images.add(img)));
+        }
+    }
+    let qr = focus.qr.as_ref().map(|q| q.1.clone());
     let side = match &focus.screen {
         Screen::Inside(id) => lib.list.get(id).map(|c| {
             let src = c.files.get(&c.manifest.main).cloned().unwrap_or_default();
@@ -594,6 +750,11 @@ pub fn draw_menu(
                         Kind::Note => {
                             if !item.label.is_empty() {
                                 p.spawn((Text::new(item.label.clone()), TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() }, TextColor(DIM)));
+                            }
+                        }
+                        Kind::Qr => {
+                            if let Some(h) = &qr {
+                                p.spawn((ImageNode::new(h.clone()), Node { width: px(300), height: px(300), align_self: AlignSelf::Center, margin: UiRect::vertical(px(6)), border_radius: BorderRadius::all(px(10)), ..default() }));
                             }
                         }
                         Kind::Big => {

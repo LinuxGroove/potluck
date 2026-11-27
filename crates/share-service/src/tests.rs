@@ -3,7 +3,7 @@
 //! family tree, a suggested change merged, reports, held versions, cloning
 //! and signing in on the web. Set POTLUCK_TEST_FORGEJO (its address) and
 //! POTLUCK_TEST_FORGEJO_TOKEN (an admin's token) to run it; without them it
-//! says it was skipped. tools/market-test.sh starts a Forgejo in a container.
+//! says it was skipped. deploy/market/test.sh starts a Forgejo in a container.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ impl Drop for Market {
 
 async fn start() -> Option<Market> {
     let (Ok(fj), Ok(token)) = (std::env::var("POTLUCK_TEST_FORGEJO"), std::env::var("POTLUCK_TEST_FORGEJO_TOKEN")) else {
-        eprintln!("skipped: set POTLUCK_TEST_FORGEJO and POTLUCK_TEST_FORGEJO_TOKEN (tools/market-test.sh does)");
+        eprintln!("skipped: set POTLUCK_TEST_FORGEJO and POTLUCK_TEST_FORGEJO_TOKEN (deploy/market/test.sh does)");
         return None;
     };
     // Forgejo outlives the test, so every run's makers have names of their own.

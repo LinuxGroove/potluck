@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use potluck_share::{checks, codes, config, db, forgejo, identity, market, store};
+use potluck_share::{checks, codes, config, db, market};
 
 const HELP: &str = "potluck-share: Potluck's share service and web market
 
@@ -87,19 +87,11 @@ fn main() {
         None => {}
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("a tokio runtime");
-    rt.block_on(serve(cfg, conn));
+    drop(conn);
+    rt.block_on(serve(cfg));
 }
 
-async fn serve(cfg: config::Config, conn: rusqlite::Connection) {
-    let http = reqwest::Client::builder().user_agent(concat!("potluck-share/", env!("CARGO_PKG_VERSION"))).timeout(std::time::Duration::from_secs(30)).build().expect("an http client");
-    let store = match store::Store::new(&cfg, http.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("potluck-share: {e}");
-            std::process::exit(2);
-        }
-    };
-    let key = codes::signing_key(&cfg.data).expect("the signing key");
+async fn serve(cfg: config::Config) {
     let words = match &cfg.words {
         Some(p) => match std::fs::read_to_string(p) {
             Ok(t) => checks::Words::parse(&t),
@@ -120,10 +112,14 @@ async fn serve(cfg: config::Config, conn: rusqlite::Connection) {
     if cfg.dev_accounts {
         eprintln!("potluck-share: dev_accounts is on: anyone can sign in as anyone. Only for tests on this machine");
     }
-    let git = forgejo::Forgejo::new(&cfg.forgejo, http.clone());
-    let ids = identity::Identity::new(&cfg.nakama, cfg.dev_accounts, http.clone());
     let listen = cfg.listen.clone();
-    let app = Arc::new(market::App::new(cfg, conn, git, store, ids, key, words));
+    let app = match market::App::open(cfg, words) {
+        Ok(a) => Arc::new(a),
+        Err(e) => {
+            eprintln!("potluck-share: {e}");
+            std::process::exit(2);
+        }
+    };
 
     // The base game's creations go up as soon as Forgejo answers.
     let seeding = app.clone();

@@ -138,6 +138,19 @@ impl App {
     }
 
     /// The index, for a moment: never held across an await.
+    /// Everything the market needs from its config: the index, git hosting,
+    /// the store, sign-in and the signing key in its data folder.
+    pub fn open(cfg: Config, words: Words) -> Result<App, String> {
+        let http = reqwest::Client::builder().user_agent(concat!("potluck-share/", env!("CARGO_PKG_VERSION"))).timeout(std::time::Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&cfg.data).map_err(|e| format!("couldn't make {}: {e}", cfg.data.display()))?;
+        let conn = db::open(&cfg.data.join("market.db")).map_err(|e| format!("the index: {e}"))?;
+        let store = Store::new(&cfg, http.clone())?;
+        let key = codes::signing_key(&cfg.data).map_err(|e| format!("the signing key: {e}"))?;
+        let git = Forgejo::new(&cfg.forgejo, http.clone());
+        let ids = Identity::new(&cfg.nakama, cfg.dev_accounts, http);
+        Ok(App::new(cfg, conn, git, store, ids, key, words))
+    }
+
     pub fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
     }

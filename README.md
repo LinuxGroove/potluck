@@ -4,7 +4,7 @@ A block sandbox where everything is made by someone you know. Build, explore and
 
 The concept is idea 26 in [game-ideas](https://github.com/LinuxGroove/game-ideas/blob/main/ideas/26-potluck.md). The game is written in Rust on [Bevy](https://bevy.org/), and creations run in [Luau](https://luau.org/) sandboxes through [mlua](https://github.com/mlua-rs/mlua).
 
-This is the first test build, milestones M0 and M1 of the plan: a hilly island with the Green at its middle, the Mossback (the first creation, written in Luau), Look inside, Tweak, Remix with hot reload from any editor, share codes, building and survival basics, worlds friends can join, and `potluck-server`, an always-on world with HTTPS.
+This is a test build of milestones M0 to M2 of the plan: a hilly island with the Green at its middle, the Mossback (the first creation, written in Luau), Look inside, Tweak, Remix with hot reload from any editor, building and survival basics, worlds friends can join, `potluck-server` (an always-on world with HTTPS), and the market: creations shared to Everyone or by code, their versions and family trees on the web, and changes suggested from a remix and merged from the game.
 
 ## Playing
 
@@ -30,6 +30,16 @@ Walk down the hill from where you start to the Green. The Mossbacks are in the h
 - **Over the internet:** run `potluck-server` somewhere friends can reach (below), and everyone joins by its address: `192.168.1.20`, `potluck.example.org:47126` or `https://potluck.example.org`.
 
 Creations the host or anyone else brings into a world are sent to everyone who joins, and Tweak changes show for everyone at once.
+
+## The market
+
+Share something you made from Look inside: **Share to Everyone** puts it on the market at [potluck.linuxgroove.com](https://potluck.linuxgroove.com) once a moderator has looked at it, and **Share by code only** gives it a code for the people you tell. Each creation keeps one code, and sharing it again makes its next version. On the web anyone can read its code, its versions and what changed in each, and its family tree of remixes.
+
+Remix something from the market and change it, and **Suggest my change to the original** sends your change to its maker. They see it under **Changes others suggested**, can try your remix in their world, and merge it into theirs from the game, with your name on the change.
+
+There are no passwords and no emails. The game signs in to the LinuxGroove game server with a random id for your device, and **The market** (in the pause menu and on the title screen) or **Your profile on the market** (in Settings) opens the market signed in as you, or shows a QR code to carry on on your phone: handy on a controller. The profile is a name, a line about you and a block head picked from a few colours, eyes and hats. While the market is new, sharing to Everyone needs an invite code, entered on your page there.
+
+The market's service is `potluck-share` ([crates/share-service](crates/share-service)): it keeps every creation as a git repository in [Forgejo](https://forgejo.org/) and its files by hash in a folder or S3, checks every version (size, the API it needs, that the code compiles, words), signs what it serves so the game knows a code brought what the market checked, and serves the web pages. [deploy/market](deploy/market) has its config and a compose file with Forgejo and Caddy; `deploy/market/test.sh` runs its tests against Forgejo in a container. `potluck-share check FOLDER` runs the market's checks on a creation before sharing it.
 
 ## potluck-server
 

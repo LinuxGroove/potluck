@@ -21,3 +21,9 @@ mod tests;
 pub fn router(app: std::sync::Arc<market::App>) -> axum::Router {
     api::routes().merge(web::routes()).layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024)).with_state(app)
 }
+
+/// Serves the market on a listener until the process stops (the game's
+/// tests run one this way).
+pub async fn serve(listener: tokio::net::TcpListener, app: std::sync::Arc<market::App>) -> std::io::Result<()> {
+    axum::serve(listener, router(app)).await
+}

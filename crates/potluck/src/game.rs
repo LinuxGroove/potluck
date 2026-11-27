@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use crate::creations::{open_folder, Creation, Library, Origin};
+use crate::creations::{open_folder, open_link, Creation, Library, Mark, Origin};
 use crate::creatures::{self, Herd};
 use crate::input::Controls;
 use crate::net::{Net, Role};
@@ -11,7 +11,7 @@ use crate::noise::Rng;
 use crate::player::Me;
 use crate::script::{KnobValue, PlayerInfo, Scripts};
 use crate::settings::Settings;
-use crate::share::{Done, ShareJobs};
+use crate::share::{Done, ShareJobs, Who};
 use crate::ui::{Act, Acts, Focus, Labels, Screen, Toasts, WorldInfo};
 use crate::world::Voxels;
 use crate::KnobEdits;
@@ -336,12 +336,13 @@ pub fn do_acts(
                     continue;
                 }
                 focus.status = format!("Fetching {}...", crate::ui::pretty_code(&code));
-                shares.load(&settings.server, &settings.device, &code);
+                shares.load(&Who::of(&settings), &code, None);
             }
             Act::OpenLibrary => focus.go(Screen::Library),
             Act::OpenSettings => {
                 focus.fields.insert("name".into(), settings.name.clone());
                 focus.fields.insert("server".into(), settings.server.clone());
+                focus.fields.insert("market".into(), settings.market.clone());
                 focus.go(Screen::Settings);
             }
             Act::Inside(id) => focus.go(Screen::Inside(id)),
@@ -372,11 +373,68 @@ pub fn do_acts(
                 }
             }
             Act::Share(id) => {
-                if let Some(c) = lib.list.get(&id) {
+                focus.status.clear();
+                focus.go(Screen::Share(id));
+            }
+            Act::ShareTo(id, everyone) => {
+                if let Some(c) = lib.list.get(&id).filter(|c| c.editable()) {
                     focus.status = "Sharing...".into();
-                    shares.share(&settings.server, &settings.device, c.payload());
-                    focus.go(Screen::Share(id));
+                    let code = lib.marks.get(&id).filter(|m| m.version > 0).map(|m| m.code.clone());
+                    shares.share(&Who::of(&settings), c.payload(), everyone, code, c.manifest.from.clone());
                 }
+            }
+            Act::Suggest(id) => {
+                focus.status.clear();
+                focus.fields.remove("suggest");
+                focus.go(Screen::Suggest(id));
+            }
+            Act::SendSuggestion(id) => {
+                if let Some(c) = lib.list.get(&id).filter(|c| c.editable()) {
+                    focus.status = "Sending it...".into();
+                    let mark = lib.marks.get(&id).filter(|m| m.version > 0);
+                    let title = focus.fields.get("suggest").cloned().unwrap_or_default();
+                    shares.suggest(&Who::of(&settings), c.payload(), mark.is_some_and(|m| m.everyone), mark.map(|m| m.code.clone()), c.manifest.from.clone(), title);
+                }
+            }
+            Act::OpenSuggestions(id) => {
+                focus.suggestions.clear();
+                if let Some(m) = lib.marks.get(&id) {
+                    focus.status = "Looking...".into();
+                    shares.suggestions(&Who::of(&settings), &id, &m.code);
+                }
+                focus.go(Screen::Suggestions(id));
+            }
+            Act::TrySuggestion(code, version) => {
+                focus.status = format!("Fetching {}...", crate::ui::pretty_code(&code));
+                shares.load(&Who::of(&settings), &code, Some(version));
+            }
+            Act::Merge(id, suggestion) => {
+                focus.status = "Merging...".into();
+                shares.merge(&Who::of(&settings), &id, suggestion);
+            }
+            Act::CloseSuggestion(_, suggestion) => {
+                focus.suggestions.retain(|s| s.id != suggestion);
+                shares.close_suggestion(&Who::of(&settings), suggestion);
+            }
+            Act::Report(id) => focus.go(Screen::Report(id)),
+            Act::SendReport(id, reason) => {
+                if let Some(code) = lib.list.get(&id).and_then(|c| c.code.clone()) {
+                    shares.report(&Who::of(&settings), &code, &reason);
+                }
+                focus.status.clear();
+                focus.go(Screen::Inside(id));
+            }
+            Act::Market(next, title) => {
+                focus.link = None;
+                focus.status.clear();
+                shares.link(&Who::of(&settings), &next, &title);
+                focus.go(Screen::Link);
+            }
+            Act::OpenUrl(url) => {
+                open_link(&url);
+                // a link works once: opening it here uses it up
+                focus.link = None;
+                focus.status = "Opened in your browser.".into();
             }
             Act::Run(id) => {
                 bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
@@ -449,18 +507,23 @@ pub fn share_results(
 ) {
     for done in shares.poll() {
         match done {
-            Done::Shared { id, code } => {
-                if let Some(c) = lib.list.get_mut(&id) {
+            Done::Shared { id, code, version, everyone, message } => {
+                if version > 0 {
+                    lib.mark(&id, Mark { code: code.clone(), version, everyone });
+                } else if let Some(c) = lib.list.get_mut(&id) {
                     c.code = Some(code.clone());
                 }
-                focus.status = String::new();
+                focus.status = message;
                 toasts.push(format!("Shared as {}", crate::ui::pretty_code(&code)));
             }
-            Done::Loaded { code, payload } => match Creation::from_payload(payload, Origin::Code(code.clone())) {
+            Done::Loaded { code, version, payload } => match Creation::from_payload(payload, Origin::Code(code.clone())) {
                 Ok(mut c) => {
                     c.code = Some(code.clone());
                     let name = c.manifest.name.clone();
                     let id = lib.add(c);
+                    if version > 0 {
+                        lib.marks.insert(id.clone(), Mark { code: code.clone(), version, everyone: false });
+                    }
                     focus.status = String::new();
                     if info.in_world {
                         bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
@@ -470,6 +533,39 @@ pub fn share_results(
                 }
                 Err(e) => focus.status = format!("Couldn't load it: {e}"),
             },
+            Done::Link { url, title } => {
+                focus.status.clear();
+                focus.link = Some((url, title));
+            }
+            Done::Suggested { id, code } => {
+                if let Some(m) = lib.marks.get(&id).cloned().filter(|m| m.code == code) {
+                    lib.mark(&id, m);
+                }
+                focus.status = "Sent. Its maker sees it under Changes others suggested, and you'll see their answer on the market.".into();
+                toasts.push("Your change is on its way to the original's maker");
+            }
+            Done::Suggestions { id, list } => {
+                if focus.screen == Screen::Suggestions(id) {
+                    focus.status.clear();
+                    focus.suggestions = list;
+                }
+            }
+            Done::Merged { id, suggestion, code, version, files } => {
+                let everyone = lib.marks.get(&id).is_some_and(|m| m.everyone);
+                match lib.replace_files(&id, files) {
+                    Ok(()) => {
+                        lib.mark(&id, Mark { code, version, everyone });
+                        focus.suggestions.retain(|s| s.id != suggestion);
+                        focus.status = format!("Merged: version {version} is in your folder.");
+                        toasts.push(format!("Merged: version {version} is in your folder"));
+                    }
+                    Err(e) => focus.status = format!("Merged on the market, but couldn't write it here: {e}."),
+                }
+            }
+            Done::Said(s) => {
+                focus.status = s.clone();
+                toasts.push(s);
+            }
             Done::Failed(e) => {
                 focus.status = format!("Sorry: {e}.");
             }

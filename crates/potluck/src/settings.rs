@@ -16,8 +16,10 @@ pub struct Settings {
     pub fov: f32,
     /// "low", "medium", "high" or "ultra" (`render::Tier`).
     pub lighting: String,
-    /// The game server for share codes.
+    /// The game server: signing in, and share codes made before the market.
     pub server: String,
+    /// The market, where creations are shared and remixed.
+    pub market: String,
     /// A random id for signing in to the game server, made on first run.
     pub device: String,
     /// Survive (health, breaking takes time, blocks run out) or Build.
@@ -34,6 +36,7 @@ impl Default for Settings {
             fov: 90.0,
             lighting: "medium".into(),
             server: crate::share::DEFAULT_SERVER.into(),
+            market: crate::share::DEFAULT_MARKET.into(),
             device: String::new(),
             survival: false,
         }

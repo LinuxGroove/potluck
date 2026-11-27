@@ -28,6 +28,33 @@ pub struct Manifest {
     pub licence: String,
     /// The API modules it needs, by version: world = "0.1".
     pub needs: BTreeMap<String, String>,
+    /// What it's a remix of on the market, so the market can draw its family
+    /// tree and carry suggestions back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<FromRef>,
+}
+
+/// The market's name for what a creation was remixed from: a code and its
+/// version, or one of the base game's creations by its id.
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
+pub struct FromRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub version: u32,
+}
+
+/// What the market knows one of the player's creations by: its code there,
+/// the newest version, and whether it's shared to Everyone. Kept by creation
+/// id in market.json, so sharing again makes the next version.
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
+pub struct Mark {
+    pub code: String,
+    pub version: u32,
+    #[serde(default)]
+    pub everyone: bool,
 }
 
 impl Default for Manifest {
@@ -42,6 +69,7 @@ impl Default for Manifest {
             remix_of: None,
             licence: "CC-BY-4.0".into(),
             needs: BTreeMap::new(),
+            from: None,
         }
     }
 }
@@ -187,6 +215,8 @@ pub struct Library {
     since_scan: f32,
     /// Creations whose files changed on disk since the last frame.
     pub changed: Vec<String>,
+    /// The market's codes for creations, by id (market.json).
+    pub marks: BTreeMap<String, Mark>,
 }
 
 fn mine_dir() -> PathBuf {
@@ -195,6 +225,10 @@ fn mine_dir() -> PathBuf {
 
 fn tweaks_path() -> PathBuf {
     data_dir().join("tweaks.json")
+}
+
+fn marks_path() -> PathBuf {
+    data_dir().join("market.json")
 }
 
 fn read_dir_files(dir: &Path) -> (BTreeMap<String, String>, u64) {
@@ -257,6 +291,12 @@ impl Library {
                 }
             }
         }
+        lib.marks = std::fs::read_to_string(marks_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        for (id, m) in &lib.marks {
+            if let Some(c) = lib.list.get_mut(id).filter(|c| c.origin == Origin::Mine) {
+                c.code = Some(m.code.clone());
+            }
+        }
         // knob settings for every creation
         if let Ok(t) = std::fs::read_to_string(tweaks_path()) {
             if let Ok(m) = serde_json::from_str::<BTreeMap<String, BTreeMap<String, serde_json::Value>>>(&t) {
@@ -281,6 +321,50 @@ impl Library {
         if let Ok(t) = serde_json::to_string_pretty(&m) {
             let _ = std::fs::write(tweaks_path(), t);
         }
+    }
+
+    /// Remembers a creation's code and version on the market.
+    pub fn mark(&mut self, id: &str, mark: Mark) {
+        if let Some(c) = self.list.get_mut(id) {
+            c.code = Some(mark.code.clone());
+        }
+        self.marks.insert(id.to_string(), mark);
+        let mine: BTreeMap<&String, &Mark> = self.marks.iter().filter(|(id, _)| self.list.get(*id).is_some_and(|c| c.origin == Origin::Mine)).collect();
+        let _ = std::fs::create_dir_all(data_dir());
+        if let Ok(t) = serde_json::to_string_pretty(&mine) {
+            let _ = std::fs::write(marks_path(), t);
+        }
+    }
+
+    /// Puts a new version's files (a merged suggestion) in one of the
+    /// player's creations' folders. A running one reloads as for any edit.
+    pub fn replace_files(&mut self, id: &str, files: BTreeMap<String, String>) -> Result<(), String> {
+        let c = self.list.get_mut(id).ok_or("that creation isn't here")?;
+        let dir = c.dir.clone().ok_or("that creation has no folder")?;
+        for name in files.keys() {
+            if !safe_name(name) {
+                return Err(format!("a strange file name: {name}"));
+            }
+        }
+        for name in c.files.keys().filter(|n| !files.contains_key(*n)) {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
+        for (name, text) in &files {
+            let p = dir.join(name);
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(&p, text).map_err(|e| format!("couldn't write {}: {e}", p.display()))?;
+        }
+        if let Ok(m) = toml::from_str::<Manifest>(files.get("potluck.toml").map(|s| s.as_str()).unwrap_or("")) {
+            c.manifest = m;
+        }
+        c.files = files;
+        c.stamp = read_dir_files(&dir).1;
+        if self.running.iter().any(|r| r == id) {
+            self.changed.push(id.to_string());
+        }
+        Ok(())
     }
 
     /// Looks for edits on disk to the creations of mine that are running.
@@ -326,6 +410,11 @@ impl Library {
         });
         manifest.by = me.to_string();
         manifest.version = 1;
+        manifest.from = match (&src.origin, self.marks.get(id)) {
+            (Origin::Base, _) => Some(FromRef { code: None, base: Some(id.to_string()), version: 0 }),
+            (_, Some(m)) => Some(FromRef { code: Some(m.code.clone()), base: None, version: m.version }),
+            (_, None) => src.code.clone().map(|code| FromRef { code: Some(code), base: None, version: 0 }),
+        };
         let mut files = src.files.clone();
         files.insert("potluck.toml".into(), toml::to_string_pretty(&manifest).unwrap_or_default());
         files.insert("AGENTS.md".into(), AGENTS_MD.into());
@@ -362,6 +451,21 @@ impl Library {
         self.list.insert(id.clone(), c);
         id
     }
+}
+
+/// Opens a web page in the system's browser.
+pub fn open_link(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
+    let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C", "start", "", url])
+    } else if cfg!(target_os = "macos") {
+        ("open", vec![url])
+    } else {
+        ("xdg-open", vec![url])
+    };
+    let _ = std::process::Command::new(cmd).args(args).spawn();
 }
 
 /// Opens a folder in the system's file manager.
