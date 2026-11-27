@@ -27,6 +27,7 @@ use crate::creatures::Herd;
 use crate::net::{Net, Role};
 use crate::player::Me;
 use crate::script::{KnobValue, Scripts};
+use crate::testing;
 use crate::settings::Settings;
 use crate::ui::{Toasts, WorldInfo};
 use crate::world::Voxels;
@@ -336,7 +337,9 @@ pub fn handle(msg: &Value, tx: &Sender<Call>) -> Option<Value> {
             if tx.send(Call::Tool { name: name.to_string(), args, reply }).is_err() {
                 return Some(error(id, -32603, "The game has stopped."));
             }
-            let result = answer.recv_timeout(WAIT).unwrap_or_else(|_| Err("The game didn't answer in time: it may be loading, or stopped.".into()));
+            // a creation's tests may take a while to play out
+            let wait = if name == "test" { WAIT * 10 } else { WAIT };
+            let result = answer.recv_timeout(wait).unwrap_or_else(|_| Err("The game didn't answer in time: it may be loading, or stopped.".into()));
             ok(id, result_json(result))
         }
         _ => error(id, -32601, &format!("The dev bridge doesn't know {method}.")),
@@ -365,7 +368,8 @@ fn instructions() -> String {
         "This is Potluck, a block sandbox whose creatures, blocks and mini games are creations: folders of Luau with a potluck.toml. \
          The player's own creations are folders in {}; edit their files there (a new folder with potluck.toml and main.luau is a new creation), \
          then call reload, which starts or restarts it in the world and says what went wrong, with the line. guide gives the whole API (AGENTS.md); \
-         log shows what a creation printed; run tries a few lines inside it; look_around and screenshot show the world near the player. \
+         log shows what a creation printed; run tries a few lines inside it; test runs its own tests (test.luau) in a copy of the world; \
+         look_around and screenshot show the world near the player. \
          Creations only run on the world's host: in a friend's world, reload sends yours to them.",
         creations::my_folder().display()
     )
@@ -402,6 +406,12 @@ const TOOLS: &[(&str, &str, &str, &str)] = &[
         "Run Luau in a creation",
         "Runs a few lines of Luau inside a running creation's sandbox, as if they were part of its code, and returns what they printed and returned. require the API as the creation does (local world = require(\"@potluck/world\")); its files' locals aren't reachable. One tick's time (15 ms). Good for checking the world: return #world.creatures().",
         r#"{"type":"object","properties":{"creation":{"type":"string"},"code":{"type":"string","description":"Luau; end with return to see values"}},"required":["creation","code"]}"#,
+    ),
+    (
+        "test",
+        "Test a creation",
+        "Runs a creation's own tests: its test.luau, written with @potluck/test (see the guide). Each case plays in a copy of this world with only that creation and players made for the test in it, so nothing reaches the world or anyone in it. One of the player's creations is read from its folder as saved. Says which cases passed and, for the others, why they failed, with the line, and what the creation printed.",
+        r#"{"type":"object","properties":{"creation":{"type":"string","description":"Its id: the folder's name for the player's own"}},"required":["creation"]}"#,
     ),
     (
         "tweak",
@@ -493,11 +503,22 @@ pub fn answer(name: &str, args: &Value, cx: &mut Cx) -> Answer {
             s.push_str(&format!("returned: {}", if values.is_empty() { "nothing".into() } else { values }));
             one(s)
         }
+        "test" => tests_of(arg(args, "creation")?, cx.lib, cx.voxels)?(),
         "tweak" => one(tweak(arg(args, "creation")?, arg(args, "knob")?, args.get("value").unwrap_or(&Value::Null), cx)?),
         "look_around" => one(pretty(&look_around(args.get("radius").and_then(Value::as_f64).unwrap_or(24.0).clamp(1.0, 64.0) as f32, cx))),
         "screenshot" => Err("there's no screen here to take a picture of".into()),
         _ => Err(format!("there's no tool called {name}")),
     }
+}
+
+/// A creation's tests, ready to run away from the game's own thread.
+fn tests_of(id: &str, lib: &Library, voxels: &Voxels) -> Result<impl FnOnce() -> Answer + Send + 'static, String> {
+    let c = lib.to_test(id)?;
+    if !c.files.contains_key(testing::FILE) {
+        return Err(format!("{} has no {} yet: the guide's Testing part says how to write one", c.manifest.name, testing::FILE));
+    }
+    let (seed, bytes) = (voxels.seed, voxels.encode());
+    Ok(move || Ok(vec![Part::Text(testing::run_in(&c, seed, &bytes).text())]))
 }
 
 /// A number to a tenth, as JSON shows it.
@@ -812,6 +833,19 @@ fn serve(
                         let _ = r.send(png_of(&shot.image, width).map(|png| vec![Part::Png(png)]));
                     }
                 });
+            }
+            Call::Tool { name, args, reply } if name == "test" => {
+                // tests play out on a thread of their own, so the game doesn't stop
+                match arg(&args, "creation").and_then(|id| tests_of(id, &lib, &voxels)) {
+                    Ok(job) => {
+                        std::thread::spawn(move || {
+                            let _ = reply.send(job());
+                        });
+                    }
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                    }
+                }
             }
             Call::Tool { name, args, reply } => {
                 let mut cx = Cx {

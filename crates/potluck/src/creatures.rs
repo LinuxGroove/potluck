@@ -27,6 +27,9 @@ pub struct Body {
     pub id: u64,
     pub creation: String,
     pub kind: String,
+    /// The kind it came as: `count` keeps these up, whatever they've
+    /// become since, so a sheared sheep doesn't bring another.
+    pub born: String,
     pub pos: Vec3,
     pub vel: Vec3,
     pub yaw: f32,
@@ -108,6 +111,7 @@ impl Herd {
             id,
             creation: creation.to_string(),
             kind: k.name.clone(),
+            born: k.name.clone(),
             pos: at,
             vel: Vec3::ZERO,
             yaw: (id as f32 * 2.1) % 6.28,

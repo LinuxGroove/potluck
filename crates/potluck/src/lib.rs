@@ -24,6 +24,7 @@ pub mod script;
 pub mod settings;
 pub mod share;
 pub mod sound;
+pub mod testing;
 pub mod textures;
 pub mod transport;
 pub mod ui;

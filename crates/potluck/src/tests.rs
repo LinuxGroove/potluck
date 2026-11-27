@@ -3384,7 +3384,7 @@ fn a_coding_helper_works_on_creations_through_the_dev_bridge() {
     let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" }).to_string());
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let names: Vec<&str> = v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "tweak", "look_around", "screenshot"]);
+    assert_eq!(names, ["creations", "guide", "reload", "log", "run", "test", "tweak", "look_around", "screenshot"]);
     let (_, body, _) = bridge_post(&open, &mut cx, "POST", "", &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "fly" } }).to_string());
     assert!(body.contains("-32602"), "an unknown tool is a protocol error: {body}");
 
@@ -3464,6 +3464,26 @@ end
     assert!(v["creations"].as_array().unwrap().iter().any(|c| c["id"] == "mossback" && c["origin"] == "the base game"));
     let (text, err) = bridge_tool(&open, &mut cx, "guide", json!({}));
     assert!(!err && text.contains("@potluck/world"));
+    // its own tests, from its folder as saved, in a copy of the world
+    let (text, err) = bridge_tool(&open, &mut cx, "test", json!({ "creation": id }));
+    assert!(err && text.contains("has no test.luau"), "{text}");
+    std::fs::write(dir.join("main.luau"), code(false)).unwrap();
+    let tests = r##"local test = require("@potluck/test@0.1")
+local world = require("@potluck/world")
+test.case("two moths", function()
+	test.same(#world.creatures(test.kind("Lantern moth")), 2, "moths")
+end)
+test.case("three moths", function()
+	test.same(#world.creatures(), 3, "moths")
+end)
+"##;
+    std::fs::write(dir.join("test.luau"), tests).unwrap();
+    let before = cx.herd.bodies.len();
+    let (text, err) = bridge_tool(&open, &mut cx, "test", json!({ "creation": id }));
+    assert!(!err && text.contains("1 of 2 cases passed") && text.contains("FAIL  three moths: test.luau:7: moths: got 2, wanted 3"), "{text}");
+    assert_eq!(cx.herd.bodies.len(), before, "the world's own creatures are left alone");
+    let (text, err) = bridge_tool(&open, &mut cx, "test", json!({ "creation": "balloon" }));
+    assert!(!err && text.contains("4 of 4 cases passed"), "{text}");
     // a screenshot needs the game's screen, which this test hasn't got
     assert!(bridge_tool(&open, &mut cx, "screenshot", json!({})).1);
     drop(open);
@@ -3896,4 +3916,77 @@ fn the_maps_chats_and_keyboards_systems_ask_for_what_they_can_have_together() {
     check(crate::ui::draw_menu);
     check(crate::ui::menu_input);
     check(crate::ui::update_hud);
+}
+
+#[test]
+fn base_creations_pass_their_own_tests() {
+    home();
+    let lib = Library::load();
+    let w = world();
+    let mut ran = 0;
+    for c in lib.list.values().filter(|c| c.origin == Origin::Base && c.files.contains_key(crate::testing::FILE)) {
+        let report = crate::testing::run(c, &w);
+        println!("{}", report.text());
+        assert!(report.passed(), "{}", report.text());
+        ran += 1;
+    }
+    assert!(ran >= 2, "the balloon and the woolly have tests");
+}
+
+#[test]
+fn a_creations_tests_say_what_passed_what_failed_and_why() {
+    let mut c = creation(BOX);
+    c.files.insert(
+        "test.luau".into(),
+        r##"
+local test = require("@potluck/test@0.1")
+local world = require("@potluck/world")
+test.case("the thing is there", function()
+    test.same(#world.creatures(test.kind("Thing")), 1, "things")
+end)
+test.case("time passes", function()
+    local p = test.player("Ada")
+    local here = p.position
+    test.place(p, here + vector.create(2, 0, 0), "Stone")
+    test.wait(2)
+    test.same(world.block(here + vector.create(2, 0, 0)), "Stone", "the block put down")
+end)
+test.case("a world of its own", function()
+    local p = test.player("Bo")
+    test.check(world.block(p.position + vector.create(2, 0, 0)) ~= "Stone", "the last case's block is gone")
+end)
+test.case("a wrong sum", function()
+    test.same(1 + 1, 3, "the sum")
+end)
+test.case("a mistake in the test", function()
+    test.ride(test.player(), 12345)
+end)
+test.case("waits forever", function()
+    while true do test.wait(60) end
+end)
+"##
+        .into(),
+    );
+    let report = crate::testing::run(&c, &world());
+    let text = report.text();
+    println!("{text}");
+    assert!(!report.passed());
+    let by = |n: &str| report.cases.iter().find(|c| c.name == n).unwrap_or_else(|| panic!("{n} ran"));
+    assert!(by("the thing is there").passed && by("time passes").passed && by("a world of its own").passed, "{text}");
+    assert!(by("time passes").played >= 2.0);
+    let wrong = by("a wrong sum");
+    assert!(!wrong.passed && wrong.problem.as_deref().unwrap().contains("the sum: got 2, wanted 3"), "{text}");
+    assert!(wrong.problem.as_deref().unwrap().contains("test.luau:"), "it says the line: {text}");
+    assert!(by("a mistake in the test").problem.as_deref().unwrap().contains("test.ride needs one of the creation's creatures"), "{text}");
+    assert!(by("waits forever").problem.as_deref().unwrap().contains("s of play"), "{text}");
+    assert!(text.contains("3 of 6 cases passed"), "{text}");
+    // outside test runs the module only says where it works
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let mut c = creation(&format!("{BOX}\nlocal test = require(\"@potluck/test\")\ntest.case(\"x\", function() end)\nlocal ok, e = pcall(test.wait, 1)\nprint(e)\n"));
+    c.files.remove("test.luau");
+    scripts.start(&c, &mut herd).unwrap();
+    assert!(scripts.vms["test"].log.iter().any(|l| l.contains("works only in a case")), "{:?}", scripts.vms["test"].log);
+    let none = crate::testing::run(&creation(BOX), &world());
+    assert!(!none.passed() && none.text().contains("has no test.luau"));
 }

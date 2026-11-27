@@ -1239,6 +1239,7 @@ fn blank_body(id: u64) -> Body {
         parts: vec![],
         rev: 0,
         phase: 0.0,
+        born: String::new(),
     }
 }
 

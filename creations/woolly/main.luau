@@ -127,8 +127,13 @@ end
 
 function Woolly:hit(player)
 	self.following = nil
-	local away = self.position + (self.position - player.position) * 2
-	self:walk_to(away, 4.5)
+	-- a good few blocks straight away from them, however close they stood
+	local d = self.position - player.position
+	d = vector.create(d.x, 0, d.z)
+	if vector.magnitude(d) < 0.1 then
+		d = vector.create(1, 0, 0)
+	end
+	self:walk_to(self.position + vector.normalize(d) * 6, 4.5)
 	self:hop(0.8)
 	self:say("Baa!")
 	sound.play("bleat", { at = self, pitch = 1.25 })
