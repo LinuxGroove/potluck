@@ -30,13 +30,14 @@ pub enum Action {
     Answer { ask: u32, choice: Option<u32> },
     /// A message from this player's client half to its creation (`@potluck/net`).
     Net(crate::script::Note),
-    /// What this player carries now (survival), and how many lots of the
-    /// host's changes they've had (`world.pockets`).
-    Pockets { survival: bool, items: Vec<(crate::blocks::BlockId, u32)>, seen: u32 },
+    /// What this player carries now (survival): the slots with something
+    /// in, as (slot, thing, how many); and how many lots of the host's
+    /// changes they've had (`world.pockets`).
+    Pockets { survival: bool, slots: Vec<(u8, crate::items::Thing, u32)>, seen: u32 },
     /// Interact on a block, for creations' `block_used`.
     UseBlock([i32; 3]),
-    /// What this player has in hand now (`world.held`); air for nothing.
-    Held(crate::blocks::BlockId),
+    /// What this player has in hand now (`world.held`); 0 for nothing.
+    Held(crate::items::Thing),
 }
 
 /// How far from a player a block they use can be.
@@ -265,7 +266,7 @@ pub fn host_step(
             }
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
             Action::Net(note) => scripts.hear(pid, note),
-            Action::Pockets { survival, items, seen } => scripts.set_pockets(pid, survival, &items, seen),
+            Action::Pockets { survival, slots, seen } => scripts.set_pockets(pid, survival, &slots[..slots.len().min(crate::items::POCKETS)], seen),
             Action::Held(b) => scripts.set_held(pid, b),
             Action::UseBlock(at) => {
                 let at = IVec3::from_array(at);
@@ -532,6 +533,10 @@ pub fn do_acts(
         // until a player says how old they are, only what's for all ages
         shares.green(&Who { young: settings.young || !settings.age_asked, ..Who::of(&settings) });
     }
+    // the backpack shows what's carried now (a creation may give or take while it's open)
+    if focus.screen == Screen::Backpack && focus.pockets != me.pockets {
+        focus.pockets = me.pockets;
+    }
     let mut later = vec![];
     for act in std::mem::take(&mut acts.0) {
         // the first time anything goes online, ask who's playing
@@ -638,13 +643,37 @@ pub fn do_acts(
             }
             Act::OpenLibrary => focus.go(Screen::Library),
             Act::OpenBlocks if settings.survival => {
-                toasts.push("In survival you gather blocks, and make more at a table");
+                // in survival, the backpack: on the slot in hand
+                focus.pockets = me.pockets;
+                focus.moving = None;
+                focus.go(Screen::Backpack);
+                let (_, items) = crate::ui::menu_items(&focus, &lib, &scripts, &settings, &info);
+                focus.sel = items.iter().position(|i| i.kind == crate::ui::Kind::Slot(me.slot)).unwrap_or(0);
+            }
+            Act::Slot(i, half) => match focus.moving {
+                // what to move, or half of it
+                None => {
+                    if !me.pockets.0.get(i).is_none_or(|s| s.empty()) {
+                        focus.moving = Some((i, half));
+                    }
+                }
+                // where it goes
+                Some((from, half)) => {
+                    me.pockets.shift(from, i, half);
+                    focus.moving = None;
+                    focus.pockets = me.pockets;
+                }
+            },
+            Act::Tidy => {
+                me.pockets.tidy();
+                focus.moving = None;
+                focus.pockets = me.pockets;
             }
             Act::OpenBlocks => {
                 focus.go(Screen::Blocks);
                 // on the block in your hand, when it's on the page open
                 let page = crate::ui::pages(&focus, &info).map(|(list, n)| list[n]).unwrap_or("");
-                let held = me.hotbar[me.slot];
+                let held = crate::items::block(me.pockets.0[me.slot].thing).unwrap_or(crate::blocks::AIR);
                 if !crate::ui::block_shelf(page).contains(&held) {
                     if let Some(n) = crate::ui::BLOCK_PAGES.iter().position(|p| crate::ui::block_shelf(p).contains(&held)) {
                         focus.blocks_page = n;
@@ -655,12 +684,13 @@ pub fn do_acts(
             }
             Act::Hold(id) => {
                 // already in the hotbar: that slot; or in the one chosen
-                if !settings.survival && !crate::blocks::is_item(id) && crate::blocks::block(id).shape != crate::blocks::Shape::Air {
-                    match me.hotbar.iter().position(|&b| b == id) {
+                if !settings.survival && crate::blocks::block(id).shape != crate::blocks::Shape::Air {
+                    let t = crate::items::of_block(id);
+                    match me.pockets.0[..crate::items::HOTBAR].iter().position(|s| s.thing == t) {
                         Some(i) => me.slot = i,
                         None => {
                             let s = me.slot;
-                            me.hotbar[s] = id;
+                            me.pockets.0[s].thing = t;
                         }
                     }
                 }

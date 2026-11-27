@@ -386,6 +386,7 @@ fn shot(
                 "market" => ui::Screen::Link,
                 "question" => ui::Screen::Panel,
                 "worlds" => ui::Screen::Worlds(false),
+                "backpack" => ui::Screen::Backpack,
                 _ => ui::Screen::Playing,
             });
             focus.settings_page = page;
@@ -394,6 +395,21 @@ fn shot(
             if sc == "market" {
                 // what the market would send: a sign-in link for the phone
                 focus.link = Some(("https://potluck.linuxgroove.com/in/7QK2-M9XD-PL4F-W2HZ".into(), "The market".into()));
+            }
+            if sc == "backpack" {
+                // a survival player's pockets, partly full, the second slot in hand
+                use potluck::items::{self, Slots};
+                let mut p = Slots::default();
+                for (name, n) in [("Planks", 64), ("Stone pickaxe", 1), ("Cobblestone", 99), ("Oak log", 23), ("Lantern", 4), ("Wooden axe", 1), ("Wheat", 12), ("Carrots", 7), ("Glass", 16), ("Sand", 99), ("Dirt", 40), ("Stone sword", 1), ("Hay", 3), ("Red wool", 9), ("Birch log", 31), ("Gravel", 17), ("Candle", 6), ("Fence", 12)] {
+                    if let Some(t) = items::by_name(name) {
+                        p.give(t, n);
+                    }
+                }
+                me.pockets = p;
+                me.slot = 1;
+                focus.pockets = p;
+                // on the slot in hand: the backpack's 27 come first
+                focus.sel = items::POCKETS - items::HOTBAR + 1;
             }
             if sc == "worlds" {
                 // the worlds kept in POTLUCK_HOME

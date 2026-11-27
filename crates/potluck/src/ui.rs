@@ -74,6 +74,8 @@ pub enum Screen {
     Worlds(bool),
     /// One kept world: rename it or delete it.
     Forget(String),
+    /// What the player carries: the backpack and the hotbar (survival).
+    Backpack,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -182,11 +184,15 @@ pub enum Act {
     Say(String),
     /// Share where you are in chat.
     SharePlace,
-    /// Every block to choose from (creative); in survival, a word on where
-    /// blocks come from.
+    /// Every block to choose from (creative); in survival, the backpack.
     OpenBlocks,
     /// Put a block in your hand from Blocks.
     Hold(blocks::BlockId),
+    /// On the backpack: choose a slot to move, or where the chosen one
+    /// goes (true for half of it).
+    Slot(usize, bool),
+    /// Put the backpack in order.
+    Tidy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -212,6 +218,9 @@ pub enum Kind {
     Choice { act: Act, value: String },
     /// A block on the Blocks sheet, as its picture; A puts it in your hand.
     Tile(blocks::BlockId),
+    /// A slot of the pockets on the backpack (`items::POCKETS`): A moves
+    /// what's in it, X half of it.
+    Slot(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -261,6 +270,11 @@ pub struct Focus {
     pub servers: Vec<crate::share::Listed>,
     /// The kept worlds, as the Worlds screen lists them.
     pub worlds: Vec<crate::worlds::Kept>,
+    /// What the player carries, as the backpack shows it (`game::pockets`
+    /// copies it in while it's open).
+    pub pockets: crate::items::Slots,
+    /// The slot being moved on the backpack, and whether only half of it.
+    pub moving: Option<(usize, bool)>,
     /// Who this device plays as on the market, once asked.
     pub account: Option<crate::share::Account>,
     /// The jam running now, once the market's said.
@@ -312,6 +326,8 @@ impl Default for Focus {
             link: None,
             servers: vec![],
             worlds: vec![],
+            pockets: Default::default(),
+            moving: None,
             account: None,
             jam: None,
             rebinding: None,
@@ -368,7 +384,7 @@ pub fn shelves(in_world: bool) -> &'static [&'static str] {
 pub const BLOCK_PAGES: &[&str] = &["Building", "Nature", "Things", "From creations"];
 
 /// The blocks on a page of Blocks: the game's own by what they're for, or
-/// those creations here made. Never air, bedrock or what's only held.
+/// those creations here made. Never air or bedrock.
 pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
     use blocks::Shape;
     if page == "From creations" {
@@ -378,7 +394,7 @@ pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
     (1..blocks::BLOCKS.len() as blocks::BlockId)
         .filter(|&id| {
             let b = blocks::block(id);
-            b.shape != Shape::Air && !b.item && id != blocks::BEDROCK
+            b.shape != Shape::Air && id != blocks::BEDROCK
         })
         .filter(|&id| {
             let b = blocks::block(id);
@@ -848,6 +864,20 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             }
             ("Creations".into(), v)
         }
+        Screen::Backpack => {
+            use crate::items::{HOTBAR, POCKETS};
+            // the backpack's rows, then the hotbar, as they're drawn
+            let order = (HOTBAR..POCKETS).chain(0..HOTBAR);
+            let mut v: Vec<Item> = order
+                .map(|i| {
+                    let s = focus.pockets.0[i];
+                    let label = if s.empty() { String::new() } else { format!("{} \u{00d7}{}", crate::items::name(s.thing), s.count) };
+                    Item { label, kind: Kind::Slot(i) }
+                })
+                .collect();
+            v.push(button("Tidy the backpack", Act::Tidy));
+            ("Backpack".into(), v)
+        }
         Screen::Blocks => {
             let page = pages(focus, info).map(|(list, n)| list[n]).unwrap_or("Building");
             let mut v: Vec<Item> = block_shelf(page).into_iter().map(|id| Item { label: blocks::block(id).name.to_string(), kind: Kind::Tile(id) }).collect();
@@ -1121,7 +1151,7 @@ pub fn menu_input(
     }
     // small buttons side by side: left and right go along them too
     let chip = matches!(items.get(focus.sel).map(|i| &i.kind), Some(Kind::Chip(_)));
-    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_) | Kind::Tile(_))) {
+    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_) | Kind::Tile(_) | Kind::Slot(_))) {
         // cards in rows: left and right along a row, up and down a row at a time
         let cols = focus.cols.max(1) as i32;
         let last = selectable.len() as i32 - 1;
@@ -1167,6 +1197,12 @@ pub fn menu_input(
             if accept {
                 heard.click();
                 acts.0.push(Act::Hold(*id));
+            }
+        }
+        Kind::Slot(i) => {
+            if accept || interact {
+                heard.click();
+                acts.0.push(Act::Slot(*i, interact && !accept));
             }
         }
         Kind::Choice { act, .. } => {
@@ -1233,7 +1269,7 @@ pub fn menu_input(
         _ => {}
     }
     // the key that opened Blocks closes it
-    let shut = focus.screen == Screen::Blocks && c.blocks;
+    let shut = matches!(focus.screen, Screen::Blocks | Screen::Backpack) && c.blocks;
     if (c.back || shut || prompt == Some(MenuPrompt::Back)) && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
         let back = match &focus.screen {
             Screen::Title => None,
@@ -1242,6 +1278,12 @@ pub fn menu_input(
             Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
             Screen::Panel => Some(Act::Answer(None)),
             Screen::Map | Screen::Chat | Screen::Blocks => Some(Act::Resume),
+            // putting back what was being moved, then away
+            Screen::Backpack if focus.moving.is_some() && !shut => {
+                focus.moving = None;
+                None
+            }
+            Screen::Backpack => Some(Act::Resume),
             Screen::Waypoint(_) | Screen::Shared(_) => Some(Act::OpenMap),
             _ => Some(Act::Back),
         };
@@ -1535,15 +1577,17 @@ pub fn update_hud(
         *v = if show { Visibility::Inherited } else { Visibility::Hidden };
     }
     for (s, mut img, mut border) in &mut slots {
-        let id = me.hotbar[s.0];
-        let empty = settings.survival && me.counts[s.0] == 0;
-        img.image = if empty { Handle::default() } else { atlas.icons.get(blocks::block(id).faces[1]).cloned().unwrap_or_default() };
+        let slot = me.pockets.0[s.0];
+        let empty = settings.survival && slot.empty() || slot.thing == 0;
+        img.image = if empty { Handle::default() } else { atlas.icons.get(crate::items::icon(slot.thing)).cloned().unwrap_or_default() };
         img.color = if empty { Color::NONE } else { Color::WHITE };
         *border = BorderColor::all(if s.0 == me.slot { Color::srgb(1.0, 1.0, 1.0) } else { Color::srgba(0.0, 0.0, 0.0, 0.5) });
     }
     for (s, mut t) in &mut texts.p0() {
-        let n = me.counts[s.0];
-        t.0 = if settings.survival && n > 0 { n.to_string() } else { String::new() };
+        let n = me.pockets.0[s.0].count;
+        // one of a thing that only comes one to a slot (a tool) needs no number
+        let one = n == 1 && crate::items::stack(me.pockets.0[s.0].thing) == 1;
+        t.0 = if settings.survival && n > 0 && !one { n.to_string() } else { String::new() };
     }
     // what pressing would do
     let pad = c.pad;
