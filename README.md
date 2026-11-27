@@ -22,7 +22,7 @@ This is a test build of milestones M0 to M3 of the plan: a hilly island with the
 | First or third person | F5 | Right stick click |
 | Pause | Esc | Start |
 
-Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. The Rodeo Ram is there too, if you want your longest ride on its board, and the Tag Bot on the Green keeps a board of who's caught it most. Woollies, Glowbugs, Jellies and two Gnome Gardeners (ask them how things work) live on the Green, ducks, frogs and Pebble Crabs by the creek north-east of it, and pups and moles on the hill. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
+Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. The Rodeo Ram is there too, if you want your longest ride on its board, and the Tag Bot on the Green keeps a board of who's caught it most. Woollies, Glowbugs, Jellies and two Gnome Gardeners (ask them how things work) live on the Green, ducks, frogs and Pebble Crabs by the creek north-east of it, and pups and moles on the hill. While you ride one, Pat calms it down a little; creations can have buttons of their own like that, shown at the bottom of the screen, and **Settings, Creations' buttons** moves them to buttons you like better. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
 
 The four stone arches on the north side of the Green show what's in this world that someone brought (a friend's creations, or yours) and, in the arches left over, what the market offers: favourites of the last month's jams, entries in this week's, and what's trending. Walk up to one and Interact to bring it into your world, or to look inside one that's here already. Younger players only see creations a moderator checked for all ages.
 
@@ -85,7 +85,7 @@ The status page's `/status.json` has what a soak test needs: players, creatures,
 
 Remix anything from Look inside, or put a folder in `creations/` of your Potluck folder (`~/snap/potluck/common` for the snap, `~/.local/share/potluck` from source). A creation is a `potluck.toml` and Luau files; [creations/AGENTS.md](creations/AGENTS.md) describes the API, and every remix gets a copy of it and of the API's types, so editors and AI helpers know what's there. [creations/mossback](creations/mossback) is the worked example.
 
-The API comes in modules, each with its own version (`@potluck/world` 0.2, `tweak` 0.1, `game` 0.1, `store` 0.1), never tied to the game's version. [docs/api.md](docs/api.md) is the promise that goes with them: what stays working as the API grows, and the sandbox's limits.
+The API comes in modules, each with its own version (`@potluck/world` 0.2, `tweak` 0.1, `game` 0.1, `store` 0.1, `input` 0.1), never tied to the game's version. [docs/api.md](docs/api.md) is the promise that goes with them: what stays working as the API grows, and the sandbox's limits.
 
 ## Building from source
 

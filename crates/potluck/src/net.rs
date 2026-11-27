@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -101,6 +101,8 @@ pub enum Msg {
     Thrown([f32; 3]),
     Toast(String),
     Tweak { id: String, knobs: BTreeMap<String, serde_json::Value> },
+    /// The creation that has your controls now (`input.focus`), or none.
+    Focus(Option<String>),
 }
 
 pub enum Event {
@@ -649,6 +651,15 @@ pub fn host_net(
 }
 
 impl Net {
+    /// Tells a player which creation has their controls now.
+    pub fn send_focus(&self, pid: u32, creation: Option<String>) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Focus(creation)));
+            }
+        }
+    }
+
     /// A line for one player's screen.
     pub fn tell(&self, pid: u32, text: &str) {
         if let Role::Host(h) = &self.role {
@@ -915,6 +926,7 @@ pub fn client_net(
                 }
                 Msg::Thrown(v) => throw(&mut me, Vec3::from_array(v)),
                 Msg::Toast(t) => toasts.push(t),
+                Msg::Focus(c) => me.focus = c,
                 _ => {}
             },
         }

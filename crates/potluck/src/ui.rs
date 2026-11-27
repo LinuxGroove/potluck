@@ -56,6 +56,8 @@ pub enum Screen {
     Age(Box<Act>),
     /// What a parent decides, behind their PIN.
     Parents,
+    /// Creations' actions, and the buttons they're on.
+    Controls,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -113,6 +115,11 @@ pub enum Act {
     Arch(usize),
     /// Put a creation shared to Everyone in the jam running now.
     EnterJam(String),
+    OpenControls,
+    /// Wait for the next button or key for a creation's action.
+    Rebind(String, String),
+    /// Every creation's actions back on the buttons it chose.
+    ResetControls,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -172,6 +179,8 @@ pub struct Focus {
     pub account: Option<crate::share::Account>,
     /// The jam running now, once the market's said.
     pub jam: Option<crate::share::JamNow>,
+    /// A creation's action waiting for its new button: (creation, action).
+    pub rebinding: Option<(String, String)>,
     /// A code for another device to type, on the Devices screen.
     pub link_code: Option<String>,
     /// Parent settings are unlocked until the screen is left.
@@ -198,6 +207,7 @@ impl Default for Focus {
             servers: vec![],
             account: None,
             jam: None,
+            rebinding: None,
             link_code: None,
             parents_open: false,
             pin_misses: vec![],
@@ -587,6 +597,34 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::Back));
             ("Creations".into(), v)
         }
+        Screen::Controls => {
+            let mut v = vec![];
+            if let Some((cid, aid)) = &focus.rebinding {
+                let name = lib.list.get(cid).and_then(|c| c.manifest.actions.get(aid)).map(|a| a.name.clone()).unwrap_or_default();
+                v.push(Item { label: format!("Press a button or a key for {name}"), kind: Kind::Big });
+                v.push(note("A pad button moves it on the pad, a key on the keyboard. B or Esc leaves it as it was."));
+                return ("Creations' buttons".into(), v);
+            }
+            v.push(note("What creations' buttons do while you ride their creatures, or while a mini game has your controls. Choose one to move it."));
+            // what's in this world first, then the rest
+            let mut list: Vec<&crate::creations::Creation> = lib.list.values().filter(|c| !c.manifest.actions.is_empty()).collect();
+            list.sort_by_key(|c| (!lib.running.contains(&c.id), c.manifest.name.clone()));
+            for c in &list {
+                for (aid, a) in &c.manifest.actions {
+                    let (pad, key) = settings.binding(&c.id, aid, a);
+                    let on: Vec<String> = [crate::input::button_name(&pad), key].into_iter().filter(|b| !b.is_empty()).collect();
+                    v.push(button(format!("{}: {}   {}", c.manifest.name, a.name, on.join(" / ")), Act::Rebind(c.id.clone(), aid.clone())));
+                }
+            }
+            if list.is_empty() {
+                v.push(note("None of your creations have buttons of their own yet."));
+            }
+            if !settings.bindings.is_empty() {
+                v.push(button("Put them all back", Act::ResetControls));
+            }
+            v.push(button("Back", Act::OpenSettings));
+            ("Creations' buttons".into(), v)
+        }
         Screen::Settings => {
             let v = vec![
                 Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: focus.fields.get("name").cloned().unwrap_or_else(|| settings.name.clone()) } },
@@ -597,6 +635,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
+                button("Creations' buttons", Act::OpenControls),
                 button("Link a device", Act::OpenDevices),
                 button("Parent settings", Act::OpenParents),
                 Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
@@ -677,6 +716,30 @@ pub fn menu_input(
     let moved = cursor.is_some() && cursor != *last_cursor;
     *last_cursor = cursor;
     if focus.playing() {
+        return;
+    }
+    // the next button or key for a creation's action
+    if let Some((creation, action)) = focus.rebinding.clone() {
+        if c.back {
+            focus.rebinding = None;
+        } else if let Some(b) = c.just.first() {
+            let def = lib.list.get(&creation).and_then(|c| c.manifest.actions.get(&action)).cloned().unwrap_or_default();
+            let (pad, keys) = settings.binding(&creation, &action, &def);
+            let mut chosen = crate::settings::Binding { pad, keys };
+            match b.split_once(':') {
+                Some(("pad", p)) => chosen.pad = p.to_string(),
+                Some((_, k)) => chosen.keys = k.to_string(),
+                None => {}
+            }
+            let key = format!("{creation}/{action}");
+            if chosen.pad == def.pad && chosen.keys == def.keys {
+                settings.bindings.remove(&key);
+            } else {
+                settings.bindings.insert(key, chosen);
+            }
+            settings.save();
+            focus.rebinding = None;
+        }
         return;
     }
     let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
@@ -793,7 +856,7 @@ pub fn menu_input(
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
-            Screen::Devices | Screen::Parents => Some(Act::OpenSettings),
+            Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {
@@ -1172,13 +1235,20 @@ pub fn update_hud(
     let mut prompt = String::new();
     if let Some(id) = me.riding {
         let kind = herd.bodies.get(&id).map(|b| b.kind.clone()).unwrap_or_default();
-        prompt = format!("Riding {kind}  ·  {} or {} to get off", glyph(pad, "interact"), if pad { "B" } else { "Shift" });
+        prompt = match &me.live_prompt {
+            // its own buttons, and B or Shift still gets you off
+            Some(live) => format!("Riding {kind}  ·  {live}  ·  {} to get off", if pad { "B" } else { "Shift" }),
+            None => format!("Riding {kind}  ·  {} or {} to get off", glyph(pad, "interact"), if pad { "B" } else { "Shift" }),
+        };
     } else if let Some(b) = me.aim_body.and_then(|id| herd.bodies.get(&id)) {
         let name = lib.list.get(&b.creation).map(|c| format!("{} by {}", c.manifest.name, c.manifest.by)).unwrap_or(b.kind.clone());
         let verb = if b.rideable && b.rider.is_none() { "Ride" } else { "Use" };
         prompt = format!("{name}\n{} {verb}   {} Look inside", glyph(pad, "interact"), glyph(pad, "inside"));
     } else if let Some((_, text)) = &me.aim_arch {
         prompt = text.clone();
+    } else if let Some(live) = &me.live_prompt {
+        let name = me.focus.as_ref().and_then(|id| lib.list.get(id)).map(|c| c.manifest.name.clone()).unwrap_or_default();
+        prompt = format!("{name}\n{live}");
     } else if let Some(hit) = me.target {
         let b = blocks::block(hit.id);
         prompt = b.name.to_string();

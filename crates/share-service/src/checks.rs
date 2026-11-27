@@ -20,11 +20,54 @@ pub struct Toml {
     pub remix_of: Option<String>,
     pub licence: String,
     pub needs: BTreeMap<String, String>,
+    /// Its buttons (`@potluck/input`): `[actions.buck]`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub actions: BTreeMap<String, Action>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Action {
+    pub name: String,
+    pub pad: String,
+    pub keys: String,
+}
+
+/// The pad buttons and keys an action may ask for. Keep in step with
+/// `PAD_BUTTONS` and the keys in the game's input.rs.
+pub const PAD_BUTTONS: &[&str] = &["A", "X", "Y", "LB", "RB", "LT", "RT", "Up", "Down", "Left", "Right"];
+pub const MAX_ACTIONS: usize = 8;
+
+fn key_ok(k: &str) -> bool {
+    k == "Space" || (k.len() == 1 && k.chars().all(|c| c.is_ascii_uppercase()) && !"WASD".contains(k))
+}
+
+/// What's wrong with a creation's actions, and the ones with no pad button.
+pub fn action_problems(actions: &BTreeMap<String, Action>) -> (Vec<String>, Vec<String>) {
+    let mut problems = vec![];
+    if actions.len() > MAX_ACTIONS {
+        problems.push(format!("it has {} actions, and the most is {MAX_ACTIONS}", actions.len()));
+    }
+    for (id, a) in actions {
+        if id.is_empty() || id.len() > 24 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            problems.push(format!("an action's id is 1 to 24 small letters, numbers or _ (not \"{id}\")"));
+        } else if a.name.trim().is_empty() || a.name.chars().count() > 24 {
+            problems.push(format!("action {id} needs a name of 1 to 24 letters"));
+        } else if a.pad.is_empty() && a.keys.is_empty() {
+            problems.push(format!("action {id} needs a pad button or a key"));
+        } else if !a.pad.is_empty() && !PAD_BUTTONS.contains(&a.pad.as_str()) {
+            problems.push(format!("action {id} can't have the pad's {} (it can have: {})", a.pad, PAD_BUTTONS.join(", ")));
+        } else if !a.keys.is_empty() && !key_ok(&a.keys) {
+            problems.push(format!("action {id} can't have the {} key (it can have Space or a letter but W, A, S and D)", a.keys));
+        }
+    }
+    let no_pad = actions.iter().filter(|(_, a)| a.pad.is_empty()).map(|(id, _)| id.clone()).collect();
+    (problems, no_pad)
 }
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.2"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.2"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -271,6 +314,18 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         false => Check::new("API", "fail", api.join("; ")),
     });
 
+    // Its buttons
+    if let Some(m) = manifest.as_ref().filter(|m| !m.actions.is_empty()) {
+        let (problems, no_pad) = action_problems(&m.actions);
+        out.push(if !problems.is_empty() {
+            Check::new("Buttons", "fail", problems.join("; "))
+        } else if !no_pad.is_empty() {
+            Check::new("Buttons", "pass", format!("not pad friendly: {} has no pad button", no_pad.join(", ")))
+        } else {
+            Check::new("Buttons", "pass", "pad friendly: every action has a pad button")
+        });
+    }
+
     // The code compiles
     let mut code_problems = Vec::new();
     for (name, text) in files.iter().filter(|(n, _)| n.ends_with(".luau") || n.ends_with(".lua")) {
@@ -346,6 +401,25 @@ mod tests {
             let files: BTreeMap<String, String> = list.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
             let (_, checks) = run(&files, &words, &|_| false);
             assert!(!failed(&checks) && !warned(&checks), "{id}: {checks:?}");
+        }
+    }
+
+    #[test]
+    fn buttons_are_checked_and_pad_friendly_is_noted() {
+        let words = Words::parse("grumble\n");
+        let with = |actions: &str| {
+            let mut f = creation("local input = require(\"@potluck/input@0.1\")\n");
+            let toml = f["potluck.toml"].replace("[needs]", &format!("{actions}\n[needs]\ninput = \"0.1\""));
+            f.insert("potluck.toml".into(), toml);
+            let (_, checks) = run(&f, &words, &|_| false);
+            checks.into_iter().find(|c| c.name == "Buttons").expect("a Buttons check")
+        };
+        let good = with("[actions.buck]\nname = \"Buck\"\npad = \"X\"\nkeys = \"F\"\n");
+        assert_eq!((good.result.as_str(), good.note.contains("pad friendly")), ("pass", true), "{good:?}");
+        let keys_only = with("[actions.buck]\nname = \"Buck\"\nkeys = \"F\"\n");
+        assert!(keys_only.result == "pass" && keys_only.note.contains("not pad friendly: buck"), "{keys_only:?}");
+        for bad in ["[actions.buck]\nname = \"Buck\"\npad = \"B\"\n", "[actions.buck]\nname = \"Buck\"\nkeys = \"W\"\n", "[actions.Buck]\nname = \"Buck\"\npad = \"X\"\n", "[actions.buck]\nname = \"\"\npad = \"X\"\n", "[actions.buck]\nname = \"Buck\"\n"] {
+            assert_eq!(with(bad).result, "fail", "{bad}");
         }
     }
 

@@ -35,6 +35,16 @@ pub struct Settings {
     pub servers: bool,
     /// The parent's PIN, hashed with this device's id. Empty: no PIN yet.
     pub parent_pin: String,
+    /// Creations' actions moved to other buttons, by `creation/action`.
+    pub bindings: std::collections::BTreeMap<String, Binding>,
+}
+
+/// A creation's action on buttons the player chose.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Binding {
+    pub pad: String,
+    pub keys: String,
 }
 
 impl Default for Settings {
@@ -55,6 +65,7 @@ impl Default for Settings {
             sharing: true,
             servers: true,
             parent_pin: String::new(),
+            bindings: Default::default(),
         }
     }
 }
@@ -95,6 +106,15 @@ impl Settings {
     }
 
     /// A PIN as it's kept: never the digits themselves.
+    /// The pad button and key an action is on: the player's choice, or the
+    /// creation's.
+    pub fn binding(&self, creation: &str, action: &str, def: &crate::creations::ActionDef) -> (String, String) {
+        match self.bindings.get(&format!("{creation}/{action}")) {
+            Some(b) => (b.pad.clone(), b.keys.clone()),
+            None => (def.pad.clone(), def.keys.clone()),
+        }
+    }
+
     pub fn pin_hash(&self, pin: &str) -> String {
         use sha2::Digest;
         let d = sha2::Sha256::digest(format!("potluck parent pin\n{}\n{}", self.device, pin.trim()).as_bytes());

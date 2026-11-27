@@ -23,6 +23,8 @@ pub enum Action {
     Hit(u64),
     Dismount,
     Ride(Vec2, f32),
+    /// One of a creation's actions (`@potluck/input`), pressed or let go.
+    Press { creation: String, action: String, down: bool },
 }
 
 /// What players did this frame: (player id, action).
@@ -34,9 +36,48 @@ pub struct HerdRng(pub Rng);
 
 /// Aiming at creatures, getting on and off, and the pause button.
 #[allow(clippy::too_many_arguments)]
-pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut me: ResMut<Me>, net: Res<Net>, mut actions: ResMut<Actions>, mut acts: ResMut<Acts>, green: Res<Green>, lib: Res<Library>) {
+pub fn interact(
+    c: Res<Controls>,
+    mut focus: ResMut<Focus>,
+    herd: Res<Herd>,
+    mut me: ResMut<Me>,
+    net: Res<Net>,
+    mut actions: ResMut<Actions>,
+    mut acts: ResMut<Acts>,
+    green: Res<Green>,
+    lib: Res<Library>,
+    settings: Res<Settings>,
+) {
     me.aim_body = None;
     me.aim_arch = None;
+    // a creation's actions: tell the host what was pressed and let go
+    let live = if focus.playing() { c.live.clone() } else { None };
+    let now: Vec<String> = if live.is_some() { c.actions.clone() } else { vec![] };
+    let (was_live, was) = std::mem::take(&mut me.pressing);
+    for a in &was {
+        if was_live != live || !now.contains(a) {
+            actions.0.push((net.my_id, Action::Press { creation: was_live.clone().unwrap_or_default(), action: a.clone(), down: false }));
+        }
+    }
+    for a in &now {
+        if was_live != live || !was.contains(a) {
+            actions.0.push((net.my_id, Action::Press { creation: live.clone().unwrap_or_default(), action: a.clone(), down: true }));
+        }
+    }
+    me.live_prompt = live.as_ref().and_then(|id| lib.list.get(id)).map(|cr| {
+        let what: Vec<String> = cr
+            .manifest
+            .actions
+            .iter()
+            .filter_map(|(id, a)| {
+                let (pad, key) = settings.binding(&cr.id, id, a);
+                let b = if c.pad && !pad.is_empty() { crate::input::button_name(&pad) } else if !key.is_empty() { key } else { crate::input::button_name(&pad) };
+                (!b.is_empty()).then(|| format!("{b} {}", a.name))
+            })
+            .collect();
+        what.join("   ")
+    }).filter(|p| !p.is_empty());
+    me.pressing = (live, now);
     if !focus.playing() {
         // a menu open while riding: the creature stands and waits
         if me.riding.is_some() {
@@ -159,6 +200,13 @@ pub fn host_step(
             Action::Ride(mv, yaw) => {
                 herd.riders.insert(pid, (mv, yaw));
             }
+            Action::Press { creation, action, down } => {
+                // only while it's live for them: riding its creature, or it has their controls
+                let live = herd.bodies.values().any(|b| b.creation == creation && b.rider == Some(pid)) || scripts.focus_of(pid).as_deref() == Some(creation.as_str());
+                if live || !down {
+                    scripts.press(pid, &creation, &action, down);
+                }
+            }
         }
     }
     let w = &*voxels;
@@ -168,6 +216,14 @@ pub fn host_step(
     for t in std::mem::take(&mut scripts.out.toasts) {
         net.broadcast_toast(&t);
         toasts.push(t);
+    }
+    // creations that took or gave back a player's controls
+    for (pid, creation) in scripts.focus_changes() {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().focus = creation;
+        } else {
+            net.send_focus(pid, creation);
+        }
     }
     for (pid, v) in std::mem::take(&mut scripts.out.throws) {
         herd.riders.remove(&pid);
@@ -594,6 +650,15 @@ pub fn do_acts(
                 }
                 None => {}
             },
+            Act::OpenControls => {
+                focus.rebinding = None;
+                focus.go(Screen::Controls);
+            }
+            Act::Rebind(creation, action) => focus.rebinding = Some((creation, action)),
+            Act::ResetControls => {
+                settings.bindings.clear();
+                settings.save();
+            }
             Act::EnterJam(id) => {
                 let code = lib.marks.get(&id).filter(|m| m.everyone && m.version > 0).map(|m| m.code.clone());
                 match (focus.jam.clone(), code) {
@@ -628,6 +693,7 @@ pub fn do_acts(
                 focus.go(to);
             }
             Act::Leave => {
+                me.focus = None;
                 net.leave();
                 *voxels = crate::world::generate(voxels.seed);
                 herd.bodies.clear();

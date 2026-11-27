@@ -27,8 +27,18 @@ store = "0.1"
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
+| `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 
-Still to come, each as its own module with its own version: `@potluck/input` (actions with pad and keyboard bindings), `@potluck/ui` (panels and HUD pieces), `@potluck/sound`, and `@potluck/net` (a creation's client half, for what only one player sees).
+Still to come, each as its own module with its own version: `@potluck/ui` (panels and HUD pieces), `@potluck/sound`, and `@potluck/net` (a creation's client half, for what only one player sees).
+
+A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
+
+```toml
+[actions.pat]
+name = "Pat"
+pad = "X"
+keys = "F"
+```
 
 Versions belong to each module, never to the game. The game is `vYYYY.WW.MINOR` like every LinuxGroove game; a creation never names it.
 
@@ -60,7 +70,8 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Kinds of creature | 16 |
 | Timers waiting at once | 64 |
 | Shortest timer | 0.1 s, the length of a tick |
-| World event handlers | 32 |
+| World event and input handlers (`world.on`, `input.on`) | 32 |
+| Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
 | Boards | 16, of 100 players each |
 | Store | 64 KB, counted as JSON |
 | Messages | `world.say` 120 letters, a creature's `say` 80 |
@@ -75,6 +86,10 @@ What a creation can never do, at any version: read or write files, reach the net
 
 - **0.2**: `world.after`, `world.every` and `world.cancel` (timers), and `world.on` for `"player_joined"` and `"player_left"`. A creation with no creatures can now run code every tick.
 - **0.1**: the first version.
+
+### `@potluck/input`
+
+- **0.1**: the first version: `[actions]` in `potluck.toml`, and `input.on`, `input.held`, `input.focus` and `input.focused`.
 
 ### `@potluck/store`
 

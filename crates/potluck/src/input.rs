@@ -7,7 +7,83 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 
+use crate::creations::{ActionDef, Library};
+use crate::creatures::Herd;
+use crate::player::Me;
 use crate::settings::Settings;
+
+/// Pad buttons a creation's action can ask for. B, Menu, View and the
+/// sticks stay the game's, so B always gets you off a ride.
+pub const PAD_BUTTONS: &[(&str, GamepadButton)] = &[
+    ("A", GamepadButton::South),
+    ("X", GamepadButton::West),
+    ("Y", GamepadButton::North),
+    ("LB", GamepadButton::LeftTrigger),
+    ("RB", GamepadButton::RightTrigger),
+    ("LT", GamepadButton::LeftTrigger2),
+    ("RT", GamepadButton::RightTrigger2),
+    ("Up", GamepadButton::DPadUp),
+    ("Down", GamepadButton::DPadDown),
+    ("Left", GamepadButton::DPadLeft),
+    ("Right", GamepadButton::DPadRight),
+];
+
+/// Keys a creation's action can ask for: Space and the letters but W, A, S
+/// and D. Shift, Esc, Tab and the number row stay the game's.
+const KEYS: &[(&str, KeyCode)] = &[
+    ("Space", KeyCode::Space),
+    ("B", KeyCode::KeyB), ("C", KeyCode::KeyC), ("E", KeyCode::KeyE), ("F", KeyCode::KeyF), ("G", KeyCode::KeyG),
+    ("H", KeyCode::KeyH), ("I", KeyCode::KeyI), ("J", KeyCode::KeyJ), ("K", KeyCode::KeyK), ("L", KeyCode::KeyL),
+    ("M", KeyCode::KeyM), ("N", KeyCode::KeyN), ("O", KeyCode::KeyO), ("P", KeyCode::KeyP), ("Q", KeyCode::KeyQ),
+    ("R", KeyCode::KeyR), ("T", KeyCode::KeyT), ("U", KeyCode::KeyU), ("V", KeyCode::KeyV), ("X", KeyCode::KeyX),
+    ("Y", KeyCode::KeyY), ("Z", KeyCode::KeyZ),
+];
+
+/// Actions a creation can have.
+pub const MAX_ACTIONS: usize = 8;
+
+pub fn pad_ok(b: &str) -> bool {
+    PAD_BUTTONS.iter().any(|(n, _)| *n == b)
+}
+
+pub fn key_ok(k: &str) -> bool {
+    KEYS.iter().any(|(n, _)| *n == k)
+}
+
+/// What's wrong with one of a creation's actions, if anything.
+pub fn action_problem(id: &str, a: &ActionDef) -> Option<String> {
+    if id.is_empty() || id.len() > 24 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return Some(format!("an action's id is 1 to 24 small letters, numbers or _ (not \"{id}\")"));
+    }
+    if a.name.trim().is_empty() || a.name.chars().count() > 24 {
+        return Some(format!("action {id} needs a name of 1 to 24 letters"));
+    }
+    if a.pad.is_empty() && a.keys.is_empty() {
+        return Some(format!("action {id} needs a pad button or a key"));
+    }
+    if !a.pad.is_empty() && !pad_ok(&a.pad) {
+        let all: Vec<&str> = PAD_BUTTONS.iter().map(|b| b.0).collect();
+        return Some(format!("action {id} can't have the pad's {} (it can have: {})", a.pad, all.join(", ")));
+    }
+    if !a.keys.is_empty() && !key_ok(&a.keys) {
+        return Some(format!("action {id} can't have the {} key (it can have Space or a letter but W, A, S and D)", a.keys));
+    }
+    None
+}
+
+/// How a button shows in prompts.
+pub fn button_name(b: &str) -> String {
+    match b {
+        "Up" | "Down" | "Left" | "Right" => format!("D-pad {}", b.to_lowercase()),
+        _ => b.to_string(),
+    }
+}
+
+/// The creation whose actions are live for this player: the one whose
+/// creature they ride, or the one that has their controls.
+pub fn live_creation(me: &Me, herd: &Herd) -> Option<String> {
+    me.riding.and_then(|id| herd.bodies.get(&id)).map(|b| b.creation.clone()).or_else(|| me.focus.clone())
+}
 
 #[derive(Resource, Default)]
 pub struct Controls {
@@ -45,6 +121,13 @@ pub struct Controls {
     pub slide: f32,
     stick_latch: bool,
     y_held: f32,
+    /// Buttons a creation could ask for, held now and pressed this frame:
+    /// `pad:X`, `key:F`.
+    pub held: Vec<String>,
+    pub just: Vec<String>,
+    /// The creation whose actions are live, and its actions held now.
+    pub live: Option<String>,
+    pub actions: Vec<String>,
 }
 
 pub fn read(
@@ -57,6 +140,10 @@ pub fn read(
     settings: Res<Settings>,
     time: Res<Time>,
     mut c: ResMut<Controls>,
+    me: Res<Me>,
+    herd: Res<Herd>,
+    lib: Res<Library>,
+    focus: Res<crate::ui::Focus>,
 ) {
     let dt = time.delta_secs();
     let y_held = c.y_held;
@@ -109,6 +196,14 @@ pub fn read(
     c.backspace = kp(KeyCode::Backspace);
     if keys.get_just_pressed().next().is_some() || mouse.get_just_pressed().next().is_some() || motion.delta.length() > 2.0 {
         c.pad = false;
+    }
+    for (name, code) in KEYS {
+        if keys.pressed(*code) {
+            c.held.push(format!("key:{name}"));
+        }
+        if keys.just_pressed(*code) {
+            c.just.push(format!("key:{name}"));
+        }
     }
     for ev in typed.read() {
         if ev.state != ButtonState::Pressed {
@@ -187,6 +282,14 @@ pub fn read(
         } else if raw.length() < 0.3 {
             c.stick_latch = false;
         }
+        for (name, b) in PAD_BUTTONS {
+            if p(*b) {
+                c.held.push(format!("pad:{name}"));
+            }
+            if jp(*b) {
+                c.just.push(format!("pad:{name}"));
+            }
+        }
         c.accept |= jp(GamepadButton::South);
         c.back |= jp(GamepadButton::East);
         if pad.get_just_pressed().next().is_some() || ls != Vec2::ZERO || rs != Vec2::ZERO {
@@ -195,6 +298,37 @@ pub fn read(
     }
     c.mv = if mv.length() > 1.0 { mv.normalize() } else { mv };
     c.look = look;
+    if focus.playing() {
+        claim(&mut c, live_creation(&me, &herd), &lib, &settings);
+    }
+}
+
+/// A creation's actions while they're live: which are held, and the game's
+/// own use of their buttons set aside (so X bucks rather than gets you off).
+pub fn claim(c: &mut Controls, live: Option<String>, lib: &Library, settings: &Settings) {
+    let Some(creation) = live.and_then(|id| lib.list.get(&id)) else { return };
+    let mut claimed: Vec<String> = vec![];
+    for (id, a) in &creation.manifest.actions {
+        let (pad, key) = settings.binding(&creation.id, id, a);
+        let mine = [(!pad.is_empty()).then(|| format!("pad:{pad}")), (!key.is_empty()).then(|| format!("key:{key}"))];
+        if mine.iter().flatten().any(|b| c.held.contains(b)) {
+            c.actions.push(id.clone());
+        }
+        claimed.extend(mine.into_iter().flatten());
+    }
+    for b in &claimed {
+        match b.as_str() {
+            "pad:A" | "key:Space" => (c.jump, c.jump_pressed) = (false, false),
+            "pad:X" | "key:F" | "key:E" => c.interact = false,
+            "pad:Y" | "key:L" => c.look_inside = false,
+            "pad:LB" | "pad:RB" => c.hotbar_step = 0,
+            "pad:LT" => c.place_pressed = false,
+            "pad:RT" => (c.break_held, c.break_pressed) = (false, false),
+            "pad:Left" | "key:P" => c.share = false,
+            _ => {}
+        }
+    }
+    c.live = Some(creation.id.clone());
 }
 
 /// The name of a button for prompts, on the device last used.
