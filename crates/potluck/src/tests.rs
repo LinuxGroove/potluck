@@ -2120,7 +2120,7 @@ for i = 1, 15 do net.send("spam") end
     lib.world = 1;
     let mut halves = [Halves::default(), Halves::default()];
     for (h, p) in halves.iter_mut().zip([&ada, &bo]) {
-        h.sync(Some(&lib), p);
+        h.sync(Some(&lib), p, None);
         assert_eq!(h.list["test"].error, None);
     }
     let out = halves[0].take();
@@ -2151,8 +2151,8 @@ for i = 1, 15 do net.send("spam") end
     assert_eq!(for_ada.iter().filter(|n| n.topic == "hi").count(), 1);
     assert_eq!(notes.iter().filter(|(p, _)| *p == 8).count(), 31);
     assert!(scripts.net_changes(&[7, 8]).is_empty(), "sent once");
-    halves[0].frame(0.1, &ada, for_ada);
-    halves[0].frame(0.45, &ada, vec![]);
+    halves[0].frame(0.1, &ada, for_ada, None);
+    halves[0].frame(0.45, &ada, vec![], None);
     let out = halves[0].take();
     let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     assert!(out.pieces.contains(&("test".into(), "hi".into(), piece("hi 2 b 2", "bottom"))), "{:?}", out.pieces);
@@ -2164,25 +2164,25 @@ for i = 1, 15 do net.send("spam") end
     let mut c2 = c.clone();
     c2.files.insert("client.luau".into(), format!("{client}\nprint(\"again\")"));
     lib.list.insert("test".into(), c2.clone());
-    halves[0].sync(Some(&lib), &ada);
+    halves[0].sync(Some(&lib), &ada, None);
     let out = halves[0].take();
     assert!(out.pieces.contains(&("test".into(), "hi".into(), None)) && out.pieces.contains(&("test".into(), "got".into(), None)), "{:?}", out.pieces);
     assert!(halves[0].list["test"].log.join("\n").contains("again"));
     // so does a new world
     lib.world = 2;
-    halves[0].sync(Some(&lib), &ada);
+    halves[0].sync(Some(&lib), &ada, None);
     assert_eq!(halves[0].take().notes.len(), 10, "a new half says hello again");
 
     // a half that fails stops and says why; one that never stops is stopped
-    halves[0].frame(0.1, &ada, vec![Note { creation: "test".into(), topic: "boom".into(), value: serde_json::Value::Null }]);
+    halves[0].frame(0.1, &ada, vec![Note { creation: "test".into(), topic: "boom".into(), value: serde_json::Value::Null }], None);
     assert!(halves[0].list["test"].error.as_deref().unwrap_or("").contains("oops"), "{:?}", halves[0].list["test"].error);
     let mut c3 = c.clone();
     c3.files.insert("client.luau".into(), "while true do end".into());
     lib.list.insert("test".into(), c3);
-    halves[0].sync(Some(&lib), &ada);
+    halves[0].sync(Some(&lib), &ada, None);
     assert!(halves[0].list["test"].error.as_deref().unwrap_or("").contains("too long"));
     // and leaving the world stops them all
-    halves[1].sync(None, &bo);
+    halves[1].sync(None, &bo, None);
     assert!(halves[1].list.is_empty());
 
     // what goes between devices
@@ -2235,25 +2235,61 @@ fn the_rodeo_rams_clock_runs_on_the_riders_game() {
     mine.running.push(ram.id.clone());
     let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
     let mut h = Halves::default();
-    h.sync(Some(&mine), &ada);
+    h.sync(Some(&mine), &ada, None);
     assert_eq!(h.list["rodeo-ram"].error, None);
     let note = |topic: &str, value: serde_json::Value| crate::script::Note { creation: "rodeo-ram".into(), topic: topic.into(), value };
-    h.frame(0.05, &ada, vec![note("ride", serde_json::json!({ "best": 1.0 }))]);
+    h.frame(0.05, &ada, vec![note("ride", serde_json::json!({ "best": 1.0 }))], None);
     for _ in 0..12 {
-        h.frame(0.1, &ada, vec![]);
+        h.frame(0.1, &ada, vec![], None);
     }
     let out = h.take();
     let last = out.pieces.iter().rev().find(|p| p.1 == "ride").and_then(|p| p.2.clone()).expect("a clock");
     assert!(last.text.starts_with("Riding 1.") && last.text.contains("past the record"), "{}", last.text);
     assert_eq!(out.sounds.iter().filter(|s| s.name == "sparkle").count(), 1, "once, as it passes");
-    h.frame(0.1, &ada, vec![note("done", serde_json::json!({ "time": 1.3, "record": true }))]);
+    h.frame(0.1, &ada, vec![note("done", serde_json::json!({ "time": 1.3, "record": true }))], None);
     let out = h.take();
     assert_eq!(out.pieces.last().and_then(|p| p.2.clone()).map(|p| p.text), Some("You rode 1.3 s, the longest yet!".into()));
     for _ in 0..41 {
-        h.frame(0.1, &ada, vec![]);
+        h.frame(0.1, &ada, vec![], None);
     }
     assert_eq!(h.take().pieces.last().map(|p| p.2.clone()), Some(None), "gone after a while");
     assert_eq!(h.list["rodeo-ram"].error, None);
+}
+
+#[test]
+fn the_balloon_shows_its_rider_how_high_they_are() {
+    use crate::halves::{Halves, Seen};
+    home();
+    let lib = Library::load();
+    let balloon = lib.list["balloon"].clone();
+    assert_eq!(balloon.manifest.client.as_deref(), Some("client.luau"));
+    let mut mine = Library::default();
+    mine.list.insert(balloon.id.clone(), balloon.clone());
+    mine.running.push(balloon.id.clone());
+    let mut voxels = world();
+    let (x, z) = (20, 20);
+    let ground = voxels.top(x, z);
+    voxels.set(IVec3::new(x, ground, z), crate::blocks::SAND);
+    let at = |up: f32| PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(x as f32 + 0.5, ground as f32 + 1.0 + up, z as f32 + 0.5) };
+    let seen = |p: &PlayerInfo| Seen { voxels: &voxels, players: vec![p.clone()], look: Vec3::NEG_Z, aim: None };
+    let mut h = Halves::default();
+    h.sync(Some(&mine), &at(0.0), Some(&seen(&at(0.0))));
+    assert_eq!(h.list["balloon"].error, None, "{:?}", h.list["balloon"].log);
+    let out = h.take();
+    assert!(out.notes.iter().any(|n| n.topic == "hello"), "it asks whether it's aboard: {:?}", out.notes);
+    let note = |on: bool| crate::script::Note { creation: "balloon".into(), topic: "aboard".into(), value: serde_json::json!(on) };
+    let mut line = String::new();
+    for (i, up) in [0.0, 3.0, 8.0, 12.2].into_iter().enumerate() {
+        let notes = if i == 0 { vec![note(true)] } else { vec![] };
+        h.frame(0.2, &at(up), notes, Some(&seen(&at(up))));
+        if let Some(l) = h.take().pieces.iter().rev().find(|p| p.1 == "height").and_then(|p| p.2.clone()) {
+            line = l.text;
+        }
+    }
+    assert_eq!(line, "12 m up, rising · over sand");
+    h.frame(0.2, &at(4.0), vec![note(false)], Some(&seen(&at(4.0))));
+    assert_eq!(h.take().pieces.iter().rev().find(|p| p.1 == "height").map(|p| p.2.clone()), Some(None), "gone once they're out");
+    assert_eq!(h.list["balloon"].error, None);
 }
 
 #[test]
@@ -3765,7 +3801,7 @@ end)
     assert!(!err && text.contains("1 of 2 cases passed") && text.contains("FAIL  three moths: test.luau:7: moths: got 2, wanted 3"), "{text}");
     assert_eq!(cx.herd.bodies.len(), before, "the world's own creatures are left alone");
     let (text, err) = bridge_tool(&open, &mut cx, "test", json!({ "creation": "balloon" }));
-    assert!(!err && text.contains("4 of 4 cases passed"), "{text}");
+    assert!(!err && text.contains("5 of 5 cases passed"), "{text}");
     // a screenshot needs the game's screen, which this test hasn't got
     assert!(bridge_tool(&open, &mut cx, "screenshot", json!({})).1);
     drop(open);
@@ -4716,4 +4752,58 @@ fn creative_has_every_block_to_choose_from() {
     assert!(app.world().resource::<Toasts>().0.iter().any(|(t, _)| t.contains("make more at a table")));
     act(&mut app, Act::Hold(blocks::STONE));
     assert!(!app.world().resource::<crate::player::Me>().hotbar.contains(&blocks::STONE), "nothing new in survival");
+}
+
+#[test]
+fn a_client_half_reads_this_games_copy_of_the_world() {
+    use crate::halves::{Halves, Seen};
+    let mut voxels = world();
+    let at = IVec3::new(3, 90, 3);
+    voxels.set(at, crate::blocks::WOOL_RED);
+    let client = r#"
+local net = require("@potluck/net@0.2")
+local world = require("@potluck/world@0.12")
+local me = net.me()
+print("block " .. world.block(vector.create(3.5, 90.2, 3.5)))
+print("top " .. world.top(3, 3))
+print("kind " .. world.kind("Oak log"))
+local found = world.find_block(vector.create(3, 87, 3), 4, "Red wool")
+print("found " .. found.x .. " " .. found.y)
+print("players " .. #world.players() .. " " .. world.players()[2].name)
+print("nearest " .. world.nearest_player(vector.create(2, 40, 0)).name)
+print("aim " .. me.aim.y .. " look " .. me.look.z)
+print(pcall(world.set_block, vector.create(0, 0, 0), "Stone") and "set ok" or "no set_block")
+print(pcall(world.find_light, vector.create(0, 0, 0), 4) and "light ok" or "no find_light")
+world.after(0.2, function()
+	print("later " .. world.block(vector.create(3, 90, 3)) .. " aim " .. tostring(net.me().aim))
+end)
+"#;
+    let mut c = creation("print(\"main\")");
+    c.files.insert("client.luau".into(), client.into());
+    c.manifest.client = Some("client.luau".into());
+    let mut lib = Library::default();
+    lib.list.insert("test".into(), c);
+    lib.running.push("test".into());
+    lib.world = 1;
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::new(2.0, 40.0, 0.5) };
+    let mut h = Halves::default();
+    {
+        let seen = Seen { voxels: &voxels, players: vec![ada.clone(), bo.clone()], look: Vec3::new(0.0, 0.0, -1.0), aim: Some(at) };
+        h.sync(Some(&lib), &ada, Some(&seen));
+    }
+    assert_eq!(h.list["test"].error, None, "{:?}", h.list["test"].log);
+    h.take();
+    let l = h.list["test"].log.join("\n");
+    for want in ["block Red wool", "top 90", "kind wood", "found 3.5 90.5", "players 2 Bo", "nearest Bo", "aim 90.5 look -1", "no set_block", "no find_light"] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // what changes in the world, it sees in the next frame
+    voxels.set(at, crate::blocks::STONE);
+    let seen = Seen { voxels: &voxels, players: vec![ada.clone()], look: Vec3::X, aim: None };
+    h.frame(0.25, &ada, vec![], Some(&seen));
+    h.take();
+    let l = h.list["test"].log.join("\n");
+    assert!(l.contains("later Stone aim nil"), "{l}");
+    assert_eq!(h.list["test"].error, None);
 }

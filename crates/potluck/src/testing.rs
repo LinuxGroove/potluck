@@ -19,7 +19,7 @@ use crate::blocks;
 use crate::creations::Creation;
 use crate::creatures::{self, Herd};
 use crate::noise::Rng;
-use crate::script::{self, PlayerInfo, Scripts};
+use crate::script::{self, Note, PlayerInfo, Scripts};
 use crate::world::Voxels;
 
 /// The file a creation keeps its tests in.
@@ -38,7 +38,7 @@ pub const TEST_MODULE: &str = r#"
 local test = {}
 -- what the harness and the module share: the cases, and what the harness
 -- says about the world before each part of a case runs
-local h = { cases = {}, running = false, kinds = {}, bodies = {}, health = {}, shown = {}, asked = {}, heard = {} }
+local h = { cases = {}, running = false, kinds = {}, bodies = {}, health = {}, shown = {}, asked = {}, heard = {}, sent = {} }
 local function ask(op, ...)
 	if not h.running or not coroutine.isyieldable() then
 		error("test." .. op .. " works only in a case, while the creation's tests run", 3)
@@ -81,6 +81,7 @@ function test.press(player, action) ask("press", player, action, true) end
 function test.release(player, action) ask("press", player, action, false) end
 function test.answer(player, choice) ask("answer", player, choice) end
 function test.hold(player, block) ask("hold", player, block) end
+function test.from_half(player, topic, value) ask("from_half", player, topic, value) end
 -- looking: these only read what the harness said
 function test.kind(name)
 	seen("kind")
@@ -118,6 +119,18 @@ function test.heard(name)
 		error("test.heard needs a sound's name", 2)
 	end
 	return h.heard[name] or 0
+end
+function test.sent(player, topic)
+	seen("sent")
+	if type(topic) ~= "string" then
+		error("test.sent needs a player and a topic", 2)
+	end
+	local s = h.sent[pid(player, "sent")]
+	local m = s and s[topic]
+	if m then
+		return m.value, m.times
+	end
+	return nil, 0
 end
 function test.check(ok, message)
 	if not ok then
@@ -225,6 +238,9 @@ struct Harness {
     /// The sounds the creation played since the case began, by the names it
     /// plays them by (`test.heard`).
     heard: BTreeMap<String, u32>,
+    /// The last thing the creation sent each player's client half on each
+    /// topic since the case began (`test.sent`, test 0.3).
+    sent: BTreeMap<u32, BTreeMap<String, (serde_json::Value, u32)>>,
 }
 
 /// Why a case stops early.
@@ -235,7 +251,7 @@ enum Stop {
 
 impl Harness {
     fn new(creation: &Creation, voxels: Voxels, src: &str) -> Result<Harness, String> {
-        let mut h = Harness { id: creation.id.clone(), voxels, herd: Herd::default(), scripts: Scripts::default(), rng: Rng::new(7), played: 0.0, health: BTreeMap::new(), heard: BTreeMap::new() };
+        let mut h = Harness { id: creation.id.clone(), voxels, herd: Herd::default(), scripts: Scripts::default(), rng: Rng::new(7), played: 0.0, health: BTreeMap::new(), heard: BTreeMap::new(), sent: BTreeMap::new() };
         h.scripts.start(creation, &mut h.herd).map_err(|e| format!("it didn't start: {e}"))?;
         let Harness { scripts, voxels, herd, id, .. } = &mut h;
         let vm = scripts.vms.get_mut(id.as_str()).ok_or("it didn't start")?;
@@ -269,6 +285,7 @@ impl Harness {
         self.pass(0.1);
         self.played = 0.0;
         self.heard.clear();
+        self.sent.clear();
         let log_from = self.scripts.vms[&self.id].log.len();
         self.scripts.vms.get_mut(&self.id).expect("the creation runs").error = None;
         let mut reply = MultiValue::new();
@@ -335,6 +352,13 @@ impl Harness {
             let name = p.name.strip_prefix(&mine).unwrap_or(&p.name).to_string();
             *self.heard.entry(name).or_default() += 1;
         }
+        let notes = std::mem::take(&mut self.scripts.shared.lock().unwrap().notes);
+        for (who, n) in notes.into_iter().filter(|(_, n)| n.creation == self.id) {
+            for p in self.scripts.players.iter().filter(|p| who.is_none_or(|w| w == p.id)) {
+                let m = self.sent.entry(p.id).or_default().entry(n.topic.clone()).or_insert((serde_json::Value::Null, 0));
+                *m = (n.value.clone(), m.1 + 1);
+            }
+        }
     }
 
     fn tell(&mut self) -> mlua::Result<()> {
@@ -354,7 +378,7 @@ impl Harness {
             let asked: Vec<_> = players.iter().filter_map(|p| sh.ui.panels.get(&p.id).and_then(|q| q.front().cloned()).map(|f| (p.id, f))).collect();
             (shown, asked)
         };
-        let Harness { scripts, herd, id, health, heard, .. } = self;
+        let Harness { scripts, herd, id, health, heard, sent, .. } = self;
         let vm = scripts.vms.get_mut(id.as_str()).expect("the creation runs");
         let lua = &vm.lua;
         let h = vm.test_harness.clone();
@@ -393,7 +417,20 @@ impl Harness {
             a.set(pid, t)?;
         }
         h.set("asked", a)?;
-        h.set("heard", lua.create_table_from(heard.iter().map(|(k, v)| (k.as_str(), *v)))?)
+        h.set("heard", lua.create_table_from(heard.iter().map(|(k, v)| (k.as_str(), *v)))?)?;
+        let s = lua.create_table()?;
+        for (pid, topics) in sent.iter() {
+            let t = lua.create_table()?;
+            for (topic, (value, times)) in topics {
+                // a message with no value still says it was sent
+                let m = lua.create_table()?;
+                m.set("value", if value.is_null() { Value::Boolean(true) } else { script::from_json(lua, value)? })?;
+                m.set("times", *times)?;
+                t.set(topic.as_str(), m)?;
+            }
+            s.set(*pid, t)?;
+        }
+        h.set("sent", s)
     }
 
     /// Whether the creation's own code went wrong (a tick, an event).
@@ -614,6 +651,18 @@ impl Harness {
                 let ask = self.scripts.shared.lock().unwrap().ui.panels.get(&p.id).and_then(|q| q.front().map(|f| f.ask));
                 let ask = ask.ok_or_else(|| Stop::Problem("test.answer: nobody has asked that player anything".into()))?;
                 self.scripts.answer(p.id, ask, choice);
+                self.pass(0.1);
+                nothing
+            }
+            "from_half" => {
+                let p = self.player(arg(1), "from_half")?;
+                let topic = arg(2).and_then(|v| v.as_string().map(|s| s.to_string_lossy())).unwrap_or_default();
+                let value = match script::note_of(&topic, arg(3).unwrap_or(&Value::Nil)) {
+                    Ok(v) => v,
+                    Err(mlua::Error::RuntimeError(e)) => return Err(Stop::Problem(format!("test.from_half: {e}"))),
+                    Err(e) => return Err(fail(e)),
+                };
+                self.scripts.hear(p.id, Note { creation: self.id.clone(), topic, value });
                 self.pass(0.1);
                 nothing
             }

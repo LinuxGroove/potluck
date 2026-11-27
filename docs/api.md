@@ -30,10 +30,10 @@ store = "0.1"
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.2 | The game's sounds and the creation's own (made from numbers in `potluck.toml`), somewhere in the world or for one player, with subtitles |
-| `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
-| `@potluck/test` | 0.2 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
+| `@potluck/net` | 0.2 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see, reading that game's copy of the world |
+| `@potluck/test` | 0.3 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
-Every module planned for the API is here. Still to come in later minor versions: more of the API in client halves (`net`).
+Every module planned for the API is here, and client halves read the world as well as hear their creation.
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -123,6 +123,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/net`
 
 - **0.1**: the first version: `client` in `potluck.toml` for a client half, and `net.send` and `net.on` in both halves, with `net.me` in the client half. A client half has `ui.show` and `ui.hide`, `sound.play` and `play_for`, and `world`'s timers, `time`, `random` and `spot` (and from world 0.4, `daytime` and `daylight`).
+- **0.2**: a client half reads its player's game's copy of the world: `world.block`, `top`, `find_block` and `kind`, and `players` and `nearest_player` for the players that game knows of. `net.me()` adds `look` and `aim`.
 
 ### `@potluck/sound`
 
@@ -150,3 +151,4 @@ What a creation can never do, at any version: read or write files, reach the net
 
 - **0.1**: the first version: `test.case`, `check` and `same`; `wait`; `player` and `move`; what players do (`place`, `dig`, `use_block`, `use`, `hit`, `ride`, `get_off`, `press`, `release`, `answer`, `hold`); and looking (`kind`, `creature`, `health`, `shown`, `asked`).
 - **0.2**: `test.heard(name)`, how many times the creation played a sound since the case began.
+- **0.3**: `test.sent(player, topic)`, what the creation last sent that player's client half on a topic and how many times, and `test.from_half(player, topic, value?)`, a message to the creation as that half would send it.
