@@ -36,6 +36,10 @@ pub struct Manifest {
     /// with a name, a pad button and a key. Players can change them.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub actions: BTreeMap<String, ActionDef>,
+    /// Its client half: a file that runs on each player's own game, for
+    /// what only that player sees (`@potluck/net`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
 }
 
 /// One of a creation's actions: what players see it called, and the pad
@@ -86,6 +90,7 @@ impl Default for Manifest {
             needs: BTreeMap::new(),
             from: None,
             actions: BTreeMap::new(),
+            client: None,
         }
     }
 }
@@ -211,18 +216,21 @@ pub fn slug(s: &str) -> String {
 
 /// The base game's creations, built into the binary: each folder in
 /// `creations/` with its manifest and code, and the API's notes and types.
+/// The base game's creations, built in: each one's potluck.toml and
+/// main.luau, the files after a `+`, and the API's notes and types.
 macro_rules! base {
-    ($($id:literal),* $(,)?) => {
+    ($($id:literal $(+ $file:literal)*),* $(,)?) => {
         &[$(($id, &[
             ("potluck.toml", include_str!(concat!("../../../creations/", $id, "/potluck.toml"))),
             ("main.luau", include_str!(concat!("../../../creations/", $id, "/main.luau"))),
+            $(($file, include_str!(concat!("../../../creations/", $id, "/", $file))),)*
             ("AGENTS.md", AGENTS_MD),
             ("types/potluck.d.luau", TYPES),
         ])),*]
     };
 }
 
-const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram", "jelly", "tag-bot"];
+const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot"];
 
 pub const AGENTS_MD: &str = include_str!("../../../creations/AGENTS.md");
 pub const TYPES: &str = include_str!("../../../creations/types/potluck.d.luau");
@@ -237,6 +245,9 @@ pub struct Library {
     pub changed: Vec<String>,
     /// The market's codes for creations, by id (market.json).
     pub marks: BTreeMap<String, Mark>,
+    /// Counts the worlds started or joined, so client halves start afresh
+    /// in each.
+    pub world: u32,
 }
 
 fn mine_dir() -> PathBuf {

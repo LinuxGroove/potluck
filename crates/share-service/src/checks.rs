@@ -23,6 +23,9 @@ pub struct Toml {
     /// Its buttons (`@potluck/input`): `[actions.buck]`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub actions: BTreeMap<String, Action>,
+    /// Its client half's file (`@potluck/net`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -67,7 +70,7 @@ pub fn action_problems(actions: &BTreeMap<String, Action>) -> (Vec<String>, Vec<
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.2"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.1"), ("sound", "0.1")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.2"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.1"), ("sound", "0.1"), ("net", "0.1")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -269,6 +272,9 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
             }
             if !files.contains_key(&m.main) {
                 problems.push(format!("there's no {} to run", m.main));
+            }
+            if let Some(c) = m.client.as_ref().filter(|c| !files.contains_key(*c)) {
+                problems.push(format!("there's no {c} for its client half"));
             }
             if !KINDS.contains(&m.kind.as_str()) {
                 problems.push(format!("kind \"{}\" isn't one of {}", m.kind, KINDS.join(", ")));

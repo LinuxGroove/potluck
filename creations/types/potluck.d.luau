@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1, @potluck/sound 0.1
+-- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.1, @potluck/sound 0.1, @potluck/net 0.1
 
 export type Position = vector | { number }
 
@@ -118,6 +118,19 @@ export type Sound = {
 	play: (name: string, opts: SoundOptions?) -> boolean,
 	play_for: (player: Player | number, name: string, opts: SoundOptions?) -> boolean,
 	names: () -> { string },
+}
+
+-- In the main file, on the world's host.
+export type Net = {
+	send: (player: Player | number | nil, topic: string, value: Stored?) -> boolean,
+	on: (topic: string, fn: (player: Player, value: Stored) -> ()) -> (),
+}
+
+-- In a client half (`client` in potluck.toml), on each player's own game.
+export type ClientNet = {
+	send: (topic: string, value: Stored?) -> boolean,
+	on: (topic: string, fn: (value: Stored) -> ()) -> (),
+	me: () -> Player,
 }
 
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }

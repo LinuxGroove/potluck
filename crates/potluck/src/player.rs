@@ -68,6 +68,9 @@ pub struct Me {
     pub panel: Option<crate::script::Panel>,
     /// Subtitles for sounds just heard, and the seconds each has left.
     pub captions: Vec<(String, f32)>,
+    /// Messages creations sent their client halves on this game, for
+    /// `halves::run` to hand over.
+    pub notes: Vec<crate::script::Note>,
     /// Blocks walked since the last step's sound.
     stride: f32,
     regen: f32,
@@ -105,6 +108,7 @@ impl Default for Me {
             pieces: Default::default(),
             panel: None,
             captions: vec![],
+            notes: vec![],
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
