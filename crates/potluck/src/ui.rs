@@ -109,6 +109,10 @@ pub enum Act {
     OpenParents,
     UnlockParents(String),
     SetPin(String),
+    /// Interact at one of the Green's arches (0 to 3, west to east).
+    Arch(usize),
+    /// Put a creation shared to Everyone in the jam running now.
+    EnterJam(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -166,6 +170,8 @@ pub struct Focus {
     pub servers: Vec<crate::share::Listed>,
     /// Who this device plays as on the market, once asked.
     pub account: Option<crate::share::Account>,
+    /// The jam running now, once the market's said.
+    pub jam: Option<crate::share::JamNow>,
     /// A code for another device to type, on the Devices screen.
     pub link_code: Option<String>,
     /// Parent settings are unlocked until the screen is left.
@@ -191,6 +197,7 @@ impl Default for Focus {
             link: None,
             servers: vec![],
             account: None,
+            jam: None,
             link_code: None,
             parents_open: false,
             pin_misses: vec![],
@@ -271,6 +278,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Pause => {
             let mut v = vec![note(info.line.clone()), button("Back to the world", Act::Resume), button("Creations in this world", Act::OpenLibrary), button("Load a creation from a code", Act::OpenCode)];
             v.push(button("The market", Act::Market("/".into(), "The market".into())));
+            if let Some(j) = &focus.jam {
+                v.push(button(format!("This week's jam: {}", j.theme), Act::Market(format!("/jams/{}", j.slug), j.theme.clone())));
+            }
             v.push(button("Settings", Act::OpenSettings));
             v.push(button("Leave this world", Act::Leave));
             ("Paused".into(), v)
@@ -361,6 +371,14 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                     let everyone = lib.marks.get(id).is_some_and(|m| m.everyone);
                     v.push(button(if everyone { "Share this version to Everyone" } else { "Share to Everyone" }, Act::ShareTo(id.clone(), true)));
                     v.push(note("On the market for anyone to find, once a moderator has looked at it."));
+                }
+                if let Some(j) = focus.jam.as_ref().filter(|_| !settings.young) {
+                    if lib.marks.get(id).is_some_and(|m| m.everyone && m.version > 0) {
+                        v.push(button(format!("Enter it in this week's jam: {}", j.theme), Act::EnterJam(id.clone())));
+                        v.push(note("Stars it gets until the jam ends count. The four with the most go on the Green of every new world for a month."));
+                    } else {
+                        v.push(note(format!("This week's jam is \u{201c}{}\u{201d}: share it to Everyone to enter it.", j.theme)));
+                    }
                 }
                 v.push(button("Share by code only", Act::ShareTo(id.clone(), false)));
                 v.push(note(if settings.young { "Give the code to your friends: only people who have it can load it." } else { "Only people you give the code to can load it." }));
@@ -549,6 +567,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         }
         Screen::Library => {
             let mut v = vec![];
+            if let Some(j) = focus.jam.as_ref().filter(|_| !settings.young) {
+                v.push(note(format!("This week's jam is \u{201c}{}\u{201d}. Make something for it, share it to Everyone and enter it from Share.", j.theme)));
+            }
             let add = |title: &str, f: &dyn Fn(&crate::creations::Creation) -> bool, v: &mut Vec<Item>| {
                 let list: Vec<_> = lib.list.values().filter(|c| f(c)).collect();
                 if list.is_empty() {
@@ -1156,6 +1177,8 @@ pub fn update_hud(
         let name = lib.list.get(&b.creation).map(|c| format!("{} by {}", c.manifest.name, c.manifest.by)).unwrap_or(b.kind.clone());
         let verb = if b.rideable && b.rider.is_none() { "Ride" } else { "Use" };
         prompt = format!("{name}\n{} {verb}   {} Look inside", glyph(pad, "interact"), glyph(pad, "inside"));
+    } else if let Some((_, text)) = &me.aim_arch {
+        prompt = text.clone();
     } else if let Some(hit) = me.target {
         let b = blocks::block(hit.id);
         prompt = b.name.to_string();
@@ -1201,8 +1224,10 @@ pub fn update_hud(
     for (l, mut t, mut node, mut vis) in &mut q {
         if let Some((v, text)) = list.get(l.0).filter(|_| show) {
             t.0 = (*text).clone();
-            node.left = px(v.x - 4.0 * text.len().min(30) as f32);
-            node.top = px(v.y - 14.0);
+            // centred on its longest line, standing on the point
+            let wide = text.lines().map(|l| l.chars().count()).max().unwrap_or(0).min(30);
+            node.left = px(v.x - 4.0 * wide as f32);
+            node.top = px(v.y - 14.0 * text.lines().count().max(1) as f32);
             *vis = Visibility::Inherited;
         } else {
             *vis = Visibility::Hidden;

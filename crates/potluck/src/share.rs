@@ -72,8 +72,35 @@ pub enum Done {
     Linked { name: String, handle: String, recovery: bool },
     /// This device left the account it was linked to.
     Unlinked,
+    /// What the market offers the Green's arches, and the jam running now.
+    Green { picks: Vec<Pick>, jam: Option<JamNow> },
+    /// A creation went into a jam.
+    Entered { theme: String },
     Said(String),
     Failed(String),
+}
+
+/// A creation the market offers the Green's arches, and why: a favourite
+/// of a jam that ended lately, an entry in this week's, or trending.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Pick {
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub why: String,
+}
+
+/// The jam running now: a theme for a week.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct JamNow {
+    pub slug: String,
+    pub theme: String,
+    #[serde(default)]
+    pub ends: i64,
 }
 
 /// The market account this device plays as.
@@ -257,9 +284,9 @@ impl Market {
     fn call(&self, method: &str, path: &str, token: Option<&str>, name: &str, body: Option<&Value>) -> Result<Value, Fail> {
         let url = format!("{}{path}", self.base);
         let res = if method == "GET" {
-            let mut r = self.agent.get(&url);
+            let mut r = self.agent.get(&url).header("X-Potluck-Young", if self.young { "1" } else { "0" });
             if let Some(t) = token {
-                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name).header("X-Potluck-Young", if self.young { "1" } else { "0" });
+                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
             }
             r.call()
         } else {
@@ -732,6 +759,30 @@ impl ShareJobs {
     pub fn unlink(&self, who: &Who) {
         self.run(who, |c| match c.market("POST", "/api/link/leave", None) {
             Ok(_) => Done::Unlinked,
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// What the market offers the Green's arches (only what's checked for
+    /// all ages when `who` is young), and the jam running now. Nobody signs
+    /// in for it, and an unreachable market offers nothing.
+    pub fn green(&self, who: &Who) {
+        self.run(who, |c| match c.market.call("GET", "/api/green", None, "", None) {
+            Ok(v) => {
+                let picks = serde_json::from_value(v["arches"].clone()).unwrap_or_default();
+                let jam = c.market.call("GET", "/api/jams", None, "", None).ok().and_then(|v| serde_json::from_value(v["current"].clone()).ok());
+                Done::Green { picks, jam }
+            }
+            // quietly: the arches show what players bring instead
+            Err(_) => Done::Green { picks: vec![], jam: None },
+        });
+    }
+
+    /// Puts a creation shared to Everyone in the jam running now.
+    pub fn enter_jam(&self, who: &Who, jam: &JamNow, code: &str) {
+        let (slug, theme, code) = (jam.slug.clone(), jam.theme.clone(), code.to_string());
+        self.run(who, move |c| match c.market("POST", &format!("/api/jams/{slug}/enter"), Some(json!({ "code": code }))) {
+            Ok(_) => Done::Entered { theme },
             Err(e) => Done::Failed(e.text()),
         });
     }

@@ -24,6 +24,8 @@ This is a test build of milestones M0 to M3 of the plan: a hilly island with the
 
 Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. The Rodeo Ram is there too, if you want your longest ride on its board, and the Tag Bot on the Green keeps a board of who's caught it most. Woollies, Glowbugs, Jellies and two Gnome Gardeners (ask them how things work) live on the Green, ducks, frogs and Pebble Crabs by the creek north-east of it, and pups and moles on the hill. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
 
+The four stone arches on the north side of the Green show what's in this world that someone brought (a friend's creations, or yours) and, in the arches left over, what the market offers: favourites of the last month's jams, entries in this week's, and what's trending. Walk up to one and Interact to bring it into your world, or to look inside one that's here already. Younger players only see creations a moderator checked for all ages.
+
 ### Playing with friends
 
 - **On the same network:** one player chooses Host a world for friends; the others choose Join a friend's world, where the world shows up by itself.
@@ -40,6 +42,10 @@ Remix something from the market and change it, and **Suggest my change to the or
 There are no passwords and no emails. The game signs in to the LinuxGroove game server with a random id for your device, and **The market** (in the pause menu and on the title screen) or **Your profile on the market** (in Settings) opens the market signed in as you, or shows a QR code to carry on on your phone: handy on a controller. The profile is a name, a line about you and a block head picked from a few colours, eyes and hats. While the market is new, sharing to Everyone needs an invite code, entered on your page there.
 
 One account works on several devices. In **Settings**, **Link a device** shows a code on a device that's already yours; type it on the new one, on the same screen, and it plays as you, with your name, block head and what you've shared (servers go by it too). The market's **Your devices** page lists them, unlinks them, makes link codes and makes a **recovery code**: write it down, and if you lose every device it brings your account to a new one, once. A device that already shared things of its own can't be swallowed by another account; link the other way.
+
+### Jams
+
+Each week a moderator sets a theme ("Things that float") on the market's **Jams** page. While it runs, make something for it, share it to Everyone and choose **Enter it in this week's jam** under Share (or on its page on the market); a maker can enter three. When it ends, the four entries that got the most stars while it ran are its favourites, and they go on the arches of every new world's Green for a month. The jam running now shows on Explore, in the pause menu and in Creations.
 
 ### Younger players and parents
 

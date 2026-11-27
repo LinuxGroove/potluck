@@ -11,6 +11,7 @@ pub mod devices;
 pub mod forgejo;
 pub mod highlight;
 pub mod identity;
+pub mod jams;
 pub mod market;
 pub mod servers;
 pub mod store;

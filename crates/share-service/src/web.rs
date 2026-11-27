@@ -54,6 +54,10 @@ pub fn routes() -> Router<Shared> {
         .route("/me/devices/code", post(device_code))
         .route("/me/devices/{id}/unlink", post(unlink_device))
         .route("/me/recovery", post(make_recovery))
+        .route("/jams", get(jams_page).post(make_jam))
+        .route("/jams/{slug}", get(jam_page))
+        .route("/jams/{slug}/enter", post(enter_jam))
+        .route("/jams/{slug}/leave", post(leave_jam))
         .route("/servers", get(servers_page))
         .route("/servers/{id}/hide", post(hide_server))
         .route("/avatar/{file}", get(avatar))
@@ -115,6 +119,7 @@ fn layout(app: &App, p: &Page, title: &str, q: &str, body: Markup) -> Html<Strin
                         nav.top {
                             a href="/?sort=new" { "New" }
                             a href="/?sort=remixed" { "Most remixed" }
+                            a href="/jams" { "Jams" }
                             a href="/servers" { "Servers" }
                         }
                         div.who {
@@ -259,7 +264,15 @@ async fn explore(State(app): State<Shared>, h: HeaderMap, Query(q): Query<Explor
         u
     };
     let href = |s: &str, k: &str| href_ages(s, k, all_ages);
+    let jam = app.current_jam().ok().flatten();
     let body = html! {
+        @if let Some(j) = &jam {
+            @if q.q.is_empty() {
+                a.jamband href={ "/jams/" (j.slug) } {
+                    span.kind { "This week's jam" } " " b { (j.theme) } " " span.sub { "ends " (until(j.ends)) }
+                }
+            }
+        }
         @if !q.q.is_empty() {
             h1 { "Creations matching \u{201c}" (q.q) "\u{201d}" }
         } @else {
@@ -326,6 +339,8 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
         (versions, parent, open, starred)
     };
     let boards = app.boards_for(&c.code).unwrap_or_default();
+    let in_jams = app.jams_of(&c).unwrap_or_default();
+    let can_enter = app.current_jam().ok().flatten().filter(|_| mine).filter(|j| !in_jams.iter().any(|i| i.id == j.id) && c.visibility == "everyone" && matches!(c.listing.as_str(), "listed" | "waiting") && c.base.is_none());
     let shown = q.v.and_then(|n| versions.iter().find(|v| v.n == n && (mine || v.state != "held"))).or_else(|| if mine { versions.first() } else { versions.iter().find(|v| v.state != "held") });
     let Some(shown) = shown.cloned() else { return error_page(&app, &p, 404, "This creation has no version you can see yet.") };
     let manifest: Option<Manifest> = serde_json::from_str(&shown.manifest).ok();
@@ -370,6 +385,13 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
                     }
                     " · version " (shown.n) @if shown.n != c.latest { " of " (c.latest) }
                     @if c.all_ages { " · " span.tag.ok { "Checked for all ages" } }
+                    @for j in &in_jams { " · " a.tag href={ "/jams/" (j.slug) } { "In the " (j.theme) " jam" } }
+                }
+                @if let Some(j) = &can_enter {
+                    form.inline method="post" action={ "/jams/" (j.slug) "/enter" } {
+                        input type="hidden" name="code" value=(c.code);
+                        button.btn type="submit" { "Enter it in this week's jam: " (j.theme) }
+                    }
                 }
                 @if p.me.as_ref().is_some_and(|m| m.moderator) && c.latest > 0 {
                     form.inline method="post" action={ "/c/" (c.code) "/all-ages" } {
@@ -1603,6 +1625,257 @@ async fn unlink_device(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i
     };
     match app.unlink(&me, id) {
         Ok(()) => Redirect::to("/me/devices?done=unlinked").into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+// ---------- Jams ----------
+
+fn entries_count(n: usize) -> String {
+    if n == 1 { "1 entry".into() } else { format!("{n} entries") }
+}
+
+/// "in 3 days", "in 5 h", "in 20 min", or "now" once it's passed.
+pub fn until(t: i64) -> String {
+    let d = t - now();
+    match d {
+        i64::MIN..=0 => "now".into(),
+        1..=3599 => format!("in {} min", (d + 59) / 60),
+        3600..=86399 => format!("in {} h", d / 3600),
+        _ => format!("in {} days", d / 86400),
+    }
+}
+
+/// Days since 1970 for a calendar date (Howard Hinnant's days_from_civil).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Midnight UTC of a YYYY-MM-DD date, as a form's date field sends it.
+pub fn parse_day(s: &str) -> Option<i64> {
+    let mut it = s.trim().split('-');
+    let (y, m, d): (i64, i64, i64) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?);
+    if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some(days_from_civil(y, m, d) * 86400)
+}
+
+/// The calendar day of a time, as YYYY-MM-DD (UTC).
+pub fn day_of(t: i64) -> String {
+    let z = t.div_euclid(86400) + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+fn jam_dates(j: &crate::jams::Jam) -> String {
+    if j.running() {
+        format!("Runs until {} (ends {})", day_of(j.ends - 1), until(j.ends))
+    } else if j.over() {
+        format!("Ran {} to {}", day_of(j.starts), day_of(j.ends - 1))
+    } else {
+        format!("Starts {} ({})", day_of(j.starts), until(j.starts))
+    }
+}
+
+async fn jams_page(State(app): State<Shared>, h: HeaderMap) -> Response {
+    let p = page(&app, &h);
+    let all = match app.jams() {
+        Ok(l) => l,
+        Err(e) => return fail_page(&app, &p, e),
+    };
+    let current = all.iter().find(|j| j.running()).cloned();
+    let entries = current.as_ref().map(|j| app.jam_entries(j).unwrap_or_default()).unwrap_or_default();
+    let mine = match (&p.me, &current) {
+        (Some(me), Some(_)) => app.could_enter(me).unwrap_or_default(),
+        _ => vec![],
+    };
+    let past: Vec<(crate::jams::Jam, Vec<crate::jams::Entry>)> = all.iter().filter(|j| j.over()).take(12).map(|j| (j.clone(), app.favourites(j).unwrap_or_default())).collect();
+    let coming: Vec<&crate::jams::Jam> = all.iter().filter(|j| !j.running() && !j.over()).collect();
+    let body = html! {
+        h1 { "Jams" }
+        p.sub { "A theme each week. Make something for it, share it to Everyone and enter it here. When the jam ends, the four entries with the most stars go on the Green of every new world for a month." }
+        @match &current {
+            Some(j) => {
+                div.jam {
+                    span.kind { "This week" }
+                    h2 { a href={ "/jams/" (j.slug) } { (j.theme) } }
+                    @if !j.about.is_empty() { p { (j.about) } }
+                    p.sub { (jam_dates(j)) " · " (entries_count(entries.len())) }
+                    (enter_form(j, &mine))
+                }
+                @if entries.is_empty() {
+                    div.empty { "No entries yet. Yours could be the first." }
+                } @else {
+                    div.grid { @for e in &entries { (card(&e.creation)) } }
+                }
+            }
+            None => { div.empty { "No jam is running just now." } }
+        }
+        @if !coming.is_empty() {
+            h2 { "Coming up" }
+            ul.rows { @for j in &coming { li { a href={ "/jams/" (j.slug) } { b { (j.theme) } } span.sub { (jam_dates(j)) } } } }
+        }
+        @if !past.is_empty() {
+            h2 { "Past jams" }
+            @for (j, favs) in &past {
+                h3 { a href={ "/jams/" (j.slug) } { (j.theme) } " " span.sub { (jam_dates(j)) } }
+                @if favs.is_empty() { p.sub { "No favourites: nobody entered." } } @else { div.grid { @for e in favs { (card(&e.creation)) } } }
+            }
+        }
+        @if p.me.as_ref().is_some_and(|m| m.moderator) {
+            h2 { "Start a jam" }
+            form.stack method="post" action="/jams" {
+                label { "Theme " input type="text" name="theme" maxlength="60" required placeholder="Things that float"; }
+                label { "A few words about it " textarea name="about" maxlength="400" rows="2" {} }
+                label { "Starts " input type="date" name="starts"; span.sub { " (today if left empty; days start at midnight UTC)" } }
+                label { "Days " input type="number" name="days" min="1" max="31" value="7"; }
+                button.btn.pri type="submit" { "Start the jam" }
+            }
+        }
+    };
+    layout(&app, &p, "Jams", "", body).into_response()
+}
+
+/// The form a maker uses to enter one of their creations.
+fn enter_form(j: &crate::jams::Jam, mine: &[Creation]) -> Markup {
+    html! {
+        @if !mine.is_empty() {
+            form.inline method="post" action={ "/jams/" (j.slug) "/enter" } {
+                select name="code" aria-label="Your creation" { @for c in mine { option value=(c.code) { (c.name) } } }
+                " " button.btn.pri type="submit" { "Enter it" }
+            }
+        }
+    }
+}
+
+async fn jam_page(State(app): State<Shared>, h: HeaderMap, Path(slug): Path<String>, Query(q): Query<MeQ>) -> Response {
+    let p = page(&app, &h);
+    let j = match app.jam(&slug) {
+        Ok(j) => j,
+        Err(e) => return fail_page(&app, &p, e),
+    };
+    let entries = app.jam_entries(&j).unwrap_or_default();
+    let mine = match &p.me {
+        Some(me) if j.running() => app.could_enter(me).unwrap_or_default(),
+        _ => vec![],
+    };
+    let me = p.me.as_ref().map(|m| m.user_id.clone()).unwrap_or_default();
+    let body = html! {
+        @if q.done == "entered" { div.note.ok { "Entered. Players can find it here, and stars it gets until the jam ends count." } }
+        @if q.done == "left" { div.note.ok { "Taken out of the jam." } }
+        span.kind { "Jam" }
+        h1 { (j.theme) }
+        @if !j.about.is_empty() { p { (j.about) } }
+        p.sub { (jam_dates(&j)) " · " (entries_count(entries.len())) }
+        (enter_form(&j, &mine))
+        @if j.over() && !entries.is_empty() {
+            h2 { "Favourites" }
+            p.sub { "The most stars while the jam ran. They're on the Green of new worlds for a month after it ends." }
+        }
+        @if entries.is_empty() {
+            div.empty { @if j.over() { "Nobody entered this one." } @else { "No entries yet." } }
+        } @else {
+            div.grid {
+                @for (i, e) in entries.iter().enumerate() {
+                    div {
+                        (card(&e.creation))
+                        p.sub {
+                            @if j.over() && i < crate::jams::FAVOURITES { span.tag.ok { "favourite" } " " }
+                            (count(e.stars, "star")) " in the jam"
+                            @if !j.over() && e.creation.owner == me {
+                                form.inline method="post" action={ "/jams/" (j.slug) "/leave" } {
+                                    input type="hidden" name="code" value=(e.creation.code);
+                                    " " button.btn type="submit" { "Take it out" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    layout(&app, &p, &j.theme, "", body).into_response()
+}
+
+#[derive(Deserialize)]
+struct JamForm {
+    theme: String,
+    #[serde(default)]
+    about: String,
+    #[serde(default)]
+    starts: String,
+    #[serde(default)]
+    days: String,
+}
+
+async fn make_jam(State(app): State<Shared>, h: HeaderMap, Form(f): Form<JamForm>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let starts = if f.starts.trim().is_empty() {
+        0
+    } else {
+        match parse_day(&f.starts) {
+            Some(t) => t,
+            None => return error_page(&app, &p, 400, "That start date isn't one: use the date picker."),
+        }
+    };
+    let days = f.days.trim().parse().unwrap_or(7);
+    match app.make_jam(&me, &f.theme, &f.about, starts, days) {
+        Ok(j) => Redirect::to(&format!("/jams/{}", j.slug)).into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct CodeForm {
+    code: String,
+}
+
+async fn enter_jam(State(app): State<Shared>, h: HeaderMap, Path(slug): Path<String>, Form(f): Form<CodeForm>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.enter_jam(&me, &slug, &f.code) {
+        Ok(j) => Redirect::to(&format!("/jams/{}?done=entered", j.slug)).into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
+async fn leave_jam(State(app): State<Shared>, h: HeaderMap, Path(slug): Path<String>, Form(f): Form<CodeForm>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.leave_jam(&me, &slug, &f.code) {
+        Ok(()) => Redirect::to(&format!("/jams/{slug}?done=left")).into_response(),
         Err(e) => fail_page(&app, &p, e),
     }
 }

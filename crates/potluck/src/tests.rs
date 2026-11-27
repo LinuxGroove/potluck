@@ -1009,7 +1009,6 @@ print("waiting " .. many)
 /// server's restart, stays its own, and has a quota.
 #[test]
 fn creations_keep_things_in_the_store() {
-    let mut voxels = world();
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
     let code = r#"
@@ -1116,4 +1115,120 @@ fn every_base_creation_runs_and_answers_players() {
     assert!(herd.bodies[&ram].rider.is_none(), "nobody stays on the Rodeo Ram for half a minute");
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
     assert!(scripts.out.scores.iter().any(|s| s.1 == "longest ride" && s.3 == 7 && s.4 > 0.0), "the ride is on the board: {:?}", scripts.out.scores);
+}
+
+/// Jams from the game: the Green's arches show what the market offers (an
+/// entry in this week's jam first, then what's trending, and for younger
+/// players only what's checked for all ages) until players bring their own;
+/// Interact reaches the arch in front of you; and a creation shared to
+/// Everyone goes in this week's jam from Share.
+#[test]
+fn the_greens_arches_and_this_weeks_jam() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::creations::Mark;
+    use crate::green::{self, Green, Shows};
+    use crate::share::{Done, ShareJobs, Who};
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, Act, Acts, Focus, Kind, Screen, WorldInfo};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let who = Who { server: fake_game_server(), market, device: format!("ada-{run}"), name: "Ada".into(), young: false };
+    let jobs = ShareJobs::default();
+    jobs.account(&who);
+    let Done::Account(_) = done(&jobs, "Ada's account") else { panic!("not an account") };
+
+    // on the market: three of Ada's creations, the raft in this week's jam
+    let codes: Vec<String> = (0..3).map(|_| potluck_share::codes::new_code()).collect();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    {
+        let db = mkt.db();
+        for (i, name) in ["Raft", "Balloon", "Kite"].iter().enumerate() {
+            db.execute(
+                "INSERT INTO creations (code, owner, slug, name, kind, visibility, listing, plays, created, updated) VALUES (?1, ?2, ?3, ?4, 'creature', 'everyone', 'listed', ?5, ?6, ?6)",
+                (&codes[i], format!("dev-ada-{run}"), name.to_lowercase(), name, 10 - i as i64, now),
+            )
+            .unwrap();
+        }
+        db.execute("INSERT INTO jams (slug, theme, starts, ends, made_by, created) VALUES ('things-that-float', 'Things that float', ?1, ?2, 'potluck', ?1)", (now - 60, now + 7 * 86400)).unwrap();
+        db.execute("INSERT INTO jam_entries (jam, creation, entered) SELECT j.id, c.id, ?1 FROM jams j, creations c WHERE c.code = ?2", (now, &codes[0])).unwrap();
+    }
+    jobs.green(&who);
+    let Done::Green { picks, jam } = done(&jobs, "the Green") else { panic!("not the Green") };
+    let jam = jam.expect("the jam running now");
+    assert_eq!(jam.theme, "Things that float");
+    assert_eq!(picks.iter().map(|p| p.code.clone()).collect::<Vec<_>>(), codes, "the entry, then trending: {picks:?}");
+    assert!(picks[0].why.contains("this week's jam") && picks[1].why.contains("Trending"), "{picks:?}");
+    jobs.green(&Who { young: true, ..who.clone() });
+    let Done::Green { picks: young, .. } = done(&jobs, "the Green for a younger player") else { panic!("not the Green") };
+    assert!(young.is_empty(), "nothing here is checked for all ages: {young:?}");
+
+    // the arches: the market's picks, until a player brings something
+    let mut lib = Library::load();
+    lib.running = lib.list.values().filter(|c| c.origin == Origin::Base).map(|c| c.id.clone()).collect();
+    let mut green = Green { picks, ..Default::default() };
+    let arches = green.arches(&lib);
+    assert!(matches!(&arches[0], Some(Shows::Pick(p)) if p.name == "Raft") && arches[3].is_none(), "{arches:?}");
+    let mut balloon = mossback();
+    balloon.id = "balloon".into();
+    balloon.manifest.name = "Balloon".into();
+    balloon.origin = Origin::Code(codes[1].clone());
+    balloon.code = Some(codes[1].clone());
+    lib.list.insert("balloon".into(), balloon);
+    lib.running.push("balloon".into());
+    let arches = green.arches(&lib);
+    assert_eq!(arches[0], Some(Shows::Here("balloon".into())), "what players brought comes first");
+    let names: Vec<String> = arches[1..].iter().flatten().map(|s| green::describe(s, &lib).0.lines().next().unwrap().to_string()).collect();
+    assert_eq!(names, ["Raft", "Kite"], "and the balloon isn't shown twice");
+
+    // aiming: the arch in front of you, within reach, and not through a wall
+    let front = green::arch_at(1) + Vec3::new(0.0, 0.0, 3.0);
+    assert_eq!(green::aimed(front, Vec3::NEG_Z, f32::MAX), Some(1));
+    assert_eq!(green::aimed(front, Vec3::Z, f32::MAX), None, "looking away");
+    assert_eq!(green::aimed(front + Vec3::Z * 10.0, Vec3::NEG_Z, f32::MAX), None, "too far");
+    assert_eq!(green::aimed(front, Vec3::NEG_Z, 1.0), None, "a block in the way");
+    assert_eq!(green::aimed(front + Vec3::X * 5.0, Vec3::NEG_Z, f32::MAX), None, "between arches");
+
+    // Interact at an arch showing something in this world looks inside it
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    app.world_mut().resource_mut::<Library>().list.insert("balloon".into(), lib.list["balloon"].clone());
+    app.world_mut().resource_mut::<Library>().running.push("balloon".into());
+    app.world_mut().resource_mut::<Acts>().0.push(Act::Arch(0));
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    assert!(app.world().resource::<Focus>().screen == Screen::Inside("balloon".into()), "looks inside the balloon");
+
+    // Share offers the jam once it's on the market for Everyone
+    let id = lib.remix("mossback", "Ada").unwrap();
+    let scripts = Scripts::default();
+    let info = WorldInfo::default();
+    let settings = Settings { age_asked: true, ..Default::default() };
+    let mut focus = Focus::default();
+    focus.jam = Some(jam.clone());
+    focus.go(Screen::Share(id.clone()));
+    let acts = |focus: &Focus, lib: &Library, settings: &Settings| -> Vec<Act> {
+        menu_items(focus, lib, &scripts, settings, &info).1.into_iter().filter_map(|i| if let Kind::Button(a) = i.kind { Some(a) } else { None }).collect()
+    };
+    assert!(!acts(&focus, &lib, &settings).contains(&Act::EnterJam(id.clone())), "not shared yet");
+    lib.marks.insert(id.clone(), Mark { code: codes[2].clone(), version: 1, everyone: true });
+    assert!(acts(&focus, &lib, &settings).contains(&Act::EnterJam(id.clone())));
+    assert!(!acts(&focus, &lib, &Settings { young: true, ..settings.clone() }).contains(&Act::EnterJam(id.clone())), "younger players share by code only");
+    focus.go(Screen::Pause);
+    assert!(acts(&focus, &lib, &settings).contains(&Act::Market("/jams/things-that-float".into(), "Things that float".into())));
+
+    // entering: the kite goes in; someone else's creation doesn't
+    jobs.enter_jam(&who, &jam, &codes[2]);
+    let Done::Entered { theme } = done(&jobs, "entering the kite") else { panic!("not entered") };
+    assert_eq!(theme, "Things that float");
+    let n: i64 = mkt.db().query_row("SELECT COUNT(*) FROM jam_entries", (), |r| r.get(0)).unwrap();
+    assert_eq!(n, 2);
+    // Bo, on his own device
+    let bo = Who { device: format!("bo-{run}"), name: "Bo".into(), ..who.clone() };
+    let bo_jobs = ShareJobs::default();
+    bo_jobs.enter_jam(&bo, &jam, &codes[1]);
+    assert!(failed(&bo_jobs, "Bo entering Ada's balloon").contains("only its maker"));
+    green.picks.clear();
+    assert!(green.arches(&lib)[1].is_none(), "with the market out of reach, only what players brought");
 }

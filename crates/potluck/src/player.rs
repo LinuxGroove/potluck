@@ -53,6 +53,8 @@ pub struct Me {
     pub target: Option<Hit>,
     /// The creature in the crosshair, nearer than any block.
     pub aim_body: Option<u64>,
+    /// The Green's arch in the crosshair, and what the HUD says about it.
+    pub aim_arch: Option<(usize, String)>,
     regen: f32,
     /// Seconds since the last hurt, for the HUD's flash.
     pub hurt: f32,
@@ -81,6 +83,7 @@ impl Default for Me {
             third_person: false,
             target: None,
             aim_body: None,
+            aim_arch: None,
             regen: 0.0,
             hurt: 9.0,
         }
