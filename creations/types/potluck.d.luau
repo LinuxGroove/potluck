@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.1, @potluck/tweak 0.1
+-- @potluck/world 0.2, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1
 
 export type Position = vector | { number }
 
@@ -62,6 +62,11 @@ export type World = {
 	say: (text: string) -> (),
 	time: () -> number,
 	random: (a: number?, b: number?) -> number,
+	-- 0.2
+	after: (seconds: number, fn: () -> ()) -> number,
+	every: (seconds: number, fn: () -> ()) -> number,
+	cancel: (id: number) -> boolean,
+	on: (event: "player_joined" | "player_left", fn: (player: Player) -> ()) -> (),
 }
 
 export type Score = { name: string, value: number }
@@ -71,6 +76,22 @@ export type Game = {
 	board: (board: string, n: number?) -> { Score },
 	links: () -> { string },
 	send: (player: Player | number, link: string, note: string?) -> (),
+}
+
+export type Stored = nil | boolean | number | string | vector | { [any]: Stored }
+
+export type Store = {
+	get: (key: string) -> Stored,
+	set: (key: string, value: Stored) -> (),
+	keys: () -> { string },
+	used: () -> number,
+}
+
+export type Input = {
+	on: (action: string, fn: (player: Player) -> ()) -> (),
+	held: (action: string, player: Player | number) -> boolean,
+	focus: (player: Player | number, on: boolean?) -> (),
+	focused: (player: Player | number) -> boolean,
 }
 
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }

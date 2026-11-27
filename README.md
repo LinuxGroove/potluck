@@ -22,7 +22,9 @@ This is a test build of milestones M0 to M3 of the plan: a hilly island with the
 | First or third person | F5 | Right stick click |
 | Pause | Esc | Start |
 
-Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. The Rodeo Ram is there too, if you want your longest ride on its board, and the Tag Bot on the Green keeps a board of who's caught it most. Woollies, Glowbugs, Jellies and two Gnome Gardeners (ask them how things work) live on the Green, ducks, frogs and Pebble Crabs by the creek north-east of it, and pups and moles on the hill. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
+Walk down the hill from where you start to the Green. The Mossbacks are in the hay paddock east of the well: walk up to one and Interact to climb on. The Rodeo Ram is there too, if you want your longest ride on its board, and the Tag Bot on the Green keeps a board of who's caught it most. Woollies, Glowbugs, Jellies and two Gnome Gardeners (ask them how things work) live on the Green, ducks, frogs and Pebble Crabs by the creek north-east of it, and pups and moles on the hill. While you ride one, Pat calms it down a little; creations can have buttons of their own like that, shown at the bottom of the screen, and **Settings, Creations' buttons** moves them to buttons you like better. Look inside it to read its code, Tweak its knobs (Buck force is the fun one), or Remix it into your own copy: the game opens its folder, and whatever you save there in any editor runs at once. Share it and your friends load it by its eight letter code.
+
+The four stone arches on the north side of the Green show what's in this world that someone brought (a friend's creations, or yours) and, in the arches left over, what the market offers: favourites of the last month's jams, entries in this week's, and what's trending. Walk up to one and Interact to bring it into your world, or to look inside one that's here already. Younger players only see creations a moderator checked for all ages.
 
 ### Playing with friends
 
@@ -40,6 +42,16 @@ Remix something from the market and change it, and **Suggest my change to the or
 There are no passwords and no emails. The game signs in to the LinuxGroove game server with a random id for your device, and **The market** (in the pause menu and on the title screen) or **Your profile on the market** (in Settings) opens the market signed in as you, or shows a QR code to carry on on your phone: handy on a controller. The profile is a name, a line about you and a block head picked from a few colours, eyes and hats. While the market is new, sharing to Everyone needs an invite code, entered on your page there.
 
 One account works on several devices. In **Settings**, **Link a device** shows a code on a device that's already yours; type it on the new one, on the same screen, and it plays as you, with your name, block head and what you've shared (servers go by it too). The market's **Your devices** page lists them, unlinks them, makes link codes and makes a **recovery code**: write it down, and if you lose every device it brings your account to a new one, once. A device that already shared things of its own can't be swallowed by another account; link the other way.
+
+### Jams
+
+Each week a moderator sets a theme ("Things that float") on the market's **Jams** page. While it runs, make something for it, share it to Everyone and choose **Enter it in this week's jam** under Share (or on its page on the market); a maker can enter three. When it ends, the four entries that got the most stars while it ran are its favourites, and they go on the arches of every new world's Green for a month. The jam running now shows on Explore, in the pause menu and in Creations.
+
+### Younger players and parents
+
+The first time a player does something that reaches other people (sharing, the market, servers, joining a world), the game asks once who's playing: **Under 13** or **13 or older**. Playing alone never asks. Younger players share by code only, for friends; they can't send suggestions to other makers; their market profile has no line about them; and the server list shows only servers that say they're for all ages, while listed servers that don't turn them away (a friend's world always lets them in). **Settings, Parent settings** changes the age and can turn sharing or servers from the market's list off, behind a PIN of 4 to 8 numbers, kept only as a hash. A forgotten PIN can be cleared by deleting the `parent_pin` line from `settings.toml` in Potluck's folder.
+
+On the market, a moderator can mark a creation **Checked for all ages** (when they list it, or later on its page), and Explore has a filter for those. The base game's creations are checked for all ages, and a new version starts without the mark until someone looks again.
 
 The market's service is `potluck-share` ([crates/share-service](crates/share-service)): it keeps every creation as a git repository in [Forgejo](https://forgejo.org/) and its files by hash in a folder or S3, checks every version (size, the API it needs, that the code compiles, words), signs what it serves so the game knows a code brought what the market checked, and serves the web pages. [deploy/market](deploy/market) has its config and a compose file with Forgejo and Caddy; `deploy/market/test.sh` runs its tests against Forgejo in a container. `potluck-share check FOLDER` runs the market's checks on a creation before sharing it.
 
@@ -59,7 +71,7 @@ With `domain` set, the snap runs Caddy in front of the world for automatic certi
 
 The rest of its settings are in `server.toml` in its data folder (`/var/snap/potluck-server/common/world/server.toml` in the snap), written on the first start with every setting explained ([packaging/server.toml](packaging/server.toml) is the same file):
 
-- **Who may join**: `join = "anyone"` who knows the address, `"signed-in"` players the market vouches for (the game asks the market for a pass naming this server's address, good for five minutes), or `"list"` for only the handles in `allow`; `ban` keeps handles out; `max_players` (50).
+- **Who may join**: `join = "anyone"` who knows the address, `"signed-in"` players the market vouches for (the game asks the market for a pass naming this server's address, good for five minutes), or `"list"` for only the handles in `allow`; `ban` keeps handles out; `max_players` (50). A listed server is for players 13 and older unless `all_ages = true`.
 - **What players may do**: `build` (place and break blocks) and `bring` (their own creations: `"anyone"`, `"signed-in"` or `"nobody"`).
 - **Creations it always runs**, by market code: `creations = ["ABCD2345", "WXYZ6789@3"]` (the newest version each start, or the one after `@`).
 - **The server list**: make a token on the market's **Your servers** page, then set `list = true`, `address` (what players type) and `market_token`. The server sends a heartbeat every minute; the market lists it once it has reached the server's status page at that address, and shows its creations' boards on their pages.
@@ -72,6 +84,8 @@ The status page's `/status.json` has what a soak test needs: players, creatures,
 ## Making creations
 
 Remix anything from Look inside, or put a folder in `creations/` of your Potluck folder (`~/snap/potluck/common` for the snap, `~/.local/share/potluck` from source). A creation is a `potluck.toml` and Luau files; [creations/AGENTS.md](creations/AGENTS.md) describes the API, and every remix gets a copy of it and of the API's types, so editors and AI helpers know what's there. [creations/mossback](creations/mossback) is the worked example.
+
+The API comes in modules, each with its own version (`@potluck/world` 0.2, `tweak` 0.1, `game` 0.1, `store` 0.1, `input` 0.1), never tied to the game's version. [docs/api.md](docs/api.md) is the promise that goes with them: what stays working as the API grows, and the sandbox's limits.
 
 ## Building from source
 

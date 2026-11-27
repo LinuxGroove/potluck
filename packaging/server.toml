@@ -48,6 +48,10 @@ list = false
 address = ""
 market_token = ""
 
+# A listed server is for players 13 and older. Say it's for all ages to let
+# younger players in too (and keep its creations fit for them).
+all_ages = false
+
 # Other servers creations may send players to, by name. A creation calls
 # game.send(player, "rodeo").
 [links]

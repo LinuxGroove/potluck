@@ -169,7 +169,30 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     conn.execute_batch(crate::servers::SCHEMA)?;
     conn.execute_batch(crate::devices::SCHEMA)?;
+    conn.execute_batch(crate::jams::SCHEMA)?;
+    add_columns(&conn)?;
     Ok(conn)
+}
+
+/// Columns added after markets were already running: a market made before
+/// them gets them on its next start.
+const ADDED: &[(&str, &str, &str)] = &[
+    // a player under 13, as their game says: they share by code only
+    ("accounts", "young", "INTEGER NOT NULL DEFAULT 0"),
+    // a moderator checked this version for all ages
+    ("versions", "all_ages", "INTEGER NOT NULL DEFAULT 0"),
+    // the server says it's for all ages
+    ("servers", "all_ages", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+fn add_columns(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, column, def) in ADDED {
+        let has = conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?.exists([column])?;
+        if !has {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {def}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -185,6 +208,7 @@ pub struct Account {
     pub about: String,
     pub avatar: String,
     pub named_on_web: bool,
+    pub young: bool,
 }
 
 fn account_row(r: &Row) -> rusqlite::Result<Account> {
@@ -200,10 +224,11 @@ fn account_row(r: &Row) -> rusqlite::Result<Account> {
         about: r.get(8)?,
         avatar: r.get(9)?,
         named_on_web: r.get(10)?,
+        young: r.get(11)?,
     })
 }
 
-const ACCOUNT: &str = "SELECT user_id, handle, name, created, beta, moderator, trusted, banned, about, avatar, named_on_web FROM accounts";
+const ACCOUNT: &str = "SELECT user_id, handle, name, created, beta, moderator, trusted, banned, about, avatar, named_on_web, young FROM accounts";
 
 pub fn account(db: &Connection, user_id: &str) -> rusqlite::Result<Option<Account>> {
     db.query_row(&format!("{ACCOUNT} WHERE user_id = ?1"), [user_id], account_row).optional()
@@ -215,7 +240,7 @@ pub fn account_by_handle(db: &Connection, handle: &str) -> rusqlite::Result<Opti
 
 /// Names Forgejo or the market keep for themselves.
 const RESERVED: &[&str] = &[
-    "actions", "admin", "api", "assets", "avatar", "avatars", "forgejo", "ghost", "gitea", "profile", "root", "c", "explore", "git", "issues", "login", "market", "moderator", "new", "notifications", "org", "potluck", "pulls", "repo", "review", "search", "signin", "signout", "static", "user", "users", "f", "me", "help", "about",
+    "actions", "admin", "api", "assets", "avatar", "avatars", "forgejo", "ghost", "gitea", "profile", "root", "c", "explore", "git", "issues", "login", "market", "moderator", "new", "notifications", "org", "potluck", "pulls", "repo", "review", "search", "signin", "signout", "static", "user", "users", "f", "me", "help", "about", "servers", "jams",
 ];
 
 /// A handle for a new account from the name a player chose in game: letters,
@@ -274,6 +299,8 @@ pub struct Creation {
     pub remixes: i64,
     pub created: i64,
     pub updated: i64,
+    /// Its newest version was checked for all ages by a moderator.
+    pub all_ages: bool,
 }
 
 impl Creation {
@@ -285,7 +312,7 @@ impl Creation {
     }
 }
 
-pub const CREATION: &str = "SELECT c.id, c.code, c.owner, a.handle, a.name, c.slug, c.name, c.kind, c.about, c.licence, c.visibility, c.listing, c.parent, c.parent_version, c.base, c.latest, c.stars, c.plays, c.remixes, c.created, c.updated FROM creations c JOIN accounts a ON a.user_id = c.owner";
+pub const CREATION: &str = "SELECT c.id, c.code, c.owner, a.handle, a.name, c.slug, c.name, c.kind, c.about, c.licence, c.visibility, c.listing, c.parent, c.parent_version, c.base, c.latest, c.stars, c.plays, c.remixes, c.created, c.updated, COALESCE((SELECT v.all_ages FROM versions v WHERE v.creation = c.id AND v.n = c.latest), 0) FROM creations c JOIN accounts a ON a.user_id = c.owner";
 
 pub fn creation_row(r: &Row) -> rusqlite::Result<Creation> {
     Ok(Creation {
@@ -310,6 +337,7 @@ pub fn creation_row(r: &Row) -> rusqlite::Result<Creation> {
         remixes: r.get(18)?,
         created: r.get(19)?,
         updated: r.get(20)?,
+        all_ages: r.get(21)?,
     })
 }
 

@@ -1,11 +1,11 @@
 //! Running creations: one Luau sandbox per creation, the API modules they
 //! require, and the calls into them (each tick, and when players use things).
 //!
-//! The API is versioned by module, never by the game: `@potluck/world` and
-//! `@potluck/tweak` are at 0.1 here. See docs/api.md.
+//! The API is versioned by module, never by the game (`MODULES`), and
+//! docs/api.md is the promise that goes with it.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,17 +13,25 @@ use bevy::prelude::*;
 use mlua::{Function, Lua, Table, Value, Vector, VmState};
 
 use crate::blocks;
-use crate::creations::Creation;
+use crate::creations::{ActionDef, Creation};
 use crate::creatures::{Body, Herd, Part};
 use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 1), ("tweak", 0, 1), ("game", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 2), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
 const LOAD_BUDGET: Duration = Duration::from_millis(300);
+/// Timers one creation may have waiting at once.
+pub const MAX_TIMERS: usize = 64;
+/// Handlers one creation may give `world.on`.
+pub const MAX_HANDLERS: usize = 32;
+/// What `world.on` can listen for.
+pub const EVENTS: &[&str] = &["player_joined", "player_left"];
+/// What one creation may keep with `@potluck/store`, counted as JSON.
+pub const STORE_QUOTA: usize = 64 << 10;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum KnobValue {
@@ -74,11 +82,162 @@ pub struct Outbox {
 }
 
 /// What every creation in a world can see beyond the world itself: its
-/// boards, and the other servers it can send players to.
+/// boards, the other servers it can send players to, and what it keeps.
 #[derive(Default)]
 pub struct GameShared {
     pub boards: crate::hosting::Boards,
     pub links: Vec<String>,
+    pub store: Store,
+    pub input: InputState,
+}
+
+/// Which creations' actions players hold, and which creation has each
+/// player's controls (`@potluck/input`).
+#[derive(Default)]
+pub struct InputState {
+    /// (player, creation, action) held now.
+    pub held: BTreeSet<(u32, String, String)>,
+    /// The creation that has each player's controls.
+    pub focus: BTreeMap<u32, String>,
+    /// Players whose focus changed, for the host to tell them.
+    pub changed: Vec<u32>,
+}
+
+impl InputState {
+    fn forget_player(&mut self, pid: u32) {
+        self.held.retain(|h| h.0 != pid);
+        self.focus.remove(&pid);
+    }
+
+    fn forget_creation(&mut self, creation: &str) {
+        self.held.retain(|h| h.1 != creation);
+        let gone: Vec<u32> = self.focus.iter().filter(|(_, c)| *c == creation).map(|(p, _)| *p).collect();
+        for p in gone {
+            self.focus.remove(&p);
+            self.changed.push(p);
+        }
+    }
+}
+
+/// A player from a creation: their table (with an id) or the id itself.
+fn pid_of(v: &Value) -> mlua::Result<u32> {
+    match v {
+        Value::Integer(i) => Ok(*i as u32),
+        Value::Number(n) => Ok(*n as u32),
+        Value::Table(t) => t.get::<Option<u32>>("id")?.ok_or_else(|| bad("that isn't a player")),
+        _ => Err(bad("that isn't a player")),
+    }
+}
+
+/// What creations keep in a world with `@potluck/store`: each creation's
+/// keys and their values, as JSON. A server saves it beside the world.
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone)]
+pub struct Store {
+    pub data: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+    /// Bytes each creation uses, worked out when first needed.
+    #[serde(skip)]
+    used: HashMap<String, usize>,
+    /// Changed since it was last saved.
+    #[serde(skip)]
+    pub dirty: bool,
+}
+
+fn entry_size(key: &str, value: &serde_json::Value) -> usize {
+    key.len() + value.to_string().len()
+}
+
+impl Store {
+    pub fn load(path: &std::path::Path) -> Store {
+        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&mut self, path: &std::path::Path) {
+        if !self.dirty {
+            return;
+        }
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, serde_json::to_string(self).unwrap_or_default()).is_ok() && std::fs::rename(tmp, path).is_ok() {
+            self.dirty = false;
+        }
+    }
+
+    /// The bytes a creation's keys and values take, as JSON.
+    pub fn used(&mut self, creation: &str) -> usize {
+        if let Some(n) = self.used.get(creation) {
+            return *n;
+        }
+        let n = self.data.get(creation).map(|m| m.iter().map(|(k, v)| entry_size(k, v)).sum()).unwrap_or(0);
+        self.used.insert(creation.to_string(), n);
+        n
+    }
+
+    pub fn get(&self, creation: &str, key: &str) -> Option<&serde_json::Value> {
+        self.data.get(creation)?.get(key)
+    }
+
+    /// Keeps a value, or forgets the key with None. Refused past the quota.
+    pub fn set(&mut self, creation: &str, key: &str, value: Option<serde_json::Value>) -> Result<(), String> {
+        let used = self.used(creation);
+        let old = self.get(creation, key).map(|v| entry_size(key, v)).unwrap_or(0);
+        let new = value.as_ref().map(|v| entry_size(key, v)).unwrap_or(0);
+        if new > old && used - old + new > STORE_QUOTA {
+            return Err(format!("this creation's store is full ({} KB): forget something with store.set(key, nil) first", STORE_QUOTA >> 10));
+        }
+        let keys = self.data.entry(creation.to_string()).or_default();
+        match value {
+            Some(v) => {
+                keys.insert(key.to_string(), v);
+            }
+            None => {
+                keys.remove(key);
+            }
+        }
+        if keys.is_empty() {
+            self.data.remove(creation);
+        }
+        self.used.insert(creation.to_string(), used - old + new);
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub fn keys(&self, creation: &str) -> Vec<String> {
+        self.data.get(creation).map(|m| m.keys().cloned().collect()).unwrap_or_default()
+    }
+}
+
+/// A creation's timers and world event handlers, kept from tick to tick.
+#[derive(Default)]
+struct Waiting {
+    next: u32,
+    timers: Vec<Timer>,
+    on: Vec<(String, Function)>,
+    /// `input.on` handlers, by action.
+    inputs: Vec<(String, Function)>,
+    /// (player, action): pressed since the last tick.
+    presses: Vec<(u32, String)>,
+}
+
+struct Timer {
+    id: u32,
+    left: f64,
+    every: Option<f64>,
+    f: Function,
+}
+
+fn add_timer(w: &Mutex<Waiting>, seconds: f64, every: bool, f: Function) -> mlua::Result<u32> {
+    if !seconds.is_finite() {
+        return Err(bad("a timer needs a number of seconds"));
+    }
+    let mut w = w.lock().unwrap();
+    if w.timers.len() >= MAX_TIMERS {
+        return Err(bad(format!("a creation can have at most {MAX_TIMERS} timers waiting: world.cancel the ones it's done with")));
+    }
+    w.next += 1;
+    let id = w.next;
+    // a tick is a tenth of a second, so nothing comes sooner
+    let s = seconds.clamp(0.1, 86400.0);
+    w.timers.push(Timer { id, left: s, every: every.then_some(s), f });
+    Ok(id)
 }
 
 /// Everything the API's functions can reach during one call into a creation.
@@ -108,6 +267,11 @@ pub struct Vm {
     base: Table,
     game: Table,
     shared: Arc<Mutex<GameShared>>,
+    waiting: Arc<Mutex<Waiting>>,
+    /// Its actions, from potluck.toml.
+    pub actions: BTreeMap<String, ActionDef>,
+    /// Where `print` writes, read after every call into the creation.
+    state: Arc<Mutex<LoadState>>,
     pub kinds: Vec<KindDef>,
     kind_tables: HashMap<String, Table>,
     instances: HashMap<u64, Table>,
@@ -129,6 +293,8 @@ pub struct Scripts {
     pub out: Outbox,
     time: f64,
     tick_acc: f32,
+    /// Who was here last tick, to tell creations who came and went.
+    seen: Vec<PlayerInfo>,
 }
 
 fn vec_of(v: &Value) -> Option<Vec3> {
@@ -200,6 +366,7 @@ fn to_json(v: &Value, depth: u32) -> Option<serde_json::Value> {
                 let key = match &k {
                     Value::String(s) => s.to_str().ok()?.to_string(),
                     Value::Integer(i) => format!("#{i}"),
+                    Value::Number(n) if n.fract() == 0.0 && n.abs() < 1e15 => format!("#{}", *n as i64),
                     _ => continue,
                 };
                 if let Some(j) = to_json(&val, depth + 1) {
@@ -336,7 +503,7 @@ fn parse_knobs(lua: &Lua, spec: &Table, saved: &BTreeMap<String, KnobValue>, out
 impl Vm {
     /// Starts a creation in a new sandbox. An error leaves no VM, and the
     /// caller keeps the last good one running.
-    pub fn load(creation: &Creation, saved: &BTreeMap<String, KnobValue>) -> Result<Vm, String> {
+    pub fn load(creation: &Creation, saved: &BTreeMap<String, KnobValue>, shared: Arc<Mutex<GameShared>>) -> Result<Vm, String> {
         let started = Instant::now();
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT).map_err(|e| e.to_string())?;
@@ -349,6 +516,7 @@ impl Vm {
             Ok(VmState::Continue)
         });
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
+        let waiting = Arc::new(Mutex::new(Waiting::default()));
         let setup = || -> mlua::Result<(Table, Table, Table)> {
             let world = lua.create_table()?;
             let game = lua.create_table()?;
@@ -377,6 +545,122 @@ impl Vm {
                 )?;
             }
             world.set("spot", lua.create_function(|_, name: String| Ok(spot(&name).map(vector)))?)?;
+            // world 0.2: timers and world events, kept between ticks
+            {
+                let w = waiting.clone();
+                world.set("after", lua.create_function(move |_, (seconds, f): (f64, Function)| add_timer(&w, seconds, false, f))?)?;
+                let w = waiting.clone();
+                world.set("every", lua.create_function(move |_, (seconds, f): (f64, Function)| add_timer(&w, seconds, true, f))?)?;
+                let w = waiting.clone();
+                world.set(
+                    "cancel",
+                    lua.create_function(move |_, id: Option<u32>| {
+                        let mut w = w.lock().unwrap();
+                        let n = w.timers.len();
+                        w.timers.retain(|t| Some(t.id) != id);
+                        Ok(w.timers.len() < n)
+                    })?,
+                )?;
+                let w = waiting.clone();
+                world.set(
+                    "on",
+                    lua.create_function(move |_, (event, f): (String, Function)| {
+                        if !EVENTS.contains(&event.as_str()) {
+                            return Err(bad(format!("world.on can't listen for \"{event}\" (it can for: {})", EVENTS.join(", "))));
+                        }
+                        let mut w = w.lock().unwrap();
+                        if w.on.len() + w.inputs.len() >= MAX_HANDLERS {
+                            return Err(bad(format!("a creation can give world.on and input.on at most {MAX_HANDLERS} handlers")));
+                        }
+                        w.on.push((event, f));
+                        Ok(())
+                    })?,
+                )?;
+            }
+            // input 0.1: the creation's actions, as players press them
+            let input = lua.create_table()?;
+            {
+                let (w, actions) = (waiting.clone(), creation.manifest.actions.clone());
+                input.set(
+                    "on",
+                    lua.create_function(move |_, (action, f): (String, Function)| {
+                        if !actions.contains_key(&action) {
+                            return Err(bad(format!("there's no action called \"{action}\": add it to potluck.toml as [actions.{action}] with a name, a pad button and a key")));
+                        }
+                        let mut w = w.lock().unwrap();
+                        if w.on.len() + w.inputs.len() >= MAX_HANDLERS {
+                            return Err(bad(format!("a creation can give world.on and input.on at most {MAX_HANDLERS} handlers")));
+                        }
+                        w.inputs.push((action, f));
+                        Ok(())
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                input.set(
+                    "held",
+                    lua.create_function(move |_, (action, player): (String, Value)| {
+                        let pid = pid_of(&player)?;
+                        Ok(sh.lock().unwrap().input.held.contains(&(pid, me.clone(), action)))
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                input.set(
+                    "focus",
+                    lua.create_function(move |_, (player, on): (Value, Option<bool>)| {
+                        let pid = pid_of(&player)?;
+                        let mut sh = sh.lock().unwrap();
+                        let i = &mut sh.input;
+                        let before = i.focus.get(&pid).cloned();
+                        if on.unwrap_or(true) {
+                            i.focus.insert(pid, me.clone());
+                        } else if before.as_deref() == Some(me.as_str()) {
+                            i.focus.remove(&pid);
+                        }
+                        if i.focus.get(&pid) != before.as_ref() {
+                            i.changed.push(pid);
+                        }
+                        Ok(())
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                input.set(
+                    "focused",
+                    lua.create_function(move |_, player: Value| {
+                        let pid = pid_of(&player)?;
+                        Ok(sh.lock().unwrap().input.focus.get(&pid) == Some(&me))
+                    })?,
+                )?;
+            }
+            // store 0.1: what this creation keeps in this world
+            let store = lua.create_table()?;
+            {
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                store.set(
+                    "get",
+                    lua.create_function(move |lua, key: String| match sh.lock().unwrap().store.get(&me, &key) {
+                        Some(j) => from_json(lua, j),
+                        None => Ok(Value::Nil),
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                store.set(
+                    "set",
+                    lua.create_function(move |_, (key, value): (String, Value)| {
+                        if key.is_empty() || key.chars().count() > 64 {
+                            return Err(bad("a store key is 1 to 64 letters"));
+                        }
+                        let j = match &value {
+                            Value::Nil => None,
+                            v => Some(to_json(v, 0).ok_or_else(|| bad("the store keeps numbers, strings, true or false, vectors, and tables of those"))?),
+                        };
+                        sh.lock().unwrap().store.set(&me, &key, j).map_err(bad)
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                store.set("keys", lua.create_function(move |_, ()| Ok(sh.lock().unwrap().store.keys(&me)))?)?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                store.set("used", lua.create_function(move |_, ()| Ok(sh.lock().unwrap().store.used(&me)))?)?;
+            }
             // tweak { key = { value, min =, max =, label = } }
             let tweak = {
                 let st = state.clone();
@@ -402,7 +686,8 @@ impl Vm {
                 if let Some(m) = name.strip_prefix("@potluck/") {
                     let (module, version) = m.split_once('@').unwrap_or((m, ""));
                     let Some((_, major, minor)) = MODULES.iter().find(|(n, _, _)| *n == module) else {
-                        return Err(bad(format!("there's no module called @potluck/{module} (there are: world, tweak, game)")));
+                        let all: Vec<&str> = MODULES.iter().map(|m| m.0).collect();
+                        return Err(bad(format!("there's no module called @potluck/{module} (there are: {})", all.join(", "))));
                     };
                     if !version.is_empty() {
                         let mut it = version.split('.');
@@ -415,6 +700,8 @@ impl Vm {
                     return Ok(match module {
                         "world" => Value::Table(w2.clone()),
                         "game" => Value::Table(g2.clone()),
+                        "store" => Value::Table(store.clone()),
+                        "input" => Value::Table(input.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -459,7 +746,10 @@ impl Vm {
             world,
             base,
             game,
-            shared: Default::default(),
+            shared,
+            waiting,
+            actions: creation.manifest.actions.clone(),
+            state: state.clone(),
             kinds: vec![],
             kind_tables: HashMap::new(),
             instances: HashMap::new(),
@@ -489,7 +779,7 @@ impl Vm {
             vm.kinds.push(k);
         }
         vm.knobs = std::mem::take(&mut s.knobs);
-        vm.log = std::mem::take(&mut s.log);
+        vm.log.extend(std::mem::take(&mut s.log));
         vm.log.extend(log);
         vm.load_ms = started.elapsed().as_secs_f32() * 1000.0;
         Ok(vm)
@@ -754,6 +1044,13 @@ impl Vm {
             f(&self.lua, self)
         });
         self.rng = rng;
+        // what it printed, in Look inside
+        let printed = std::mem::take(&mut self.state.lock().unwrap().log);
+        self.log.extend(printed);
+        if self.log.len() > 200 {
+            let n = self.log.len() - 200;
+            self.log.drain(..n);
+        }
         r.map_err(|e| tidy_error(&e))
     }
 
@@ -843,8 +1140,7 @@ fn tidy_error(e: &mlua::Error) -> String {
 impl Scripts {
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
         let saved = creation.knobs.clone();
-        let mut vm = Vm::load(creation, &saved)?;
-        vm.shared = self.shared.clone();
+        let mut vm = Vm::load(creation, &saved, self.shared.clone())?;
         // keep what the creatures were doing across a reload
         if let Some(old) = self.vms.remove(&creation.id) {
             let mem = old.memories();
@@ -863,7 +1159,38 @@ impl Scripts {
 
     pub fn stop(&mut self, id: &str, herd: &mut Herd) {
         self.vms.remove(id);
+        self.shared.lock().unwrap().input.forget_creation(id);
         herd.bodies.retain(|_, b| b.creation != id);
+    }
+
+    /// A player pressed (or let go of) one of a creation's actions. Its
+    /// handlers run on the next tick.
+    pub fn press(&mut self, player: u32, creation: &str, action: &str, down: bool) {
+        let Some(vm) = self.vms.get(creation) else { return };
+        if !vm.actions.contains_key(action) {
+            return;
+        }
+        let key = (player, creation.to_string(), action.to_string());
+        let mut sh = self.shared.lock().unwrap();
+        if !down {
+            sh.input.held.remove(&key);
+        } else if sh.input.held.insert(key) && !vm.paused {
+            vm.waiting.lock().unwrap().presses.push((player, action.to_string()));
+        }
+    }
+
+    /// The creation that has a player's controls, if one does.
+    pub fn focus_of(&self, player: u32) -> Option<String> {
+        self.shared.lock().unwrap().input.focus.get(&player).cloned()
+    }
+
+    /// Players whose controls a creation took or gave back since last asked.
+    pub fn focus_changes(&mut self) -> Vec<(u32, Option<String>)> {
+        let mut sh = self.shared.lock().unwrap();
+        let mut changed = std::mem::take(&mut sh.input.changed);
+        changed.sort();
+        changed.dedup();
+        changed.into_iter().map(|p| (p, sh.input.focus.get(&p).cloned())).collect()
     }
 
     /// Calls a creature's handler for something a player did to it.
@@ -904,6 +1231,12 @@ impl Scripts {
         self.tick_acc = 0.0;
         let players = self.players.clone();
         let time = self.time;
+        let joined: Vec<PlayerInfo> = players.iter().filter(|p| !self.seen.iter().any(|q| q.id == p.id)).cloned().collect();
+        let left: Vec<PlayerInfo> = self.seen.iter().filter(|q| !players.iter().any(|p| p.id == q.id)).cloned().collect();
+        self.seen = players.clone();
+        for p in &left {
+            self.shared.lock().unwrap().input.forget_player(p.id);
+        }
         for (id, vm) in self.vms.iter_mut() {
             if vm.paused {
                 continue;
@@ -932,7 +1265,62 @@ impl Scripts {
                 }
             }
             let mut log = Vec::new();
-            let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |_, _| {
+            let waiting = vm.waiting.clone();
+            let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
+                // who came and went
+                if !joined.is_empty() || !left.is_empty() {
+                    let on = waiting.lock().unwrap().on.clone();
+                    for (event, list) in [("player_joined", &joined), ("player_left", &left)] {
+                        for p in list.iter() {
+                            for (_, f) in on.iter().filter(|(e, _)| e == event) {
+                                f.call::<()>(player_table(lua, p)?)?;
+                            }
+                        }
+                    }
+                }
+                // actions players pressed
+                let presses = std::mem::take(&mut waiting.lock().unwrap().presses);
+                if !presses.is_empty() {
+                    let inputs = waiting.lock().unwrap().inputs.clone();
+                    for (pid, action) in presses {
+                        let Some(p) = players.iter().find(|p| p.id == pid) else { continue };
+                        for (_, f) in inputs.iter().filter(|(a, _)| *a == action) {
+                            f.call::<()>(player_table(lua, p)?)?;
+                        }
+                    }
+                }
+                // timers that are due, soonest first
+                let due: Vec<u32> = {
+                    let mut w = waiting.lock().unwrap();
+                    for t in w.timers.iter_mut() {
+                        t.left -= step as f64;
+                    }
+                    let mut due: Vec<(f64, u32)> = w.timers.iter().filter(|t| t.left <= 1e-6).map(|t| (t.left, t.id)).collect();
+                    due.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+                    due.into_iter().map(|(_, id)| id).collect()
+                };
+                for timer in due {
+                    let f = {
+                        let mut w = waiting.lock().unwrap();
+                        // a timer before it may have cancelled it
+                        let Some(i) = w.timers.iter().position(|t| t.id == timer) else { continue };
+                        let t = &mut w.timers[i];
+                        let f = t.f.clone();
+                        match t.every {
+                            Some(every) => {
+                                t.left += every;
+                                if t.left <= 1e-6 {
+                                    t.left = every;
+                                }
+                            }
+                            None => {
+                                w.timers.remove(i);
+                            }
+                        }
+                        f
+                    };
+                    f.call::<()>(())?;
+                }
                 for (t, new) in &calls {
                     if *new {
                         if let Some(f) = t.get::<Option<Function>>("spawned")? {

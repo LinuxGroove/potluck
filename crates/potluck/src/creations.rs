@@ -32,6 +32,21 @@ pub struct Manifest {
     /// tree and carry suggestions back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<FromRef>,
+    /// Buttons it asks for with `@potluck/input`, by id: `[actions.buck]`
+    /// with a name, a pad button and a key. Players can change them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub actions: BTreeMap<String, ActionDef>,
+}
+
+/// One of a creation's actions: what players see it called, and the pad
+/// button and key it starts on (`crate::input::PAD_BUTTONS`, `key_ok`).
+#[derive(Clone, Serialize, Deserialize, Debug, Default, PartialEq)]
+pub struct ActionDef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pad: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub keys: String,
 }
 
 /// The market's name for what a creation was remixed from: a code and its
@@ -70,6 +85,7 @@ impl Default for Manifest {
             licence: "CC-BY-4.0".into(),
             needs: BTreeMap::new(),
             from: None,
+            actions: BTreeMap::new(),
         }
     }
 }

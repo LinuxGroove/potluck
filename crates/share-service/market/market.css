@@ -123,3 +123,9 @@ ol.board { margin: 0; padding-left: 22px; display: grid; gap: 4px; }
 ol.board .score { font-variant-numeric: tabular-nums; font-weight: 700; }
 ul.servers li { flex-wrap: wrap; }
 pre.mono { white-space: pre-wrap; word-break: break-all; font-size: 13px; background: var(--chip); padding: 10px 12px; border-radius: 10px; }
+.jamband { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 12px 16px; margin: 0 0 18px; border-radius: 14px; background: var(--amber-bg); border: 1px solid var(--line); text-decoration: none; }
+.jamband b { font-size: 18px; }
+.jam { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 14px; padding: 14px 18px; margin: 16px 0; }
+.jam h2 { margin: 6px 0 4px; font-size: 26px; }
+.jam form { margin-top: 10px; }
+select { font: inherit; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }

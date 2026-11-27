@@ -1,10 +1,12 @@
 --!strict
 -- Mossback: a slow, mossy friend from the paddock on the Green.
 -- Walk up and press Interact to ride one. It doesn't love being ridden, so
--- now and then it bucks. Turn Buck force up to see how far you fly.
+-- now and then it bucks. Turn Buck force up to see how far you fly, or
+-- Pat it while you ride and it calms down a little.
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local input = require("@potluck/input")
 
 -- Knobs show up in Tweak, so anyone can change them without code.
 local knobs = tweak {
@@ -40,6 +42,13 @@ local Mossback = world.creature {
 
 local GRUMBLES = { "Hrrmf!", "Mmmf.", "Off you get!", "Blrrp." }
 
+-- Pat is an action in potluck.toml. While you ride a mossback its button
+-- pats it instead of getting you off (B or Shift still do).
+local patted: { [number]: boolean } = {}
+input.on("pat", function(player)
+	patted[player.id] = true
+end)
+
 function Mossback:spawned()
 	self.patience = 5
 	self.stroll = 0
@@ -47,6 +56,12 @@ end
 
 function Mossback:tick(dt: number)
 	if self.rider then
+		-- a pat buys a little more patience
+		if patted[self.rider.id] then
+			patted[self.rider.id] = nil
+			self.patience += 1.5
+			self:say("Mmm.")
+		end
 		-- now and then a mossback has had enough
 		self.patience -= dt
 		if self.patience <= 0 then

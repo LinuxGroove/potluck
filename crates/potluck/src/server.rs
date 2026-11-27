@@ -58,6 +58,11 @@ fn boards_file() -> PathBuf {
     settings::data_dir().join("boards.json")
 }
 
+/// What creations keep with `@potluck/store`.
+fn store_file() -> PathBuf {
+    settings::data_dir().join("store.json")
+}
+
 const HELP: &str = "Options (or the POTLUCK_* environment variables; these win over server.toml):
   --config=FILE        the settings file (POTLUCK_CONFIG), server.toml in the data folder by default
   --name=NAME          what players see (POTLUCK_NAME)
@@ -179,6 +184,7 @@ fn main() {
         let scripts = app.world().resource::<script::Scripts>();
         let mut shared = scripts.shared.lock().unwrap();
         shared.boards = hosting::Boards::load(&boards_file());
+        shared.store = script::Store::load(&store_file());
         shared.links = cfg.links.keys().cloned().collect();
     }
     let listing = cfg.list.then(|| (cfg.clone(), Arc::new(link)));
@@ -271,7 +277,7 @@ fn list_on_market(time: Res<Time>, mut listing: ResMut<Listing>, net: Res<net::N
     let c = &listing.cfg;
     let body = serde_json::json!({
         "name": c.name, "about": c.about, "address": c.address, "players": players.len(), "max_players": c.max_players,
-        "join": c.join, "creations": creations, "version": share::version(), "protocol": net::PROTOCOL,
+        "join": c.join, "creations": creations, "version": share::version(), "protocol": net::PROTOCOL, "all_ages": c.all_ages,
     });
     // boards that changed since the market last heard, by creation code
     let boards: Vec<serde_json::Value> = {
@@ -335,7 +341,11 @@ fn autosave(time: Res<Time>, mut saving: ResMut<Saving>, voxels: Res<world::Voxe
     }
     saving.since = 0.0;
     save(&voxels, &lib);
-    scripts.shared.lock().unwrap().boards.save(&boards_file());
+    {
+        let mut shared = scripts.shared.lock().unwrap();
+        shared.boards.save(&boards_file());
+        shared.store.save(&store_file());
+    }
     if stopping {
         info!("Saved the world; stopping");
         exit.write(AppExit::Success);

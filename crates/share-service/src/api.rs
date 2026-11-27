@@ -49,6 +49,9 @@ pub fn routes() -> Router<Shared> {
         .route("/api/link/code", post(link_code))
         .route("/api/link/leave", post(leave))
         .route("/api/pass", post(pass))
+        .route("/api/jams", get(jams))
+        .route("/api/jams/{slug}/enter", post(enter_jam))
+        .route("/api/green", get(green))
         .route("/api/servers", get(servers))
         .route("/api/servers/heartbeat", post(heartbeat))
         .route("/api/servers/boards", post(boards_post))
@@ -64,9 +67,18 @@ fn name(h: &HeaderMap) -> String {
     h.get("x-potluck-name").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
 }
 
+/// Whether the game says its player is under 13, when it says.
+fn young(h: &HeaderMap) -> Option<bool> {
+    match h.get("x-potluck-young").and_then(|v| v.to_str().ok()) {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    }
+}
+
 pub async fn who(app: &App, h: &HeaderMap) -> R<Account> {
     match bearer(h) {
-        Some(t) => app.game_account(&t, &name(h)).await,
+        Some(t) => app.game_account(&t, &name(h), young(h)).await,
         None => Err(Fail { status: 401, message: "sign in to the game server first".into() }),
     }
 }
@@ -84,7 +96,7 @@ async fn me(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
     let (device, _) = app.game_device(&bearer(&h).unwrap_or_default()).await?;
     Ok(Json(json!({
         "handle": a.handle, "name": a.name, "beta": a.beta || !app.cfg.invite_only, "moderator": a.moderator, "trusted": a.trusted,
-        "linked": device != a.user_id,
+        "linked": device != a.user_id, "young": a.young,
         "url": format!("{}/@{}", app.cfg.public_url, a.handle),
         "about": a.about, "avatar": format!("{}/avatar/{}.svg", app.cfg.public_url, a.handle), "named_on_web": a.named_on_web,
     })))
@@ -131,6 +143,7 @@ async fn load(State(app): State<Shared>, h: HeaderMap, Path(code): Path<String>,
     Ok(Json(json!({
         "manifest": v.manifest, "signature": v.signature, "key": codes::public_key(&app.key),
         "listing": c.listing, "latest": c.latest, "state": v.state, "url": app.url(&c),
+        "all_ages": c.all_ages && v.n == c.latest,
     })))
 }
 
@@ -291,7 +304,7 @@ async fn servers(State(app): State<Shared>) -> R<Json<Value>> {
         .map(|s| {
             json!({
                 "name": s.name, "about": s.about, "address": s.address, "players": s.players, "max_players": s.max_players,
-                "join": s.join, "version": s.version,
+                "join": s.join, "version": s.version, "all_ages": s.all_ages,
                 "creations": s.creations.iter().filter_map(|c| c["name"].as_str()).collect::<Vec<_>>(),
             })
         })
@@ -364,4 +377,62 @@ pub fn count_diff(diff: &str) -> (usize, usize) {
         }
     }
     (add, del)
+}
+
+/// A creation as the game lists it: enough to show it and load it.
+fn listed(c: &db::Creation) -> Value {
+    json!({ "code": c.code, "name": c.name, "kind": c.kind, "by": c.maker, "about": c.about, "stars": c.stars, "all_ages": c.all_ages })
+}
+
+fn jam_json(j: &crate::jams::Jam) -> Value {
+    json!({ "slug": j.slug, "theme": j.theme, "about": j.about, "starts": j.starts, "ends": j.ends })
+}
+
+/// The jam running now and its entries, and the last one's favourites.
+async fn jams(State(app): State<Shared>) -> R<Json<Value>> {
+    let current = match app.current_jam()? {
+        Some(j) => {
+            let entries: Vec<Value> = app.jam_entries(&j)?.iter().map(|e| listed(&e.creation)).collect();
+            let mut v = jam_json(&j);
+            v["entries"] = json!(entries);
+            v
+        }
+        None => Value::Null,
+    };
+    let last = app.jams()?.into_iter().find(|j| j.over());
+    let last = match last {
+        Some(j) => {
+            let favourites: Vec<Value> = app.favourites(&j)?.iter().map(|e| listed(&e.creation)).collect();
+            let mut v = jam_json(&j);
+            v["favourites"] = json!(favourites);
+            v
+        }
+        None => Value::Null,
+    };
+    Ok(Json(json!({ "current": current, "last": last })))
+}
+
+#[derive(Deserialize)]
+struct EnterReq {
+    code: String,
+}
+
+async fn enter_jam(State(app): State<Shared>, h: HeaderMap, Path(slug): Path<String>, Json(req): Json<EnterReq>) -> R<Json<Value>> {
+    let a = who(&app, &h).await?;
+    let j = app.enter_jam(&a, &slug, &req.code)?;
+    Ok(Json(jam_json(&j)))
+}
+
+/// The four creations for the arches of a new world's Green.
+async fn green(State(app): State<Shared>, h: HeaderMap) -> R<Json<Value>> {
+    let arches: Vec<Value> = app
+        .green(young(&h).unwrap_or(false))?
+        .iter()
+        .map(|a| {
+            let mut v = listed(&a.creation);
+            v["why"] = json!(a.why);
+            v
+        })
+        .collect();
+    Ok(Json(json!({ "arches": arches })))
 }

@@ -51,6 +51,13 @@ pub enum Screen {
     Link,
     /// Playing as the same account on another device.
     Devices,
+    /// Who's playing, asked once before the first thing that goes online;
+    /// then the act that asked.
+    Age(Box<Act>),
+    /// What a parent decides, behind their PIN.
+    Parents,
+    /// Creations' actions, and the buttons they're on.
+    Controls,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,6 +106,20 @@ pub enum Act {
     /// Play as the account a link or recovery code belongs to.
     LinkDevice(String),
     UnlinkDevice,
+    /// Under 13 (true) or not, from the Age screen.
+    SetAge(bool),
+    OpenParents,
+    UnlockParents(String),
+    SetPin(String),
+    /// Interact at one of the Green's arches (0 to 3, west to east).
+    Arch(usize),
+    /// Put a creation shared to Everyone in the jam running now.
+    EnterJam(String),
+    OpenControls,
+    /// Wait for the next button or key for a creation's action.
+    Rebind(String, String),
+    /// Every creation's actions back on the buttons it chose.
+    ResetControls,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,8 +177,16 @@ pub struct Focus {
     pub servers: Vec<crate::share::Listed>,
     /// Who this device plays as on the market, once asked.
     pub account: Option<crate::share::Account>,
+    /// The jam running now, once the market's said.
+    pub jam: Option<crate::share::JamNow>,
+    /// A creation's action waiting for its new button: (creation, action).
+    pub rebinding: Option<(String, String)>,
     /// A code for another device to type, on the Devices screen.
     pub link_code: Option<String>,
+    /// Parent settings are unlocked until the screen is left.
+    pub parents_open: bool,
+    /// Wrong PINs lately: a few in a row wait a while.
+    pub pin_misses: Vec<std::time::Instant>,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -177,7 +206,11 @@ impl Default for Focus {
             link: None,
             servers: vec![],
             account: None,
+            jam: None,
+            rebinding: None,
             link_code: None,
+            parents_open: false,
+            pin_misses: vec![],
             qr: None,
         }
     }
@@ -255,6 +288,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Pause => {
             let mut v = vec![note(info.line.clone()), button("Back to the world", Act::Resume), button("Creations in this world", Act::OpenLibrary), button("Load a creation from a code", Act::OpenCode)];
             v.push(button("The market", Act::Market("/".into(), "The market".into())));
+            if let Some(j) = &focus.jam {
+                v.push(button(format!("This week's jam: {}", j.theme), Act::Market(format!("/jams/{}", j.slug), j.theme.clone())));
+            }
             v.push(button("Settings", Act::OpenSettings));
             v.push(button("Leave this world", Act::Leave));
             ("Paused".into(), v)
@@ -279,9 +315,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 v.push(button("Remix (make my own copy)", Act::Remix(id.clone())));
             }
             let mark = lib.marks.get(id).filter(|m| m.version > 0);
-            if c.editable() {
+            if c.editable() && settings.sharing {
                 v.push(button(if mark.is_some() { "Share a new version" } else { "Share" }, Act::Share(id.clone())));
-                if m.from.as_ref().is_some_and(|f| f.code.is_some() || f.base.is_some()) {
+                if !settings.young && m.from.as_ref().is_some_and(|f| f.code.is_some() || f.base.is_some()) {
                     v.push(button("Suggest my change to the original", Act::Suggest(id.clone())));
                 }
                 if mark.is_some() {
@@ -338,12 +374,24 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 }
                 v.push(note("Say it or type it: anyone can load it from Load a creation from a code."));
             }
-            if c.is_some_and(|c| c.editable()) {
-                let everyone = lib.marks.get(id).is_some_and(|m| m.everyone);
-                v.push(button(if everyone { "Share this version to Everyone" } else { "Share to Everyone" }, Act::ShareTo(id.clone(), true)));
-                v.push(note("On the market for anyone to find, once a moderator has looked at it."));
+            if !settings.sharing {
+                v.push(note("A parent turned sharing off. It's under Settings, Parent settings."));
+            } else if c.is_some_and(|c| c.editable()) {
+                if !settings.young {
+                    let everyone = lib.marks.get(id).is_some_and(|m| m.everyone);
+                    v.push(button(if everyone { "Share this version to Everyone" } else { "Share to Everyone" }, Act::ShareTo(id.clone(), true)));
+                    v.push(note("On the market for anyone to find, once a moderator has looked at it."));
+                }
+                if let Some(j) = focus.jam.as_ref().filter(|_| !settings.young) {
+                    if lib.marks.get(id).is_some_and(|m| m.everyone && m.version > 0) {
+                        v.push(button(format!("Enter it in this week's jam: {}", j.theme), Act::EnterJam(id.clone())));
+                        v.push(note("Stars it gets until the jam ends count. The four with the most go on the Green of every new world for a month."));
+                    } else {
+                        v.push(note(format!("This week's jam is \u{201c}{}\u{201d}: share it to Everyone to enter it.", j.theme)));
+                    }
+                }
                 v.push(button("Share by code only", Act::ShareTo(id.clone(), false)));
-                v.push(note("Only people you give the code to can load it."));
+                v.push(note(if settings.young { "Give the code to your friends: only people who have it can load it." } else { "Only people you give the code to can load it." }));
             } else {
                 v.push(note("Remix it to share a version of your own."));
             }
@@ -428,6 +476,37 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::OpenSettings));
             ("Link a device".into(), v)
         }
+        Screen::Age(_) => (
+            "Who's playing?".into(),
+            vec![
+                note("Younger players share with friends, by code, and play on servers open to all ages. A parent can change it later in Settings, Parent settings."),
+                button("Under 13", Act::SetAge(true)),
+                button("13 or older", Act::SetAge(false)),
+                button("Back", Act::Back),
+            ],
+        ),
+        Screen::Parents => {
+            let mut v = vec![];
+            if !focus.parents_open {
+                v.push(note("These are for a parent or carer. Type the PIN to change them."));
+                let pin = focus.fields.get("pin").cloned().unwrap_or_default();
+                v.push(Item { label: "PIN".into(), kind: Kind::Field { key: "pin".into(), value: pin.clone() } });
+                v.push(button("Unlock", Act::UnlockParents(pin)));
+            } else {
+                v.push(Item { label: "Under 13: shares by code, with friends, and plays on all-ages servers".into(), kind: Kind::Toggle { key: "young".into(), value: settings.young } });
+                v.push(Item { label: "Can share creations".into(), kind: Kind::Toggle { key: "sharing".into(), value: settings.sharing } });
+                v.push(Item { label: "Can join servers from the market's list".into(), kind: Kind::Toggle { key: "servers".into(), value: settings.servers } });
+                let pin = focus.fields.get("newpin").cloned().unwrap_or_default();
+                let label = if settings.parent_pin.is_empty() { "A PIN, so only you can change these" } else { "A new PIN" };
+                v.push(Item { label: label.into(), kind: Kind::Field { key: "newpin".into(), value: pin.clone() } });
+                v.push(button(if settings.parent_pin.is_empty() { "Set the PIN" } else { "Change the PIN" }, Act::SetPin(pin)));
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenSettings));
+            ("Parent settings".into(), v)
+        }
         Screen::Join => {
             let mut v = vec![];
             if focus.lan.is_empty() {
@@ -447,7 +526,15 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         }
         Screen::Servers => {
             let mut v = vec![];
-            for s in &focus.servers {
+            if !settings.servers {
+                v.push(note("A parent turned off servers from the market's list. Friends' worlds still work, from Join a friend."));
+                v.push(button("Back", Act::Back));
+                return ("Servers".into(), v);
+            }
+            if settings.young {
+                v.push(note("Servers open to players of all ages."));
+            }
+            for s in focus.servers.iter().filter(|s| s.all_ages || !settings.young) {
                 let full = s.max_players > 0 && s.players >= s.max_players;
                 let label = format!("{}  ·  {} of {} here{}", s.name, s.players, s.max_players, if full { ", full" } else { "" });
                 v.push(button(label, Act::JoinAddress(s.address.clone())));
@@ -490,6 +577,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         }
         Screen::Library => {
             let mut v = vec![];
+            if let Some(j) = focus.jam.as_ref().filter(|_| !settings.young) {
+                v.push(note(format!("This week's jam is \u{201c}{}\u{201d}. Make something for it, share it to Everyone and enter it from Share.", j.theme)));
+            }
             let add = |title: &str, f: &dyn Fn(&crate::creations::Creation) -> bool, v: &mut Vec<Item>| {
                 let list: Vec<_> = lib.list.values().filter(|c| f(c)).collect();
                 if list.is_empty() {
@@ -507,6 +597,34 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::Back));
             ("Creations".into(), v)
         }
+        Screen::Controls => {
+            let mut v = vec![];
+            if let Some((cid, aid)) = &focus.rebinding {
+                let name = lib.list.get(cid).and_then(|c| c.manifest.actions.get(aid)).map(|a| a.name.clone()).unwrap_or_default();
+                v.push(Item { label: format!("Press a button or a key for {name}"), kind: Kind::Big });
+                v.push(note("A pad button moves it on the pad, a key on the keyboard. B or Esc leaves it as it was."));
+                return ("Creations' buttons".into(), v);
+            }
+            v.push(note("What creations' buttons do while you ride their creatures, or while a mini game has your controls. Choose one to move it."));
+            // what's in this world first, then the rest
+            let mut list: Vec<&crate::creations::Creation> = lib.list.values().filter(|c| !c.manifest.actions.is_empty()).collect();
+            list.sort_by_key(|c| (!lib.running.contains(&c.id), c.manifest.name.clone()));
+            for c in &list {
+                for (aid, a) in &c.manifest.actions {
+                    let (pad, key) = settings.binding(&c.id, aid, a);
+                    let on: Vec<String> = [crate::input::button_name(&pad), key].into_iter().filter(|b| !b.is_empty()).collect();
+                    v.push(button(format!("{}: {}   {}", c.manifest.name, a.name, on.join(" / ")), Act::Rebind(c.id.clone(), aid.clone())));
+                }
+            }
+            if list.is_empty() {
+                v.push(note("None of your creations have buttons of their own yet."));
+            }
+            if !settings.bindings.is_empty() {
+                v.push(button("Put them all back", Act::ResetControls));
+            }
+            v.push(button("Back", Act::OpenSettings));
+            ("Creations' buttons".into(), v)
+        }
         Screen::Settings => {
             let v = vec![
                 Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: focus.fields.get("name").cloned().unwrap_or_else(|| settings.name.clone()) } },
@@ -517,7 +635,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
+                button("Creations' buttons", Act::OpenControls),
                 button("Link a device", Act::OpenDevices),
+                button("Parent settings", Act::OpenParents),
                 Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
                 Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
                 button("Back", Act::Back),
@@ -596,6 +716,30 @@ pub fn menu_input(
     let moved = cursor.is_some() && cursor != *last_cursor;
     *last_cursor = cursor;
     if focus.playing() {
+        return;
+    }
+    // the next button or key for a creation's action
+    if let Some((creation, action)) = focus.rebinding.clone() {
+        if c.back {
+            focus.rebinding = None;
+        } else if let Some(b) = c.just.first() {
+            let def = lib.list.get(&creation).and_then(|c| c.manifest.actions.get(&action)).cloned().unwrap_or_default();
+            let (pad, keys) = settings.binding(&creation, &action, &def);
+            let mut chosen = crate::settings::Binding { pad, keys };
+            match b.split_once(':') {
+                Some(("pad", p)) => chosen.pad = p.to_string(),
+                Some((_, k)) => chosen.keys = k.to_string(),
+                None => {}
+            }
+            let key = format!("{creation}/{action}");
+            if chosen.pad == def.pad && chosen.keys == def.keys {
+                settings.bindings.remove(&key);
+            } else {
+                settings.bindings.insert(key, chosen);
+            }
+            settings.save();
+            focus.rebinding = None;
+        }
         return;
     }
     let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
@@ -698,7 +842,7 @@ pub fn menu_input(
                     let mut a = a.clone();
                     let v = focus.fields.get(key).cloned().unwrap_or_default();
                     match &mut a {
-                        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) => *s = v,
+                        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) | Act::UnlockParents(s) | Act::SetPin(s) => *s = v,
                         _ => {}
                     }
                     acts.0.push(a);
@@ -712,7 +856,7 @@ pub fn menu_input(
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
-            Screen::Devices => Some(Act::OpenSettings),
+            Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {
@@ -732,6 +876,10 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("fov", KnobValue::Number(n)) => settings.fov = n.round() as f32,
         ("invert", KnobValue::Toggle(b)) => settings.invert_y = b,
         ("survival", KnobValue::Toggle(b)) => settings.survival = b,
+        // a parent's, once unlocked
+        ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
+        ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,
+        ("servers", KnobValue::Toggle(b)) if focus.parents_open => settings.servers = b,
         _ => {}
     }
     settings.save();
@@ -850,6 +998,8 @@ pub fn draw_menu(
                                 Kind::Slider { value, .. } => (item.label.clone(), trim_num(*value)),
                                 Kind::Toggle { value, .. } => (item.label.clone(), if *value { "On".into() } else { "Off".into() }),
                                 Kind::Swatch { value, .. } => (item.label.clone(), format!("< {value} >")),
+                                // a PIN shows as dots
+                                Kind::Field { key, value } if key.ends_with("pin") => (item.label.clone(), format!("{}{}", "\u{2022}".repeat(value.chars().count()), if picked { "|" } else { "" })),
                                 Kind::Field { value, .. } => (item.label.clone(), format!("{value}{}", if picked { "|" } else { "" })),
                                 _ => (item.label.clone(), String::new()),
                             };
@@ -1085,11 +1235,20 @@ pub fn update_hud(
     let mut prompt = String::new();
     if let Some(id) = me.riding {
         let kind = herd.bodies.get(&id).map(|b| b.kind.clone()).unwrap_or_default();
-        prompt = format!("Riding {kind}  ·  {} or {} to get off", glyph(pad, "interact"), if pad { "B" } else { "Shift" });
+        prompt = match &me.live_prompt {
+            // its own buttons, and B or Shift still gets you off
+            Some(live) => format!("Riding {kind}  ·  {live}  ·  {} to get off", if pad { "B" } else { "Shift" }),
+            None => format!("Riding {kind}  ·  {} or {} to get off", glyph(pad, "interact"), if pad { "B" } else { "Shift" }),
+        };
     } else if let Some(b) = me.aim_body.and_then(|id| herd.bodies.get(&id)) {
         let name = lib.list.get(&b.creation).map(|c| format!("{} by {}", c.manifest.name, c.manifest.by)).unwrap_or(b.kind.clone());
         let verb = if b.rideable && b.rider.is_none() { "Ride" } else { "Use" };
         prompt = format!("{name}\n{} {verb}   {} Look inside", glyph(pad, "interact"), glyph(pad, "inside"));
+    } else if let Some((_, text)) = &me.aim_arch {
+        prompt = text.clone();
+    } else if let Some(live) = &me.live_prompt {
+        let name = me.focus.as_ref().and_then(|id| lib.list.get(id)).map(|c| c.manifest.name.clone()).unwrap_or_default();
+        prompt = format!("{name}\n{live}");
     } else if let Some(hit) = me.target {
         let b = blocks::block(hit.id);
         prompt = b.name.to_string();
@@ -1135,8 +1294,10 @@ pub fn update_hud(
     for (l, mut t, mut node, mut vis) in &mut q {
         if let Some((v, text)) = list.get(l.0).filter(|_| show) {
             t.0 = (*text).clone();
-            node.left = px(v.x - 4.0 * text.len().min(30) as f32);
-            node.top = px(v.y - 14.0);
+            // centred on its longest line, standing on the point
+            let wide = text.lines().map(|l| l.chars().count()).max().unwrap_or(0).min(30);
+            node.left = px(v.x - 4.0 * wide as f32);
+            node.top = px(v.y - 14.0 * text.lines().count().max(1) as f32);
             *vis = Visibility::Inherited;
         } else {
             *vis = Visibility::Hidden;

@@ -9,3 +9,10 @@ licence = "CC-BY-4.0"
 [needs]
 world = "0.1"
 tweak = "0.1"
+input = "0.1"
+
+# Press Pat while you ride one: players can move it to other buttons.
+[actions.pat]
+name = "Pat"
+pad = "X"
+keys = "F"

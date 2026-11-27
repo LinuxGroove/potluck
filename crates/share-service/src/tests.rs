@@ -70,18 +70,23 @@ async fn start() -> Option<Market> {
 struct Player {
     token: String,
     name: String,
+    /// The game says its player is under 13.
+    young: bool,
 }
 
 impl Market {
     fn player(&self, who: &str) -> Player {
         let name = format!("{who} {}", self.run);
-        Player { token: format!("dev:{who}-{}:{name}", self.run), name }
+        Player { token: format!("dev:{who}-{}:{name}", self.run), name, young: false }
     }
 
     async fn call(&self, p: Option<&Player>, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut r = self.http.request(method.parse().unwrap(), format!("{}{path}", self.url));
         if let Some(p) = p {
             r = r.bearer_auth(&p.token).header("x-potluck-name", &p.name);
+            if p.young {
+                r = r.header("x-potluck-young", "1");
+            }
         }
         if let Some(b) = body {
             r = r.json(&b);
@@ -353,4 +358,160 @@ async fn keep_identity_puts_the_makers_name_back() {
     assert_eq!(crate::market::local_path("/c/ABCD2345"), Some("/c/ABCD2345"));
     assert_eq!(crate::market::local_path("//evil.example"), None);
     assert_eq!(crate::market::local_path("https://evil.example"), None);
+}
+
+/// Younger players share by code, send no suggestions to strangers and have
+/// no line about them on their profile. A moderator checks a creation for
+/// all ages, Explore's filter finds it (and the base game), and a new
+/// version starts without the mark.
+#[tokio::test]
+async fn younger_players_and_checked_for_all_ages() {
+    let Some(m) = start().await else { return };
+    m.app.seed_base().await.expect("the base creations");
+    let (_, base) = m.call(None, "GET", "/api/base", None).await;
+    let moss = base["mossback"]["code"].as_str().unwrap().to_string();
+    let kid = Player { young: true, ..m.player("Kid") };
+    m.app.db().execute("UPDATE accounts SET beta = 1 WHERE user_id = ?1", [format!("dev-Kid-{}", m.run)]).unwrap();
+    let (_, me) = m.call(Some(&kid), "GET", "/api/me", None).await;
+    assert_eq!(me["young"], true, "{me}");
+
+    let files = mossback_with(&format!("Kid's mossy {}", m.run), &kid.name, "\n-- it naps a lot\n");
+    let (status, s) = m.call(Some(&kid), "POST", "/api/share", Some(json!({ "files": files, "visibility": "everyone", "from": { "base": "mossback", "version": 1 } }))).await;
+    assert_eq!(status, 200, "{s}");
+    let kid_code = s["code"].as_str().unwrap().to_string();
+    assert_eq!(s["listing"], "unlisted", "by code, for friends");
+    assert!(s["message"].as_str().unwrap().contains("Younger players share by code"), "{s}");
+    let (status, v) = m.call(Some(&kid), "POST", &format!("/api/c/{kid_code}/suggest"), Some(json!({ "title": "Naps" }))).await;
+    assert_eq!(status, 403, "no suggestions to strangers: {v}");
+
+    let (cookie, _) = m.web_session(&kid, "/me/profile").await;
+    let res = m.form("/me/profile", &cookie, &[("name", "Kid"), ("about", "I live on Elm Street")]).await;
+    assert_eq!(res.status().as_u16(), 303);
+    let row = db::account(&m.app.db(), &format!("dev-Kid-{}", m.run)).unwrap().unwrap();
+    assert_eq!(row.about, "", "no line about a younger player");
+
+    // Bo's creation, checked for all ages by Mo
+    let bo = m.player("Bo");
+    let mo = m.player("Mo");
+    m.call(Some(&bo), "GET", "/api/me", None).await;
+    m.call(Some(&mo), "GET", "/api/me", None).await;
+    m.app.db().execute("UPDATE accounts SET beta = 1 WHERE user_id = ?1", [format!("dev-Bo-{}", m.run)]).unwrap();
+    m.app.db().execute("UPDATE accounts SET moderator = 1 WHERE user_id = ?1", [format!("dev-Mo-{}", m.run)]).unwrap();
+    let mo_acct = db::account(&m.app.db(), &format!("dev-Mo-{}", m.run)).unwrap().unwrap();
+    let name = format!("Bo's gentle mossy {}", m.run);
+    let (_, s) = m.call(Some(&bo), "POST", "/api/share", Some(json!({ "files": mossback_with(&name, &bo.name, "\n-- gentle\n"), "visibility": "everyone", "from": { "base": "mossback", "version": 1 } }))).await;
+    let bo_code = s["code"].as_str().unwrap().to_string();
+    assert_eq!(s["listing"], "waiting", "{s}");
+    m.app.decide(&mo_acct, m.queue_item(&bo_code), "list_all", "sweet").unwrap();
+    let (_, v) = m.call(None, "GET", &format!("/api/c/{bo_code}"), None).await;
+    assert_eq!(v["all_ages"], true, "{v}");
+    let (_, page) = m.page(&format!("/?ages=all&q=gentle+{}", m.run), None).await;
+    assert!(page.contains(&codes::pretty(&bo_code)), "Explore's all-ages filter finds it");
+    let (_, page) = m.page("/?ages=all&kind=creature", None).await;
+    assert!(page.contains(&codes::pretty(&moss)), "and the base game");
+    let (_, page) = m.page(&format!("/?ages=all&q=Kid+{}", m.run), None).await;
+    assert!(!page.contains(&codes::pretty(&kid_code)));
+
+    // a new version starts without the mark until someone looks again
+    let (_, s) = m.call(Some(&bo), "POST", "/api/share", Some(json!({ "code": bo_code, "files": mossback_with(&name, &bo.name, "\n-- gentle\n-- and new\n"), "visibility": "everyone" }))).await;
+    assert_eq!(s["version"], 2, "{s}");
+    assert!(!db::creation_by_code(&m.app.db(), &bo_code).unwrap().unwrap().all_ages);
+    m.app.set_all_ages(&mo_acct, &bo_code, true).unwrap();
+    assert!(db::creation_by_code(&m.app.db(), &bo_code).unwrap().unwrap().all_ages);
+}
+
+/// A moderator starts a jam, a maker enters a creation shared to Everyone,
+/// players star it while it runs, and once it's over it's a favourite on
+/// the Green's arches: for younger players only once it's checked for all
+/// ages.
+#[tokio::test]
+async fn jams_and_the_green() {
+    let Some(m) = start().await else { return };
+    let bo = m.player("Bo");
+    let mo = m.player("Mo");
+    let kid = Player { young: true, ..m.player("Kid") };
+    for p in [&bo, &mo, &kid] {
+        m.call(Some(p), "GET", "/api/me", None).await;
+    }
+    for who in ["Bo", "Kid"] {
+        m.app.db().execute("UPDATE accounts SET beta = 1 WHERE user_id = ?1", [format!("dev-{who}-{}", m.run)]).unwrap();
+    }
+    m.app.db().execute("UPDATE accounts SET moderator = 1 WHERE user_id = ?1", [format!("dev-Mo-{}", m.run)]).unwrap();
+    let mo_acct = db::account(&m.app.db(), &format!("dev-Mo-{}", m.run)).unwrap().unwrap();
+    let (_, none) = m.call(None, "GET", "/api/jams", None).await;
+    assert!(none["current"].is_null() && none["last"].is_null(), "{none}");
+
+    // only moderators start jams, and one runs at a time
+    let theme = format!("Things that float {}", m.run);
+    let (bo_cookie, _) = m.web_session(&bo, "/jams").await;
+    let res = m.form("/jams", &bo_cookie, &[("theme", &theme), ("days", "7")]).await;
+    assert_eq!(res.status().as_u16(), 403);
+    let (mo_cookie, _) = m.web_session(&mo, "/jams").await;
+    let res = m.form("/jams", &mo_cookie, &[("theme", &theme), ("about", "Boats, balloons, bubbles."), ("days", "7")]).await;
+    assert_eq!(res.status().as_u16(), 303);
+    let to = res.headers()["location"].to_str().unwrap().to_string();
+    let slug = to.trim_start_matches("/jams/").to_string();
+    assert_eq!(slug, format!("things-that-float-{}", m.run));
+    let res = m.form("/jams", &mo_cookie, &[("theme", "Another"), ("days", "3")]).await;
+    assert_eq!(res.status().as_u16(), 409, "jams don't overlap");
+
+    // Bo's creation, shared to Everyone and listed, goes in
+    let name = format!("Bo's raft {}", m.run);
+    let (_, s) = m.call(Some(&bo), "POST", "/api/share", Some(json!({ "files": mossback_with(&name, &bo.name, "\n-- floats\n"), "visibility": "everyone", "from": { "base": "mossback", "version": 1 } }))).await;
+    let code = s["code"].as_str().unwrap().to_string();
+    assert_eq!(s["listing"], "waiting", "{s}");
+    let (_, page) = m.page(&format!("/c/{code}"), Some(&bo_cookie)).await;
+    assert!(page.contains("Enter it in this week&#39;s jam") || page.contains("Enter it in this week's jam"), "its maker can enter it from its page");
+    let (status, v) = m.call(Some(&mo), "POST", &format!("/api/jams/{slug}/enter"), Some(json!({ "code": code }))).await;
+    assert_eq!(status, 403, "only its maker enters it: {v}");
+    let (status, v) = m.call(Some(&bo), "POST", &format!("/api/jams/{slug}/enter"), Some(json!({ "code": code }))).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["theme"], theme);
+    let (_, jams) = m.call(None, "GET", "/api/jams", None).await;
+    assert_eq!(jams["current"]["entries"].as_array().unwrap().len(), 0, "it shows once a moderator lists it: {jams}");
+    m.app.decide(&mo_acct, m.queue_item(&code), "list", "lovely").unwrap();
+    let (_, jams) = m.call(None, "GET", "/api/jams", None).await;
+    assert_eq!(jams["current"]["slug"], slug.as_str(), "{jams}");
+    assert_eq!(jams["current"]["entries"][0]["code"], code.as_str(), "{jams}");
+    let (_, page) = m.page(&to, None).await;
+    assert!(page.contains(&codes::pretty(&code)), "the jam's page lists it");
+    let (_, page) = m.page("/", None).await;
+    assert!(page.contains(&format!("/jams/{slug}")), "Explore shows the jam running now");
+    let (_, page) = m.page(&format!("/c/{code}"), None).await;
+    assert!(page.contains("In the "), "its page says it's in the jam");
+
+    // a younger player's creation is shared by code, so it can't go in
+    let (_, s) = m.call(Some(&kid), "POST", "/api/share", Some(json!({ "files": mossback_with(&format!("Kid's boat {}", m.run), &kid.name, "\n-- bobs\n"), "visibility": "everyone", "from": { "base": "mossback", "version": 1 } }))).await;
+    let kid_code = s["code"].as_str().unwrap().to_string();
+    let (status, _) = m.call(Some(&kid), "POST", &format!("/api/jams/{slug}/enter"), Some(json!({ "code": kid_code }))).await;
+    assert_eq!(status, 409);
+
+    // stars while it runs count; then it's over
+    let (status, _) = m.call(Some(&mo), "POST", &format!("/api/c/{code}/star"), Some(json!({ "on": true }))).await;
+    assert_eq!(status, 200);
+    let (_, green) = m.call(None, "GET", "/api/green", None).await;
+    assert!(green["arches"].as_array().unwrap().iter().any(|a| a["code"] == code.as_str() && a["why"].as_str().unwrap().contains("this week's jam")), "{green}");
+    let week = 8 * crate::jams::DAY;
+    m.app.db().execute("UPDATE jams SET starts = starts - ?1, ends = ends - ?1 WHERE slug = ?2", rusqlite::params![week, slug]).unwrap();
+    m.app.db().execute("UPDATE stars SET created = created - ?1", [week]).unwrap();
+    let (status, _) = m.call(Some(&bo), "POST", &format!("/api/jams/{slug}/enter"), Some(json!({ "code": code }))).await;
+    assert_eq!(status, 409, "that jam is over");
+    let (_, jams) = m.call(None, "GET", "/api/jams", None).await;
+    assert!(jams["current"].is_null(), "{jams}");
+    assert_eq!(jams["last"]["favourites"][0]["code"], code.as_str(), "{jams}");
+    let (_, page) = m.page(&to, None).await;
+    assert!(page.contains("favourite") && page.contains("1 star in the jam"), "the jam's page shows its favourites");
+
+    // the Green: a favourite first, then what's trending; younger players
+    // only see it once it's checked for all ages
+    let (_, green) = m.call(None, "GET", "/api/green", None).await;
+    let arches = green["arches"].as_array().unwrap();
+    assert_eq!(arches[0]["code"], code.as_str(), "{green}");
+    assert!(arches[0]["why"].as_str().unwrap().contains("favourite"), "{green}");
+    assert!(arches.len() <= crate::jams::FAVOURITES);
+    let (_, green) = m.call(Some(&kid), "GET", "/api/green", None).await;
+    assert!(!green["arches"].as_array().unwrap().iter().any(|a| a["code"] == code.as_str()), "{green}");
+    m.app.set_all_ages(&mo_acct, &code, true).unwrap();
+    let (_, green) = m.call(Some(&kid), "GET", "/api/green", None).await;
+    assert_eq!(green["arches"][0]["code"], code.as_str(), "{green}");
 }

@@ -24,6 +24,27 @@ pub struct Settings {
     pub device: String,
     /// Survive (health, breaking takes time, blocks run out) or Build.
     pub survival: bool,
+    /// The player was asked their age, the first time they went online.
+    pub age_asked: bool,
+    /// Under 13: sharing by code only, with friends; only all-ages servers
+    /// from the market; no suggestions to strangers.
+    pub young: bool,
+    /// A parent can turn sharing off.
+    pub sharing: bool,
+    /// A parent can turn off joining servers from the market's list.
+    pub servers: bool,
+    /// The parent's PIN, hashed with this device's id. Empty: no PIN yet.
+    pub parent_pin: String,
+    /// Creations' actions moved to other buttons, by `creation/action`.
+    pub bindings: std::collections::BTreeMap<String, Binding>,
+}
+
+/// A creation's action on buttons the player chose.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Binding {
+    pub pad: String,
+    pub keys: String,
 }
 
 impl Default for Settings {
@@ -39,6 +60,12 @@ impl Default for Settings {
             market: crate::share::DEFAULT_MARKET.into(),
             device: String::new(),
             survival: false,
+            age_asked: false,
+            young: false,
+            sharing: true,
+            servers: true,
+            parent_pin: String::new(),
+            bindings: Default::default(),
         }
     }
 }
@@ -76,6 +103,26 @@ impl Settings {
             s.save();
         }
         s
+    }
+
+    /// A PIN as it's kept: never the digits themselves.
+    /// The pad button and key an action is on: the player's choice, or the
+    /// creation's.
+    pub fn binding(&self, creation: &str, action: &str, def: &crate::creations::ActionDef) -> (String, String) {
+        match self.bindings.get(&format!("{creation}/{action}")) {
+            Some(b) => (b.pad.clone(), b.keys.clone()),
+            None => (def.pad.clone(), def.keys.clone()),
+        }
+    }
+
+    pub fn pin_hash(&self, pin: &str) -> String {
+        use sha2::Digest;
+        let d = sha2::Sha256::digest(format!("potluck parent pin\n{}\n{}", self.device, pin.trim()).as_bytes());
+        d.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    pub fn pin_matches(&self, pin: &str) -> bool {
+        !self.parent_pin.is_empty() && self.pin_hash(pin) == self.parent_pin
     }
 
     pub fn save(&self) {

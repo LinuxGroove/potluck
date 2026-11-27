@@ -5,7 +5,8 @@ use bevy::prelude::*;
 
 use crate::creations::{open_folder, open_link, Creation, Library, Mark, Origin};
 use crate::creatures::{self, Herd};
-use crate::input::Controls;
+use crate::green::{self, Green, Shows};
+use crate::input::{glyph, Controls};
 use crate::net::{Net, Role};
 use crate::noise::Rng;
 use crate::player::Me;
@@ -22,6 +23,8 @@ pub enum Action {
     Hit(u64),
     Dismount,
     Ride(Vec2, f32),
+    /// One of a creation's actions (`@potluck/input`), pressed or let go.
+    Press { creation: String, action: String, down: bool },
 }
 
 /// What players did this frame: (player id, action).
@@ -32,8 +35,49 @@ pub struct Actions(pub Vec<(u32, Action)>);
 pub struct HerdRng(pub Rng);
 
 /// Aiming at creatures, getting on and off, and the pause button.
-pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut me: ResMut<Me>, net: Res<Net>, mut actions: ResMut<Actions>, mut acts: ResMut<Acts>) {
+#[allow(clippy::too_many_arguments)]
+pub fn interact(
+    c: Res<Controls>,
+    mut focus: ResMut<Focus>,
+    herd: Res<Herd>,
+    mut me: ResMut<Me>,
+    net: Res<Net>,
+    mut actions: ResMut<Actions>,
+    mut acts: ResMut<Acts>,
+    green: Res<Green>,
+    lib: Res<Library>,
+    settings: Res<Settings>,
+) {
     me.aim_body = None;
+    me.aim_arch = None;
+    // a creation's actions: tell the host what was pressed and let go
+    let live = if focus.playing() { c.live.clone() } else { None };
+    let now: Vec<String> = if live.is_some() { c.actions.clone() } else { vec![] };
+    let (was_live, was) = std::mem::take(&mut me.pressing);
+    for a in &was {
+        if was_live != live || !now.contains(a) {
+            actions.0.push((net.my_id, Action::Press { creation: was_live.clone().unwrap_or_default(), action: a.clone(), down: false }));
+        }
+    }
+    for a in &now {
+        if was_live != live || !was.contains(a) {
+            actions.0.push((net.my_id, Action::Press { creation: live.clone().unwrap_or_default(), action: a.clone(), down: true }));
+        }
+    }
+    me.live_prompt = live.as_ref().and_then(|id| lib.list.get(id)).map(|cr| {
+        let what: Vec<String> = cr
+            .manifest
+            .actions
+            .iter()
+            .filter_map(|(id, a)| {
+                let (pad, key) = settings.binding(&cr.id, id, a);
+                let b = if c.pad && !pad.is_empty() { crate::input::button_name(&pad) } else if !key.is_empty() { key } else { crate::input::button_name(&pad) };
+                (!b.is_empty()).then(|| format!("{b} {}", a.name))
+            })
+            .collect();
+        what.join("   ")
+    }).filter(|p| !p.is_empty());
+    me.pressing = (live, now);
     if !focus.playing() {
         // a menu open while riding: the creature stands and waits
         if me.riding.is_some() {
@@ -52,6 +96,16 @@ pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut
     let pick = herd.bodies.values().filter(|b| Some(b.id) != riding).filter_map(|b| b.ray(eye, dir).map(|t| (b.id, t))).filter(|(_, t)| *t < 4.5 && *t < block_t).min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((id, _)) = pick {
         me.aim_body = Some(id);
+    } else if riding.is_none() {
+        // one of the Green's arches
+        if let Some(i) = green::aimed(eye, dir, block_t) {
+            let text = match &green.arches(&lib)[i] {
+                Some(s @ Shows::Here(_)) => format!("{}\n{} Look inside", green::describe(s, &lib).1, glyph(c.pad, "interact")),
+                Some(s @ Shows::Pick(_)) => format!("{}\n{} Bring it into this world", green::describe(s, &lib).1, glyph(c.pad, "interact")),
+                None => "An arch for creations\nBring one into this world and it shows here".to_string(),
+            };
+            me.aim_arch = Some((i, text));
+        }
     }
     let pid = net.my_id;
     // Share: what you ride or aim at, straight to a code
@@ -85,6 +139,8 @@ pub fn interact(c: Res<Controls>, mut focus: ResMut<Focus>, herd: Res<Herd>, mut
                 focus.go(Screen::Inside(b.creation.clone()));
             }
         }
+    } else if let Some((i, _)) = me.aim_arch.as_ref().filter(|_| c.interact) {
+        acts.0.push(Act::Arch(*i));
     } else if c.look_inside {
         focus.go(Screen::Library);
     }
@@ -144,6 +200,13 @@ pub fn host_step(
             Action::Ride(mv, yaw) => {
                 herd.riders.insert(pid, (mv, yaw));
             }
+            Action::Press { creation, action, down } => {
+                // only while it's live for them: riding its creature, or it has their controls
+                let live = herd.bodies.values().any(|b| b.creation == creation && b.rider == Some(pid)) || scripts.focus_of(pid).as_deref() == Some(creation.as_str());
+                if live || !down {
+                    scripts.press(pid, &creation, &action, down);
+                }
+            }
         }
     }
     let w = &*voxels;
@@ -153,6 +216,14 @@ pub fn host_step(
     for t in std::mem::take(&mut scripts.out.toasts) {
         net.broadcast_toast(&t);
         toasts.push(t);
+    }
+    // creations that took or gave back a player's controls
+    for (pid, creation) in scripts.focus_changes() {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().focus = creation;
+        } else {
+            net.send_focus(pid, creation);
+        }
     }
     for (pid, v) in std::mem::take(&mut scripts.out.throws) {
         herd.riders.remove(&pid);
@@ -204,8 +275,13 @@ pub fn riding(herd: Res<Herd>, net: Res<Net>, mut me: ResMut<Me>) {
     me.riding = now;
 }
 
-pub fn labels(herd: Res<Herd>, net: Res<Net>, mut labels: ResMut<Labels>) {
+pub fn labels(herd: Res<Herd>, net: Res<Net>, green: Res<Green>, lib: Res<Library>, mut labels: ResMut<Labels>) {
     labels.0.clear();
+    for (i, s) in green.arches(&lib).iter().enumerate() {
+        if let Some(s) = s {
+            labels.0.push((green::arch_at(i) + Vec3::Y * 5.6, green::describe(s, &lib).0));
+        }
+    }
     for b in herd.bodies.values() {
         if let Some((text, _)) = &b.says {
             labels.0.push((b.pos + Vec3::Y * (b.half.y + 0.7), text.clone()));
@@ -309,11 +385,69 @@ pub fn do_acts(
     mut voxels: ResMut<Voxels>,
     mut info: ResMut<WorldInfo>,
     shares: Res<ShareJobs>,
+    mut green: ResMut<Green>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    // what the Green's arches can offer, asked for now and then while playing
+    if info.in_world && green.asked.is_none_or(|t| t.elapsed().as_secs_f32() > green::ASK_EVERY) {
+        green.asked = Some(std::time::Instant::now());
+        // until a player says how old they are, only what's for all ages
+        shares.green(&Who { young: settings.young || !settings.age_asked, ..Who::of(&settings) });
+    }
+    let mut later = vec![];
     for act in std::mem::take(&mut acts.0) {
+        // the first time anything goes online, ask who's playing
+        if !settings.age_asked && goes_online(&act) {
+            focus.status.clear();
+            focus.go(Screen::Age(Box::new(act)));
+            continue;
+        }
         match act {
             Act::Resume => focus.go(Screen::Playing),
+            Act::SetAge(young) => {
+                settings.age_asked = true;
+                settings.young = young;
+                settings.save();
+                let back = if info.in_world { Screen::Pause } else { Screen::Title };
+                if let Screen::Age(next) = std::mem::replace(&mut focus.screen, back) {
+                    later.push(*next);
+                }
+            }
+            Act::OpenParents => {
+                focus.parents_open = settings.parent_pin.is_empty();
+                focus.fields.remove("pin");
+                focus.fields.remove("newpin");
+                focus.status.clear();
+                focus.go(Screen::Parents);
+            }
+            Act::UnlockParents(pin) => {
+                let now = std::time::Instant::now();
+                focus.pin_misses.retain(|t| now.duration_since(*t).as_secs() < 300);
+                focus.fields.remove("pin");
+                if focus.pin_misses.len() >= 5 {
+                    focus.status = "That's a lot of tries: wait a few minutes.".into();
+                } else if settings.pin_matches(&pin) {
+                    focus.parents_open = true;
+                    focus.status.clear();
+                } else {
+                    focus.pin_misses.push(now);
+                    focus.status = "That isn't the PIN.".into();
+                }
+            }
+            Act::SetPin(pin) => {
+                let pin = pin.trim().to_string();
+                if !focus.parents_open {
+                    continue;
+                }
+                if (4..=8).contains(&pin.len()) && pin.chars().all(|c| c.is_ascii_digit()) {
+                    settings.parent_pin = settings.pin_hash(&pin);
+                    settings.save();
+                    focus.fields.remove("newpin");
+                    focus.status = "PIN set. Only someone who knows it can change these now.".into();
+                } else {
+                    focus.status = "A PIN is 4 to 8 numbers.".into();
+                }
+            }
             Act::PlayAlone => {
                 info.in_world = true;
                 focus.go(Screen::Playing);
@@ -332,7 +466,9 @@ pub fn do_acts(
                 focus.servers.clear();
                 focus.status.clear();
                 focus.go(Screen::Servers);
-                shares.servers(&Who::of(&settings));
+                if settings.servers {
+                    shares.servers(&Who::of(&settings));
+                }
             }
             Act::OpenJoin => {
                 net.listen_lan();
@@ -364,6 +500,7 @@ pub fn do_acts(
             }
             Act::OpenLibrary => focus.go(Screen::Library),
             Act::OpenSettings => {
+                focus.parents_open = false;
                 focus.fields.insert("name".into(), settings.name.clone());
                 focus.fields.insert("server".into(), settings.server.clone());
                 focus.fields.insert("market".into(), settings.market.clone());
@@ -401,11 +538,18 @@ pub fn do_acts(
                 focus.go(Screen::Share(id));
             }
             Act::ShareTo(id, everyone) => {
-                if let Some(c) = lib.list.get(&id).filter(|c| c.editable()) {
+                // younger players share with friends, by code
+                let everyone = everyone && !settings.young;
+                if !settings.sharing {
+                    focus.status = "A parent turned sharing off.".into();
+                } else if let Some(c) = lib.list.get(&id).filter(|c| c.editable()) {
                     focus.status = "Sharing...".into();
                     let code = lib.marks.get(&id).filter(|m| m.version > 0).map(|m| m.code.clone());
                     shares.share(&Who::of(&settings), c.payload(), everyone, code, c.manifest.from.clone());
                 }
+            }
+            Act::Suggest(_) if settings.young || !settings.sharing => {
+                toasts.push("Younger players share with friends, by code");
             }
             Act::Suggest(id) => {
                 focus.status.clear();
@@ -487,6 +631,44 @@ pub fn do_acts(
             Act::Run(id) => {
                 bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
             }
+            Act::Arch(i) => match green.arches(&lib).get(i).cloned().flatten() {
+                Some(Shows::Here(id)) => focus.go(Screen::Inside(id)),
+                Some(Shows::Pick(p)) => {
+                    let had = lib.list.values().find(|c| c.code.as_deref() == Some(p.code.as_str())).map(|c| c.id.clone());
+                    match had {
+                        Some(id) => {
+                            bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
+                            toasts.push(format!("{} is in your world", p.name));
+                        }
+                        None if green.fetching.is_none() => {
+                            green.fetching = Some(p.code.clone());
+                            toasts.push(format!("Fetching {}...", p.name));
+                            shares.load(&Who::of(&settings), &p.code, None);
+                        }
+                        None => {}
+                    }
+                }
+                None => {}
+            },
+            Act::OpenControls => {
+                focus.rebinding = None;
+                focus.go(Screen::Controls);
+            }
+            Act::Rebind(creation, action) => focus.rebinding = Some((creation, action)),
+            Act::ResetControls => {
+                settings.bindings.clear();
+                settings.save();
+            }
+            Act::EnterJam(id) => {
+                let code = lib.marks.get(&id).filter(|m| m.everyone && m.version > 0).map(|m| m.code.clone());
+                match (focus.jam.clone(), code) {
+                    (Some(jam), Some(code)) => {
+                        focus.status = format!("Entering it in the {} jam...", jam.theme);
+                        shares.enter_jam(&Who::of(&settings), &jam, &code);
+                    }
+                    _ => focus.status = "Share it to Everyone first: jam entries are on the market for anyone to try.".into(),
+                }
+            }
             Act::Stop(id) => {
                 if !matches!(net.role, Role::Client(_)) {
                     scripts.stop(&id, &mut herd);
@@ -511,6 +693,7 @@ pub fn do_acts(
                 focus.go(to);
             }
             Act::Leave => {
+                me.focus = None;
                 net.leave();
                 *voxels = crate::world::generate(voxels.seed);
                 herd.bodies.clear();
@@ -530,6 +713,12 @@ pub fn do_acts(
             }
         }
     }
+    acts.0.extend(later);
+}
+
+/// Acts that reach other people: the first one asks who's playing.
+fn goes_online(act: &Act) -> bool {
+    matches!(act, Act::Share(_) | Act::ShareTo(..) | Act::Suggest(_) | Act::OpenServers | Act::JoinAddress(_) | Act::Market(..) | Act::OpenDevices | Act::EnterJam(_))
 }
 
 /// The creations a fresh world starts with: the base game's.
@@ -554,6 +743,7 @@ pub fn share_results(
     mut net: ResMut<Net>,
     mut toasts: ResMut<Toasts>,
     info: Res<WorldInfo>,
+    mut green: ResMut<Green>,
 ) {
     for done in shares.poll() {
         match done {
@@ -579,9 +769,19 @@ pub fn share_results(
                         bring(&id, &mut lib, &mut scripts, &mut herd, &mut net, &mut toasts);
                         toasts.push(format!("{name} is in your world"));
                     }
-                    focus.go(Screen::Inside(id));
+                    // from an arch: stay in the world with it
+                    if green.fetching.as_ref() == Some(&code) && info.in_world {
+                        green.fetching = None;
+                    } else {
+                        focus.go(Screen::Inside(id));
+                    }
                 }
-                Err(e) => focus.status = format!("Couldn't load it: {e}"),
+                Err(e) => {
+                    if green.fetching.take().is_some() {
+                        toasts.push(format!("Couldn't load it: {e}"));
+                    }
+                    focus.status = format!("Couldn't load it: {e}");
+                }
             },
             Done::Link { url, title } => {
                 focus.status.clear();
@@ -651,7 +851,19 @@ pub fn share_results(
                 focus.status = s.clone();
                 toasts.push(s);
             }
+            Done::Green { picks, jam } => {
+                green.picks = picks;
+                focus.jam = jam;
+            }
+            Done::Entered { theme } => {
+                focus.status = format!("Entered in the {theme} jam. Stars it gets until the jam ends count.");
+                toasts.push(format!("Entered in the {theme} jam"));
+            }
             Done::Failed(e) => {
+                // a code fetched for an arch: say so in the world
+                if green.fetching.take().is_some() && focus.screen == Screen::Playing {
+                    toasts.push(format!("Couldn't fetch it: {e}"));
+                }
                 focus.status = format!("Sorry: {e}.");
             }
         }

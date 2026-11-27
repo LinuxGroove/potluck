@@ -167,7 +167,8 @@ fn a_creation_cannot_reach_outside_the_sandbox() {
     scripts.start(&creation(&code), &mut herd).unwrap();
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
     let said: Vec<String> = herd.bodies.values().filter_map(|b| b.says.as_ref().map(|s| s.0.clone())).collect();
-    assert_eq!(said, vec!["sealed".to_string()], "no files, no programs, no loading code");
+    let vm = &scripts.vms["test"];
+    assert_eq!(said, vec!["sealed".to_string()], "no files, no programs, no loading code ({:?}, {:?})", vm.error, vm.log);
 }
 
 #[test]
@@ -557,7 +558,7 @@ fn a_remix_of_a_remix_is_suggested_and_merged_from_the_game() {
     let run = crate::settings::random_hex(5);
     let (market, _) = start_market(Some((&fj, &token)), &run);
     let server = fake_game_server();
-    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
+    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}"), young: false };
     let (ada, bo) = (who("Ada"), who("Bo"));
     let (ada_jobs, bo_jobs) = (ShareJobs::default(), ShareJobs::default());
     let mut lib = Library::load();
@@ -661,7 +662,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let run = crate::settings::random_hex(5);
     let (market, mkt) = start_market(None, &run);
     let server = fake_game_server();
-    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}") };
+    let who = |name: &str| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}"), young: false };
 
     // Riverbend: signed-in players only, at an address the passes name
     let port = free_port();
@@ -714,7 +715,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let ada = potluck_share::db::ensure_account(&mkt.db(), &format!("dev-ada-{run}"), &format!("Ada {run}")).unwrap();
     let (_, token) = mkt.add_server(&ada, "Riverbend").unwrap();
     let link = MarketLink::new(&market, &token);
-    let beat = serde_json::json!({ "name": "Riverbend", "about": "Rodeo nights", "address": address, "players": 1, "max_players": 50, "join": "signed-in", "creations": [{ "name": "Rodeo", "code": "ABCD2345" }], "version": "test" });
+    let beat = serde_json::json!({ "name": "Riverbend", "about": "Rodeo nights", "address": address, "players": 1, "max_players": 50, "join": "signed-in", "creations": [{ "name": "Rodeo", "code": "ABCD2345" }], "version": "test", "all_ages": true });
     let said = link.heartbeat(&beat).expect("the heartbeat");
     assert_eq!(said["listed"], true, "listed once the market reached its status page: {said}");
     assert!(MarketLink::new(&market, "not-a-token").heartbeat(&beat).is_err(), "only tokens the market made");
@@ -723,6 +724,7 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     let Done::Servers(list) = done(&jobs, "the server list") else { panic!("not a list") };
     let listed = list.iter().find(|s| s.name == "Riverbend").expect("Riverbend is on the list");
     assert_eq!((listed.address.as_str(), listed.join.as_str(), listed.creations.clone()), (address.as_str(), "signed-in", vec!["Rodeo".to_string()]));
+    assert!(listed.all_ages, "it says it's for all ages");
 
     // a board kept on Riverbend shows on the creation's page
     let handle = bo.name.to_lowercase().replace(' ', "-");
@@ -762,7 +764,7 @@ fn another_device_plays_as_you_with_a_code() {
     let (market, mkt) = start_market(None, &run);
     let server = fake_game_server();
     // each device signs in to the game server as itself, with jobs of its own
-    let device = |id: &str, name: &str| (Who { server: server.clone(), market: market.clone(), device: format!("{id}-{run}"), name: format!("{name} {run}") }, ShareJobs::default());
+    let device = |id: &str, name: &str| (Who { server: server.clone(), market: market.clone(), device: format!("{id}-{run}"), name: format!("{name} {run}"), young: false }, ShareJobs::default());
     let (ada, deck, phone, bo, tablet) = (device("ada", "Ada"), device("adadeck", "Deck"), device("adaphone", "Phone"), device("bo", "Bo"), device("adatablet", "Tablet"));
     let account = |(w, jobs): &(Who, ShareJobs)| {
         jobs.account(w);
@@ -830,6 +832,116 @@ fn another_device_plays_as_you_with_a_code() {
     assert_eq!(account(&ada).handle, first.handle, "the first device is always hers");
 }
 
+/// Younger players: the game tells the market, their passes say so, and a
+/// listed server turns them away unless it's for all ages (a friend's world
+/// never does). Their menus offer sharing by code only, suggestions not at
+/// all, and only all-ages servers; a parent can turn sharing and servers
+/// off, behind a PIN kept as a hash.
+#[test]
+fn younger_players_share_with_friends_and_play_where_its_for_all_ages() {
+    use crate::hosting::Rules;
+    use crate::settings::Settings;
+    use crate::share::{Done, Listed, MarketLink, ShareJobs, Who};
+    use crate::ui::{menu_items, Act, Focus, Kind, Screen, WorldInfo};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let server = fake_game_server();
+    let kid = Who { server: server.clone(), market: market.clone(), device: format!("kid-{run}"), name: format!("Kid {run}"), young: true };
+    let jobs = ShareJobs::default();
+    jobs.account(&kid);
+    let Done::Account(a) = done(&jobs, "the kid's account") else { panic!("not an account") };
+    assert!(potluck_share::db::account_by_handle(&mkt.db(), &a.handle).unwrap().unwrap().young, "the market knows");
+
+    let address = "ws://rodeo.example.org";
+    jobs.pass(&kid, address);
+    let Done::Pass { pass: Some(pass), .. } = done(&jobs, "the kid's pass") else { panic!("no pass") };
+    let key = MarketLink::new(&market, "").key().unwrap();
+    let mut rules = Rules { address: address.into(), market_key: Some(key), listed: true, ..Default::default() };
+    let why = rules.admit("Kid", Some(&pass), 0).expect_err("a listed server that isn't for all ages");
+    assert!(why.contains("13 and older"), "{why}");
+    rules.all_ages = true;
+    assert!(rules.admit("Kid", Some(&pass), 0).is_ok(), "an all-ages server");
+    rules.all_ages = false;
+    rules.listed = false;
+    assert!(rules.admit("Kid", Some(&pass), 0).is_ok(), "a friend's world");
+
+    // a parent unticks Under 13: the market hears on the next call
+    let older = Who { young: false, ..kid.clone() };
+    jobs.account(&older);
+    let Done::Account(_) = done(&jobs, "the account again") else { panic!("not an account") };
+    assert!(!potluck_share::db::account_by_handle(&mkt.db(), &a.handle).unwrap().unwrap().young);
+
+    // the menus
+    let mut lib = Library::load();
+    let id = lib.remix("mossback", "Kid").unwrap();
+    let scripts = Scripts::default();
+    let info = WorldInfo::default();
+    let mut settings = Settings { young: true, age_asked: true, ..Default::default() };
+    let mut focus = Focus::default();
+    let acts = |focus: &Focus, settings: &Settings| -> Vec<Act> {
+        menu_items(focus, &lib, &scripts, settings, &info).1.into_iter().filter_map(|i| if let Kind::Button(a) = i.kind { Some(a) } else { None }).collect()
+    };
+    focus.go(Screen::Share(id.clone()));
+    let share = acts(&focus, &settings);
+    assert!(share.contains(&Act::ShareTo(id.clone(), false)) && !share.contains(&Act::ShareTo(id.clone(), true)), "by code only: {share:?}");
+    focus.go(Screen::Inside(id.clone()));
+    assert!(!acts(&focus, &settings).contains(&Act::Suggest(id.clone())), "no suggestions to strangers");
+    settings.young = false;
+    assert!(acts(&focus, &settings).contains(&Act::Suggest(id.clone())), "older players suggest");
+    settings.sharing = false;
+    assert!(!acts(&focus, &settings).contains(&Act::Share(id.clone())), "a parent turned sharing off");
+    settings = Settings { young: true, ..Default::default() };
+    focus.servers = vec![Listed { name: "Rodeo".into(), address: "a".into(), all_ages: true, ..Default::default() }, Listed { name: "Late".into(), address: "b".into(), ..Default::default() }];
+    focus.go(Screen::Servers);
+    assert_eq!(acts(&focus, &settings), vec![Act::JoinAddress("a".into()), Act::Back], "only all-ages servers");
+    settings.servers = false;
+    assert_eq!(acts(&focus, &settings), vec![Act::Back]);
+
+    // the PIN is kept as a hash
+    settings.parent_pin = settings.pin_hash("2468");
+    assert!(!settings.parent_pin.contains("2468") && settings.pin_matches("2468") && !settings.pin_matches("1357"));
+    focus.go(Screen::Parents);
+    focus.parents_open = false;
+    assert!(acts(&focus, &settings).iter().any(|a| matches!(a, Act::UnlockParents(_))), "locked until the PIN");
+}
+
+/// The first time anything would go online, the game asks who's playing,
+/// then does what the player picked; it never asks again.
+#[test]
+fn the_age_question_comes_once_before_going_online() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{Act, Acts, Focus, Screen};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    let mut run = |app: &mut App, act: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(act);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+        // what an act asks for runs on the next frame
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+
+    // playing alone asks nothing
+    run(&mut app, Act::OpenSettings);
+    assert!(!matches!(app.world().resource::<Focus>().screen, Screen::Age(_)), "nothing online yet");
+
+    // the server list waits for the answer, then opens
+    run(&mut app, Act::OpenServers);
+    assert!(matches!(&app.world().resource::<Focus>().screen, Screen::Age(next) if **next == Act::OpenServers), "asked first");
+    run(&mut app, Act::SetAge(true));
+    let settings = app.world().resource::<Settings>();
+    assert!(settings.age_asked && settings.young);
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::Servers), "then the servers");
+
+    // and not again
+    run(&mut app, Act::OpenDevices);
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::Devices), "asked once");
+}
+
 /// `@potluck/game`: a creation keeps a board of each player's best and
 /// sends players on to servers this one links to, and nothing else.
 #[test]
@@ -850,6 +962,90 @@ fn creations_keep_boards_and_send_players_on() {
     let scores: Vec<_> = scripts.out.scores.iter().map(|(c, b, lower, p, v)| (c.as_str(), b.as_str(), *lower, *p, *v)).collect();
     assert_eq!(scores, vec![("test", "longest ride", false, 7, 12.0), ("test", "fastest lap", true, 7, 31.5)]);
     assert_eq!(scripts.out.sends, vec![(7, "rodeo".to_string(), "Off to the rodeo!".to_string())]);
+}
+
+/// `@potluck/world` 0.2: a creation with no creatures runs on timers and
+/// hears who comes and goes.
+#[test]
+fn timers_and_world_events_run_a_creation_with_no_creatures() {
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.2")
+local ticks, once = 0, 0
+world.every(0.1, function() ticks += 1 end)
+world.after(0.5, function() once += 1; print("once " .. once) end)
+local gone = world.after(0.3, function() print("a cancelled timer ran") end)
+assert(world.cancel(gone) == true and world.cancel(gone) == false)
+world.after(2, function() print("ticks " .. ticks) end)
+world.on("player_joined", function(p) print("hello " .. p.name) end)
+world.on("player_left", function(p) print("bye " .. p.name) end)
+print(pcall(world.on, "lunch", function() end) and "lunch heard" or "no lunch")
+local many = 0
+while pcall(world.after, 60, function() end) do many += 1 end
+print("waiting " .. many)
+"#;
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) }];
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 2.1);
+    scripts.players.clear();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains("no lunch"), "world.on knows its events: {log}");
+    // three timers were waiting when it filled up
+    assert!(log.contains(&format!("waiting {}", crate::script::MAX_TIMERS - 3)), "{log}");
+    assert_eq!(log.matches("hello Ada").count(), 1, "{log}");
+    assert_eq!(log.matches("once").count(), 1, "world.after runs once: {log}");
+    assert!(!log.contains("cancelled timer ran"), "{log}");
+    let ticks: u32 = log.lines().find_map(|l| l.strip_prefix("ticks ")).and_then(|n| n.parse().ok()).expect("the two second timer");
+    assert!((19..=21).contains(&ticks), "world.every(0.1) ran {ticks} times in two seconds");
+    assert!(log.contains("bye Ada"), "{log}");
+}
+
+/// `@potluck/store`: what a creation keeps lasts across a reload and a
+/// server's restart, stays its own, and has a quota.
+#[test]
+fn creations_keep_things_in_the_store() {
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local store = require("@potluck/store@0.1")
+local n = (store.get("starts") or 0) + 1
+store.set("starts", n)
+store.set("best", { name = "Ada", laps = { 31.5, 29.25 }, at = vector.create(1, 2, 3) })
+store.set("gone", true)
+store.set("gone", nil)
+print("starts " .. n .. " keys " .. table.concat(store.keys(), ","))
+print(pcall(store.set, "big", string.rep("x", 70000)) and "too big kept" or "full")
+print(pcall(store.set, "f", function() end) and "kept a function" or "no functions")
+local best = store.get("best")
+print(best.name .. " " .. best.laps[2] .. " " .. best.at.y .. " " .. store.used())
+"#;
+    let c = creation(code);
+    scripts.start(&c, &mut herd).unwrap();
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("starts 1 keys best,starts"), "{log}");
+    assert!(log.contains("full") && log.contains("no functions"), "{log}");
+    assert!(log.contains("Ada 29.25 2 "), "lists and vectors come back: {log}");
+    // a reload keeps it
+    scripts.start(&c, &mut herd).unwrap();
+    assert!(scripts.vms["test"].log.join("\n").contains("starts 2"));
+    // another creation can't see it
+    let mut other = c.clone();
+    other.id = "other".into();
+    scripts.start(&other, &mut herd).unwrap();
+    assert!(scripts.vms["other"].log.join("\n").contains("starts 1"), "each creation keeps its own");
+    // a server saves it with the world and reads it when it starts again
+    let file = std::env::temp_dir().join(format!("potluck-store-{}.json", std::process::id()));
+    scripts.shared.lock().unwrap().store.save(&file);
+    let mut again = Scripts::default();
+    again.shared.lock().unwrap().store = crate::script::Store::load(&file);
+    let _ = std::fs::remove_file(&file);
+    again.start(&c, &mut herd).unwrap();
+    assert!(again.vms["test"].log.join("\n").contains("starts 3"), "{:?}", again.vms["test"].log);
 }
 
 /// The base game is creations: a dozen of them load, run a minute of the
@@ -999,4 +1195,264 @@ fn people_wear_clothes_a_face_and_hair() {
         let face = parts.iter().find(|p| p.name == "face").unwrap();
         assert!(eye.at.z < face.at.z - face.size.z / 2.0 + 0.01, "eyes on the front, which is -z");
     }
+}
+
+/// Jams from the game: the Green's arches show what the market offers (an
+/// entry in this week's jam first, then what's trending, and for younger
+/// players only what's checked for all ages) until players bring their own;
+/// Interact reaches the arch in front of you; and a creation shared to
+/// Everyone goes in this week's jam from Share.
+#[test]
+fn the_greens_arches_and_this_weeks_jam() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::creations::Mark;
+    use crate::green::{self, Green, Shows};
+    use crate::share::{Done, ShareJobs, Who};
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, Act, Acts, Focus, Kind, Screen, WorldInfo};
+    home();
+    let run = crate::settings::random_hex(5);
+    let (market, mkt) = start_market(None, &run);
+    let who = Who { server: fake_game_server(), market, device: format!("ada-{run}"), name: "Ada".into(), young: false };
+    let jobs = ShareJobs::default();
+    jobs.account(&who);
+    let Done::Account(_) = done(&jobs, "Ada's account") else { panic!("not an account") };
+
+    // on the market: three of Ada's creations, the raft in this week's jam
+    let codes: Vec<String> = (0..3).map(|_| potluck_share::codes::new_code()).collect();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    {
+        let db = mkt.db();
+        for (i, name) in ["Raft", "Balloon", "Kite"].iter().enumerate() {
+            db.execute(
+                "INSERT INTO creations (code, owner, slug, name, kind, visibility, listing, plays, created, updated) VALUES (?1, ?2, ?3, ?4, 'creature', 'everyone', 'listed', ?5, ?6, ?6)",
+                (&codes[i], format!("dev-ada-{run}"), name.to_lowercase(), name, 10 - i as i64, now),
+            )
+            .unwrap();
+        }
+        db.execute("INSERT INTO jams (slug, theme, starts, ends, made_by, created) VALUES ('things-that-float', 'Things that float', ?1, ?2, 'potluck', ?1)", (now - 60, now + 7 * 86400)).unwrap();
+        db.execute("INSERT INTO jam_entries (jam, creation, entered) SELECT j.id, c.id, ?1 FROM jams j, creations c WHERE c.code = ?2", (now, &codes[0])).unwrap();
+    }
+    jobs.green(&who);
+    let Done::Green { picks, jam } = done(&jobs, "the Green") else { panic!("not the Green") };
+    let jam = jam.expect("the jam running now");
+    assert_eq!(jam.theme, "Things that float");
+    assert_eq!(picks.iter().map(|p| p.code.clone()).collect::<Vec<_>>(), codes, "the entry, then trending: {picks:?}");
+    assert!(picks[0].why.contains("this week's jam") && picks[1].why.contains("Trending"), "{picks:?}");
+    jobs.green(&Who { young: true, ..who.clone() });
+    let Done::Green { picks: young, .. } = done(&jobs, "the Green for a younger player") else { panic!("not the Green") };
+    assert!(young.is_empty(), "nothing here is checked for all ages: {young:?}");
+
+    // the arches: the market's picks, until a player brings something
+    let mut lib = Library::load();
+    lib.running = lib.list.values().filter(|c| c.origin == Origin::Base).map(|c| c.id.clone()).collect();
+    let mut green = Green { picks, ..Default::default() };
+    let arches = green.arches(&lib);
+    assert!(matches!(&arches[0], Some(Shows::Pick(p)) if p.name == "Raft") && arches[3].is_none(), "{arches:?}");
+    let mut balloon = mossback();
+    balloon.id = "balloon".into();
+    balloon.manifest.name = "Balloon".into();
+    balloon.origin = Origin::Code(codes[1].clone());
+    balloon.code = Some(codes[1].clone());
+    lib.list.insert("balloon".into(), balloon);
+    lib.running.push("balloon".into());
+    let arches = green.arches(&lib);
+    assert_eq!(arches[0], Some(Shows::Here("balloon".into())), "what players brought comes first");
+    let names: Vec<String> = arches[1..].iter().flatten().map(|s| green::describe(s, &lib).0.lines().next().unwrap().to_string()).collect();
+    assert_eq!(names, ["Raft", "Kite"], "and the balloon isn't shown twice");
+
+    // aiming: the arch in front of you, within reach, and not through a wall
+    let front = green::arch_at(1) + Vec3::new(0.0, 0.0, 3.0);
+    assert_eq!(green::aimed(front, Vec3::NEG_Z, f32::MAX), Some(1));
+    assert_eq!(green::aimed(front, Vec3::Z, f32::MAX), None, "looking away");
+    assert_eq!(green::aimed(front + Vec3::Z * 10.0, Vec3::NEG_Z, f32::MAX), None, "too far");
+    assert_eq!(green::aimed(front, Vec3::NEG_Z, 1.0), None, "a block in the way");
+    assert_eq!(green::aimed(front + Vec3::X * 5.0, Vec3::NEG_Z, f32::MAX), None, "between arches");
+
+    // Interact at an arch showing something in this world looks inside it
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    app.world_mut().resource_mut::<Library>().list.insert("balloon".into(), lib.list["balloon"].clone());
+    app.world_mut().resource_mut::<Library>().running.push("balloon".into());
+    app.world_mut().resource_mut::<Acts>().0.push(Act::Arch(0));
+    app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    assert!(app.world().resource::<Focus>().screen == Screen::Inside("balloon".into()), "looks inside the balloon");
+
+    // Share offers the jam once it's on the market for Everyone
+    let id = lib.remix("mossback", "Ada").unwrap();
+    let scripts = Scripts::default();
+    let info = WorldInfo::default();
+    let settings = Settings { age_asked: true, ..Default::default() };
+    let mut focus = Focus::default();
+    focus.jam = Some(jam.clone());
+    focus.go(Screen::Share(id.clone()));
+    let acts = |focus: &Focus, lib: &Library, settings: &Settings| -> Vec<Act> {
+        menu_items(focus, lib, &scripts, settings, &info).1.into_iter().filter_map(|i| if let Kind::Button(a) = i.kind { Some(a) } else { None }).collect()
+    };
+    assert!(!acts(&focus, &lib, &settings).contains(&Act::EnterJam(id.clone())), "not shared yet");
+    lib.marks.insert(id.clone(), Mark { code: codes[2].clone(), version: 1, everyone: true });
+    assert!(acts(&focus, &lib, &settings).contains(&Act::EnterJam(id.clone())));
+    assert!(!acts(&focus, &lib, &Settings { young: true, ..settings.clone() }).contains(&Act::EnterJam(id.clone())), "younger players share by code only");
+    focus.go(Screen::Pause);
+    assert!(acts(&focus, &lib, &settings).contains(&Act::Market("/jams/things-that-float".into(), "Things that float".into())));
+
+    // entering: the kite goes in; someone else's creation doesn't
+    jobs.enter_jam(&who, &jam, &codes[2]);
+    let Done::Entered { theme } = done(&jobs, "entering the kite") else { panic!("not entered") };
+    assert_eq!(theme, "Things that float");
+    let n: i64 = mkt.db().query_row("SELECT COUNT(*) FROM jam_entries", (), |r| r.get(0)).unwrap();
+    assert_eq!(n, 2);
+    // Bo, on his own device
+    let bo = Who { device: format!("bo-{run}"), name: "Bo".into(), ..who.clone() };
+    let bo_jobs = ShareJobs::default();
+    bo_jobs.enter_jam(&bo, &jam, &codes[1]);
+    assert!(failed(&bo_jobs, "Bo entering Ada's balloon").contains("only its maker"));
+    green.picks.clear();
+    assert!(green.arches(&lib)[1].is_none(), "with the market out of reach, only what players brought");
+}
+
+/// `@potluck/input`: a creation's actions are in its potluck.toml; while
+/// they're live (riding its creature, or it has the player's controls) its
+/// buttons do its actions instead of the game's, players can move them, and
+/// the host only takes presses for what's live for that player.
+#[test]
+fn creations_have_buttons_of_their_own() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::creations::ActionDef;
+    use crate::game::{Action, Actions};
+    use crate::input::{claim, Controls};
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::settings::{Binding, Settings};
+    use crate::transport::Wire;
+    use crate::ui::{menu_items, Act, Focus, Kind, Screen, WorldInfo};
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.2")
+local input = require("@potluck/input@0.1")
+local pats = 0
+input.on("pat", function(p)
+	pats += 1
+	print("pat from " .. p.name .. " " .. pats)
+	input.focus(p)
+end)
+world.every(0.1, function()
+	for _, p in world.players() do
+		if input.held("spin", p) then print("spinning " .. tostring(input.focused(p))) end
+	end
+end)
+print(pcall(input.on, "fly", function() end) and "fly ok" or "no fly")
+"#;
+    let mut c = creation(code);
+    c.manifest.actions.insert("pat".into(), ActionDef { name: "Pat".into(), pad: "X".into(), keys: "F".into() });
+    c.manifest.actions.insert("spin".into(), ActionDef { name: "Spin".into(), pad: "RB".into(), keys: "R".into() });
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(0.0, 40.0, 0.0) }];
+    scripts.start(&c, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    scripts.press(7, "test", "pat", true);
+    scripts.press(7, "test", "pat", true);
+    scripts.press(7, "test", "fly", true);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.focus_changes(), vec![(7, Some("test".to_string()))], "input.focus took Ada's controls");
+    assert!(scripts.focus_changes().is_empty(), "told once");
+    scripts.press(7, "test", "pat", false);
+    scripts.press(7, "test", "pat", true);
+    scripts.press(7, "test", "spin", true);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains("no fly"), "only actions it declared: {log}");
+    assert!(log.contains("pat from Ada 1") && log.contains("pat from Ada 2") && !log.contains("pat from Ada 3"), "a press, not a hold: {log}");
+    assert!(log.contains("spinning true"), "held while held: {log}");
+    // Ada goes, and nothing of hers is held
+    scripts.players.clear();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.focus_of(7), None);
+    assert!(scripts.shared.lock().unwrap().input.held.is_empty());
+    // a creation that stops gives controls back
+    scripts.shared.lock().unwrap().input.focus.insert(9, "test".into());
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.focus_changes(), vec![(9, None)]);
+
+    // on the device: its buttons do its actions, not the game's
+    let mut lib = Library::load();
+    lib.list.insert("test".into(), c.clone());
+    let mut settings = Settings::default();
+    let pressing = |held: &str| {
+        let mut c = Controls::default();
+        (c.interact, c.share, c.hotbar_step) = (true, true, 1);
+        c.held = vec![held.to_string()];
+        c
+    };
+    let mut ctl = pressing("pad:X");
+    claim(&mut ctl, Some("test".into()), &lib, &settings);
+    assert_eq!(ctl.actions, vec!["pat".to_string()]);
+    assert!(!ctl.interact && ctl.share, "X pats instead of getting off; sharing stays");
+    settings.bindings.insert("test/pat".into(), Binding { pad: "LB".into(), keys: "G".into() });
+    let mut ctl = pressing("pad:X");
+    claim(&mut ctl, Some("test".into()), &lib, &settings);
+    assert!(ctl.actions.is_empty() && ctl.interact, "moved to LB and G, so X and F are the game's again");
+    let mut ctl = pressing("pad:LB");
+    claim(&mut ctl, Some("test".into()), &lib, &settings);
+    assert_eq!((ctl.actions.clone(), ctl.hotbar_step), (vec!["pat".to_string()], 0));
+    let mut ctl = pressing("pad:X");
+    claim(&mut ctl, None, &lib, &settings);
+    assert!(ctl.actions.is_empty(), "nothing's live");
+
+    // what goes between devices
+    let press = Action::Press { creation: "test".into(), action: "pat".into(), down: true };
+    for m in [Msg::Act(press.clone()), Msg::Focus(Some("test".into()))] {
+        let bytes = frame_msg(&m);
+        let Some(Event::Msg(_, back)) = decode(Wire::Data(1, bytes)) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+
+    // the host takes a press only while it's live for that player
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default());
+    app.world_mut().resource_mut::<Library>().list.insert("test".into(), c.clone());
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&c, &mut herd).unwrap();
+    });
+    let me = app.world().resource::<crate::net::Net>().my_id;
+    let held = |app: &App| app.world().resource::<Scripts>().shared.lock().unwrap().input.held.contains(&(me, "test".to_string(), "pat".to_string()));
+    app.world_mut().resource_mut::<Actions>().0.push((me, press.clone()));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert!(!held(&app), "not riding it, and it doesn't have my controls");
+    {
+        let s = app.world().resource::<Scripts>();
+        let mut sh = s.shared.lock().unwrap();
+        sh.input.focus.insert(me, "test".into());
+        sh.input.changed.push(me);
+    }
+    app.world_mut().resource_mut::<Actions>().0.push((me, press.clone()));
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert!(held(&app), "it has my controls");
+    assert_eq!(app.world().resource::<crate::player::Me>().focus.as_deref(), Some("test"), "and the host's own player hears so");
+
+    // moving a button: the screen lists it, and the next press takes it
+    let scripts = Scripts::default();
+    let info = WorldInfo::default();
+    let mut focus = Focus::default();
+    focus.go(Screen::Controls);
+    let buttons: Vec<Act> = menu_items(&focus, &lib, &scripts, &Settings::default(), &info).1.into_iter().filter_map(|i| if let Kind::Button(a) = i.kind { Some(a) } else { None }).collect();
+    assert!(buttons.contains(&Act::Rebind("test".into(), "spin".into())), "{buttons:?}");
+    app.world_mut().resource_mut::<Library>().list.insert("test".into(), c.clone());
+    app.world_mut().resource_mut::<Focus>().screen = Screen::Controls;
+    app.world_mut().resource_mut::<Focus>().rebinding = Some(("test".into(), "spin".into()));
+    let mut ctl = Controls::default();
+    ctl.just = vec!["pad:Y".into()];
+    app.insert_resource(ctl);
+    app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    let s = app.world().resource::<Settings>();
+    assert_eq!(s.bindings.get("test/spin"), Some(&Binding { pad: "Y".into(), keys: "R".into() }), "the pad moved, the key stayed");
+    assert!(app.world().resource::<Focus>().rebinding.is_none());
 }

@@ -72,8 +72,35 @@ pub enum Done {
     Linked { name: String, handle: String, recovery: bool },
     /// This device left the account it was linked to.
     Unlinked,
+    /// What the market offers the Green's arches, and the jam running now.
+    Green { picks: Vec<Pick>, jam: Option<JamNow> },
+    /// A creation went into a jam.
+    Entered { theme: String },
     Said(String),
     Failed(String),
+}
+
+/// A creation the market offers the Green's arches, and why: a favourite
+/// of a jam that ended lately, an entry in this week's, or trending.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Pick {
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub why: String,
+}
+
+/// The jam running now: a theme for a week.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct JamNow {
+    pub slug: String,
+    pub theme: String,
+    #[serde(default)]
+    pub ends: i64,
 }
 
 /// The market account this device plays as.
@@ -115,6 +142,9 @@ pub struct Listed {
     pub creations: Vec<String>,
     #[serde(default)]
     pub join: String,
+    /// Open to players of every age, under 13 too.
+    #[serde(default)]
+    pub all_ages: bool,
 }
 
 /// Where to and as whom: the game server, the market, this device's id and
@@ -125,11 +155,14 @@ pub struct Who {
     pub market: String,
     pub device: String,
     pub name: String,
+    /// Under 13, as the player (or a parent) said: the market keeps them to
+    /// sharing by code, and their passes say so.
+    pub young: bool,
 }
 
 impl Who {
     pub fn of(s: &crate::settings::Settings) -> Who {
-        Who { server: s.server.clone(), market: s.market.clone(), device: s.device.clone(), name: s.name.clone() }
+        Who { server: s.server.clone(), market: s.market.clone(), device: s.device.clone(), name: s.name.clone(), young: s.young }
     }
 }
 
@@ -243,13 +276,15 @@ impl Fail {
 struct Market {
     agent: ureq::Agent,
     base: String,
+    /// Says the player is under 13 on every signed-in call.
+    young: bool,
 }
 
 impl Market {
     fn call(&self, method: &str, path: &str, token: Option<&str>, name: &str, body: Option<&Value>) -> Result<Value, Fail> {
         let url = format!("{}{path}", self.base);
         let res = if method == "GET" {
-            let mut r = self.agent.get(&url);
+            let mut r = self.agent.get(&url).header("X-Potluck-Young", if self.young { "1" } else { "0" });
             if let Some(t) = token {
                 r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
             }
@@ -257,7 +292,7 @@ impl Market {
         } else {
             let mut r = self.agent.post(&url).header("Content-Type", "application/json");
             if let Some(t) = token {
-                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name);
+                r = r.header("Authorization", &format!("Bearer {t}")).header("X-Potluck-Name", name).header("X-Potluck-Young", if self.young { "1" } else { "0" });
             }
             r.send(body.map(|b| b.to_string()).unwrap_or_else(|| "{}".into()))
         };
@@ -466,11 +501,11 @@ pub struct MarketLink {
 impl MarketLink {
     pub fn new(market: &str, token: &str) -> MarketLink {
         let base = market.trim_end_matches('/').to_string();
-        let who = Who { server: String::new(), market: base.clone(), device: String::new(), name: String::new() };
+        let who = Who { server: String::new(), market: base.clone(), device: String::new(), name: String::new(), young: false };
         let ctx = Ctx {
             // no game server: a server loads what anyone may load
             server: Server { agent: agent(1), base: "http://0.0.0.0:9".into() },
-            market: Market { agent: agent(20), base: base.clone() },
+            market: Market { agent: agent(20), base: base.clone(), young: false },
             who,
             token: Default::default(),
         };
@@ -505,7 +540,7 @@ impl ShareJobs {
         let tx = self.tx.clone();
         let ctx = Ctx {
             server: Server { agent: agent(12), base: who.server.trim_end_matches('/').to_string() },
-            market: Market { agent: agent(30), base: who.market.trim_end_matches('/').to_string() },
+            market: Market { agent: agent(30), base: who.market.trim_end_matches('/').to_string(), young: who.young },
             who: who.clone(),
             token: self.token.clone(),
         };
@@ -669,7 +704,7 @@ impl ShareJobs {
         let tx = self.tx.clone();
         let ctx = Ctx {
             server: Server { agent: agent(5), base: who.server.trim_end_matches('/').to_string() },
-            market: Market { agent: agent(5), base: who.market.trim_end_matches('/').to_string() },
+            market: Market { agent: agent(5), base: who.market.trim_end_matches('/').to_string(), young: who.young },
             who,
             token: self.token.clone(),
         };
@@ -724,6 +759,30 @@ impl ShareJobs {
     pub fn unlink(&self, who: &Who) {
         self.run(who, |c| match c.market("POST", "/api/link/leave", None) {
             Ok(_) => Done::Unlinked,
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// What the market offers the Green's arches (only what's checked for
+    /// all ages when `who` is young), and the jam running now. Nobody signs
+    /// in for it, and an unreachable market offers nothing.
+    pub fn green(&self, who: &Who) {
+        self.run(who, |c| match c.market.call("GET", "/api/green", None, "", None) {
+            Ok(v) => {
+                let picks = serde_json::from_value(v["arches"].clone()).unwrap_or_default();
+                let jam = c.market.call("GET", "/api/jams", None, "", None).ok().and_then(|v| serde_json::from_value(v["current"].clone()).ok());
+                Done::Green { picks, jam }
+            }
+            // quietly: the arches show what players bring instead
+            Err(_) => Done::Green { picks: vec![], jam: None },
+        });
+    }
+
+    /// Puts a creation shared to Everyone in the jam running now.
+    pub fn enter_jam(&self, who: &Who, jam: &JamNow, code: &str) {
+        let (slug, theme, code) = (jam.slug.clone(), jam.theme.clone(), code.to_string());
+        self.run(who, move |c| match c.market("POST", &format!("/api/jams/{slug}/enter"), Some(json!({ "code": code }))) {
+            Ok(_) => Done::Entered { theme },
             Err(e) => Done::Failed(e.text()),
         });
     }
