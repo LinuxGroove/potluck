@@ -27,14 +27,22 @@ fn main() {
     }
     let size = opt("size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some(UVec2::new(w.parse().ok()?, h.parse().ok()?)))).unwrap_or(UVec2::new(1600, 900));
     // screenshots and recordings draw offscreen at exactly --size, in a window
-    // that fits the screen
-    let offscreen = opt("shot").is_some() || opt("demo").is_some();
+    // that fits the screen; --onscreen draws a shot straight to a window of
+    // that size, as play does, to measure frame rates the way players get them
+    let onscreen = args.iter().any(|a| a == "--onscreen");
+    let offscreen = (opt("shot").is_some() && !onscreen) || opt("demo").is_some();
     let window = if offscreen { (size.as_vec2() * (1600.0 / size.x as f32).min(900.0 / size.y as f32).min(1.0)).as_uvec2() } else { size };
+    let mut resolution = WindowResolution::new(window.x, window.y);
+    if onscreen {
+        resolution = resolution.with_scale_factor_override(1.0);
+    }
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Potluck".into(),
-            resolution: WindowResolution::new(window.x, window.y),
+            resolution,
+            // --latency=N lets N frames queue for the screen (2 unless asked)
+            desired_maximum_frame_latency: opt("latency").and_then(|n| n.parse().ok()).and_then(std::num::NonZero::new),
             // --no-vsync to see how fast a card really draws; the tools draw
             // offscreen at their own pace, so they never wait for the screen;
             // --present=immediate|mailbox|fifo|relaxed asks for one mode
