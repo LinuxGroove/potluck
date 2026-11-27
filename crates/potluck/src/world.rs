@@ -173,6 +173,27 @@ impl Voxels {
         }
     }
 
+    /// Calls `f` with each block whose id is `from` or more, and where it
+    /// is (blocks creations made, when their looks change: `made::draw`).
+    pub fn each_from(&self, from: BlockId, mut f: impl FnMut(IVec3, BlockId)) {
+        for (i, &b) in self.data.iter().enumerate() {
+            if b >= from {
+                let i = i as i32;
+                f(IVec3::new(i % WX, i / (WX * WZ), (i / WX) % WZ), b);
+            }
+        }
+    }
+
+    /// Gives blocks new ids: a saved world's made blocks, when another
+    /// block has theirs here (`made::restore`).
+    pub fn renumber(&mut self, to: &[BlockId; 256]) {
+        for b in self.data.iter_mut() {
+            *b = to[*b as usize];
+        }
+        self.find_lanterns();
+        self.mark_all_dirty();
+    }
+
     /// The whole world, run-length encoded (for sending to friends who join).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(1 << 20);

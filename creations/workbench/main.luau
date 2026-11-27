@@ -5,7 +5,7 @@
 -- Every recipe is in RECIPES below, so a remix can add its own, change the
 -- prices, or craft at a different block.
 
-local world = require("@potluck/world@0.5")
+local world = require("@potluck/world@0.8")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -31,6 +31,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Birch log"] = 1 }, give = "Planks", n = 4 },
 		{ want = { Sand = 4 }, give = "Sandstone", n = 1 },
 		{ want = { Stone = 4 }, give = "Mossy brick", n = 4 },
+		-- the Brickworks creation's, when it's in the world
+		{ want = { Cobblestone = 8 }, give = "Kiln", n = 1 },
 	},
 	Furniture = {
 		{ want = { Planks = 6 }, give = "Table", n = 1 },
@@ -43,6 +45,7 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Hay = 1 }, give = "Candle", n = 2 },
 		{ want = { Glass = 1, Cobblestone = 2 }, give = "Lantern", n = 1 },
 		{ want = { Cobblestone = 4, ["Oak log"] = 1 }, give = "Brazier", n = 1 },
+		{ want = { Candle = 1, ["Cream wool"] = 1 }, give = "Paper lantern", n = 2 },
 	},
 	["Garden and farm"] = {
 		{ want = { Planks = 3 }, give = "Fence", n = 2 },
@@ -115,9 +118,20 @@ end
 
 local choose
 
+-- Whether a block is in this world: some come from other creations (the
+-- kiln and paper lanterns from Brickworks).
+local function exists(name: string): boolean
+	return (pcall(world.kind, name))
+end
+
 -- the recipes of one kind; `said` is how the last one went
 local function recipes(player, at: vector, kind: string, said: string?)
-	local list = RECIPES[kind]
+	local list = {}
+	for _, r in RECIPES[kind] do
+		if exists(r.give) then
+			table.insert(list, r)
+		end
+	end
 	local choices, more = {}, {}
 	for _, r in list do
 		local short, long = label(r)

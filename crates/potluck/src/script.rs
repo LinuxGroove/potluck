@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 11), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -2189,6 +2189,8 @@ fn tidy_error(e: &mlua::Error) -> String {
 
 impl Scripts {
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
+        // its own blocks first, so its code can use them by name
+        crate::made::register(&creation.id, &creation.manifest.blocks)?;
         let saved = creation.knobs.clone();
         let mut vm = Vm::load(creation, &saved, self.shared.clone())?;
         // keep what the creatures were doing across a reload

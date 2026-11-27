@@ -67,6 +67,27 @@ pub struct BlockAtlas {
     tiles: HashMap<&'static str, u16>,
     /// Each tile's colour at full size, for item icons in the UI.
     pub icons: HashMap<&'static str, Handle<Image>>,
+    /// How big a tile is at full size, and where tiles drawn later go
+    /// (creations' blocks: `put`): plain ones from `next` up, glowing ones
+    /// from `far` down, two at a time, as `build` lays them out.
+    full: usize,
+    next: usize,
+    far: usize,
+    /// Tiles drawn since the graphics card was last given them: the atlas
+    /// images live only there once they're first sent (`made::MadePlugin`).
+    pub writes: Vec<TileWrite>,
+}
+
+/// One mip level of one tile's cell, gutter and all, to draw again into an
+/// atlas image on the graphics card.
+#[derive(Clone)]
+pub struct TileWrite {
+    pub image: AssetId<Image>,
+    pub level: u32,
+    pub x: u32,
+    pub y: u32,
+    pub size: u32,
+    pub data: Vec<u8>,
 }
 
 impl BlockAtlas {
@@ -77,6 +98,51 @@ impl BlockAtlas {
     /// Whether a tile of this name was drawn.
     pub fn has(&self, name: &str) -> bool {
         self.tiles.contains_key(name)
+    }
+
+    /// Draws a picture `n` px square (sRGB with alpha) into the atlas as the
+    /// tile `name`, over that tile if it has one, glowing where `glow` says:
+    /// a block a creation made. None when the atlas has no room left.
+    pub fn put(&mut self, images: &mut Assets<Image>, name: &'static str, rgba: &[[u8; 4]], n: usize, glow: &[bool]) -> Option<u16> {
+        let glows = glow.iter().any(|g| *g);
+        let slot = match self.tiles.get(name) {
+            Some(s) => *s as usize,
+            // glowing tiles keep an empty tile beside them and a row away
+            // from the rest, as in `build`
+            None if glows => {
+                if self.far < self.next + GRID + 2 {
+                    return None;
+                }
+                self.far -= 2;
+                self.far + 2
+            }
+            None => {
+                if self.next + GRID > self.far {
+                    return None;
+                }
+                self.next += 1;
+                self.next - 1
+            }
+        };
+        let full = self.full;
+        let src: Vec<[f32; 4]> = rgba.iter().map(|p| p.map(|v| v as f32)).collect();
+        let height = src.iter().map(|p| lum([p[0], p[1], p[2]])).collect();
+        let t = Tex { size: n, rgba: src.clone(), height, bump: 1.2, glow: glows, rough: None };
+        let color = resample(&src, n, full);
+        let normal = resample(&normal_of(&t), n, full);
+        let rough = vec![[0.0, ROUGH * 255.0, 0.0, 255.0]; full * full];
+        let lit: Vec<[f32; 4]> = src.iter().zip(glow).map(|(p, g)| if *g { *p } else { [0.0, 0.0, 0.0, 255.0] }).collect();
+        let lit = resample(&lit, n, full);
+        for (image, texels, srgb) in [(self.color.id(), &color, true), (self.normal.id(), &normal, false), (self.rough.id(), &rough, false), (self.glow.id(), &lit, true)] {
+            for level in 0..mips(full) {
+                let (data, cell) = cell_texels(texels, full, level, srgb);
+                let (x, y) = ((slot % GRID * cell) as u32, (slot / GRID * cell) as u32);
+                self.writes.push(TileWrite { image, level, x, y, size: cell as u32, data });
+            }
+        }
+        self.tiles.insert(name, slot as u16);
+        self.icons.insert(name, images.add(icon_image(&color, full)));
+        Some(slot as u16)
     }
 
     /// The UV rectangle of a tile: `(u0, v0, u1, v1)`, inside its gutter.
@@ -544,52 +610,69 @@ fn normal_of(t: &Tex) -> Vec<[f32; 4]> {
     out
 }
 
+/// How many mip levels an atlas of tiles `full` px square has: down to 8 px.
+fn mips(full: usize) -> u32 {
+    full.trailing_zeros() - 2
+}
+
+/// One tile's cell at one mip level: the tile made from the full-size
+/// texels alone, in a gutter of itself wrapped round; and the cell's size.
+fn cell_texels(src: &[[f32; 4]], full: usize, level: u32, srgb: bool) -> (Vec<u8>, usize) {
+    let tile = full >> level;
+    let pad = tile / GUTTER;
+    let cell = tile + 2 * pad;
+    let mut small = vec![[0u8; 4]; tile * tile];
+    let step = 1 << level;
+    for y in 0..tile {
+        for x in 0..tile {
+            // average the block of full-size texels, weighting colour by alpha
+            let (mut c, mut a, mut w) = ([0.0f32; 3], 0.0f32, 0.0f32);
+            for sy in 0..step {
+                for sx in 0..step {
+                    let p = src[(y * step + sy) * full + x * step + sx];
+                    let k = p[3] / 255.0;
+                    for j in 0..3 {
+                        let v = if srgb { (p[j] / 255.0).powf(2.2) } else { p[j] / 255.0 };
+                        c[j] += v * k;
+                    }
+                    a += k;
+                    w += 1.0;
+                }
+            }
+            let o = &mut small[y * tile + x];
+            for j in 0..3 {
+                let v = if a > 0.0 { c[j] / a } else { 0.0 };
+                let v = if srgb { v.powf(1.0 / 2.2) } else { v };
+                o[j] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+            o[3] = ((a / w) * 255.0).round() as u8;
+        }
+    }
+    let mut out = Vec::with_capacity(cell * cell * 4);
+    for y in 0..cell {
+        for x in 0..cell {
+            out.extend_from_slice(&small[((y + tile - pad) % tile) * tile + (x + tile - pad) % tile]);
+        }
+    }
+    (out, cell)
+}
+
 /// Builds one atlas image from tiles `full` px square, with each tile's
 /// mips made from that tile alone, down to 8 px (whose gutter is one texel).
 fn atlas_image(tiles: &[Vec<[f32; 4]>], full: usize, srgb: bool) -> Image {
-    let mips = full.trailing_zeros() - 2;
+    let mips = mips(full);
     let mut data = Vec::new();
     for level in 0..mips {
         let tile = full >> level;
-        let pad = tile / GUTTER;
-        let cell = tile + 2 * pad;
+        let cell = tile + 2 * (tile / GUTTER);
         let size = cell * GRID;
         let mut img = vec![0u8; size * size * 4];
-        let mut small = vec![[0u8; 4]; tile * tile];
-        let step = 1 << level;
         for (i, src) in tiles.iter().enumerate() {
-            for y in 0..tile {
-                for x in 0..tile {
-                    // average the block of full-size texels, weighting colour by alpha
-                    let (mut c, mut a, mut w) = ([0.0f32; 3], 0.0f32, 0.0f32);
-                    for sy in 0..step {
-                        for sx in 0..step {
-                            let p = src[(y * step + sy) * full + x * step + sx];
-                            let k = p[3] / 255.0;
-                            for j in 0..3 {
-                                let v = if srgb { (p[j] / 255.0).powf(2.2) } else { p[j] / 255.0 };
-                                c[j] += v * k;
-                            }
-                            a += k;
-                            w += 1.0;
-                        }
-                    }
-                    let o = &mut small[y * tile + x];
-                    for j in 0..3 {
-                        let v = if a > 0.0 { c[j] / a } else { 0.0 };
-                        let v = if srgb { v.powf(1.0 / 2.2) } else { v };
-                        o[j] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
-                    }
-                    o[3] = ((a / w) * 255.0).round() as u8;
-                }
-            }
+            let (bytes, _) = cell_texels(src, full, level, srgb);
             let (ox, oy) = ((i % GRID) * cell, (i / GRID) * cell);
             for y in 0..cell {
-                for x in 0..cell {
-                    let p = small[((y + tile - pad) % tile) * tile + (x + tile - pad) % tile];
-                    let o = ((oy + y) * size + ox + x) * 4;
-                    img[o..o + 4].copy_from_slice(&p);
-                }
+                let o = ((oy + y) * size + ox) * 4;
+                img[o..o + cell * 4].copy_from_slice(&bytes[y * cell * 4..(y + 1) * cell * 4]);
             }
         }
         data.extend(img);
@@ -773,6 +856,10 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         sky: images.add(sky_image()),
         tiles,
         icons,
+        full,
+        next,
+        far,
+        writes: vec![],
     }
 }
 

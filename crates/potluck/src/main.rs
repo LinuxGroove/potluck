@@ -154,7 +154,7 @@ fn main() {
         ..default()
     }));
     sim(&mut app, SEED);
-    app.add_plugins(MaterialPlugin::<render::WaterMaterial>::default());
+    app.add_plugins((MaterialPlugin::<render::WaterMaterial>::default(), made::MadePlugin));
     render::add_menu_blur(&mut app);
     if offscreen {
         app.insert_resource(OffscreenSize(size));

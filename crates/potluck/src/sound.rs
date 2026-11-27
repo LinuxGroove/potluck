@@ -115,6 +115,16 @@ pub fn material(id: BlockId) -> Material {
     if id == blocks::AIR {
         return Material::Air;
     }
+    // a block a creation made says, if it likes
+    if let Some(k) = crate::made::kind(id) {
+        return match k {
+            "hard" => Material::Hard,
+            "wood" => Material::Wood,
+            "plant" => Material::Plant,
+            "glass" => Material::Glass,
+            _ => Material::Soft,
+        };
+    }
     let n = blocks::block(id).name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
     if has(&["water"]) {
