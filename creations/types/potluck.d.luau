@@ -18,6 +18,8 @@ export type Part = {
 	leg: boolean?,
 	head: boolean?,
 	glow: boolean?,
+	-- 0.11: where its picture is in one of the creation's Blockbench models (world.model fills it in)
+	texture: { file: string, index: number?, color: string?, stamp: number?, faces: { [string]: { number } }? }?,
 }
 
 export type CreatureDef = {

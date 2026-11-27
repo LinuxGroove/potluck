@@ -1761,6 +1761,19 @@ fn a_blockbench_model_is_a_body() {
     assert_eq!(snout.size, Vec3::new(3.0, 3.0, 5.0) / 16.0, "inflate grows it on every side");
     assert_eq!((snout.color, paw.color), ([0xf2, 0xd1, 0x5b], [0x89, 0xc6, 0xe8]), "no texture: its marker colour");
     assert!(notes.iter().any(|n| n.contains("1 turned cubes are drawn upright")) && notes.iter().any(|n| n.contains("1 meshes are left out")), "{notes:?}");
+    // the body's picture: its faces' rectangles on the texture, 0 to 1 across it
+    let (tex, faces) = body.picture.expect("the body has a picture");
+    assert_eq!((tex, faces[3], faces[4], faces[0]), (0, Some([0.0, 0.0, 1.0, 1.0]), Some([0.0, 0.0, 0.5, 0.5]), None), "north and up, nothing east");
+    assert!(snout.picture.is_none() && paw.picture.is_none(), "no faces, no picture");
+    // drawn: only the faces it has, each showing its rectangle as seen from outside
+    let mesh = crate::creatures::painted_mesh(Vec3::splat(2.0), &[None, None, None, Some([0.25, 0.5, 0.75, 1.0]), None, None], true);
+    let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION).and_then(|a| a.as_float3()).unwrap();
+    let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else { panic!("no UVs") };
+    assert_eq!(pos.len(), 4, "one face");
+    // seen from the north (looking south), its top left is east and up
+    let top_left = pos.iter().position(|p| p[0] > 0.0 && p[1] > 0.0).unwrap();
+    let bottom_right = pos.iter().position(|p| p[0] < 0.0 && p[1] < 0.0).unwrap();
+    assert_eq!((uv[top_left], uv[bottom_right]), ([0.25, 0.5], [0.75, 1.0]));
     let (big, _) = read("m.bbmodel", &model, 2.0).unwrap();
     assert_eq!(big[0].size, Vec3::ONE, "scaled");
     // mistakes, in plain words
@@ -1796,6 +1809,17 @@ end
     assert_eq!(plain.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["body", "snout", "paw"]);
     assert!(plain.parts[1].head && plain.parts[2].leg && (plain.parts[0].color[0] - 200.0 / 255.0).abs() < 0.01, "{:?}", plain.parts);
     assert!(changed.parts[0].color[1] > 0.99 && changed.parts[0].color[0] < 0.01, "the code's colour: {:?}", changed.parts[0].color);
+    // the picture goes with the part, with how far the code moved its colour
+    let pic = plain.parts[0].paint.as_ref().expect("a model's part keeps its picture");
+    assert_eq!((pic.file.as_str(), pic.texture, pic.stamp, pic.faces[3]), ("models/m.bbmodel", 0, crate::model::stamp(&model), Some([0.0, 0.0, 1.0, 1.0])));
+    assert!(pic.tint.iter().all(|t| (t - 1.0).abs() < 0.01), "as the model has it: {:?}", pic.tint);
+    let tint = changed.parts[0].paint.as_ref().unwrap().tint;
+    assert!(tint[0] < 0.01 && tint[1] == 4.0 && tint[2] < 0.01, "red to green: {tint:?}");
+    assert!(plain.parts[1].paint.is_none());
+    // and between games, as part of a body's look
+    let json = serde_json::to_string(&plain.parts).unwrap();
+    assert_eq!(serde_json::from_str::<Vec<creatures::Part>>(&json).unwrap(), plain.parts);
+    assert!(!serde_json::to_string(&plain.parts[1]).unwrap().contains("paint"), "nothing extra for a part with no picture");
     let log = scripts.vms["test"].log.join("\n");
     assert!(log.contains("drawn upright"), "notes go to the log: {log}");
     assert!(log.contains("there's no file called models/none.bbmodel") && log.contains("reads Blockbench models (.bbmodel), not main.luau"), "{log}");

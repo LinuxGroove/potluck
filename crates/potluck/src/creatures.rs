@@ -20,7 +20,32 @@ pub struct Part {
     pub leg: bool,
     pub head: bool,
     pub glow: bool,
+    /// Its picture from a Blockbench model (world 0.11), drawn in place of
+    /// its colour and skin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint: Option<Box<Painted>>,
 }
+
+/// Where a part's picture is: a texture of one of its creation's Blockbench
+/// models, and the rectangle of it on each face (0 to 1 across the texture;
+/// none where the model leaves a face bare). Every game has the creation's
+/// files, so only this goes between games, never the picture.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Painted {
+    pub file: String,
+    pub texture: u32,
+    /// East, west, south, north, up, down: (u0, v0, u1, v1), u0 on the
+    /// left and v0 at the top as the face is seen from outside.
+    pub faces: [Option<[f32; 4]>; 6],
+    /// What its colour was changed by, channel by channel (1 as the model
+    /// has it), so a part given another colour keeps its picture's detail.
+    pub tint: [f32; 3],
+    /// Changes with the model's file, so a model saved again is drawn again.
+    pub stamp: u32,
+}
+
+/// The faces in `Painted::faces`' order, as Blockbench names them.
+pub const FACES: [&str; 6] = ["east", "west", "south", "north", "up", "down"];
 
 #[derive(Clone, Debug)]
 pub struct Body {
@@ -286,6 +311,52 @@ pub struct PartMaterials {
     meshes: HashMap<([u16; 3], Skin), Handle<Mesh>>,
     /// The catchlight dark eyes wear: a unit box and its glossy white.
     glint: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// Models' pictures, by (creation, file, texture, stamp); none when the
+    /// game hasn't the file or can't read it.
+    pictures: HashMap<(String, String, u32, u32), Option<Handle<Image>>>,
+    painted_mats: HashMap<(AssetId<Image>, [u16; 3], bool), Handle<StandardMaterial>>,
+    painted_meshes: HashMap<([u16; 3], [[u16; 4]; 6]), Handle<Mesh>>,
+}
+
+/// A part's box, `size` across, showing each face's rectangle of a model's
+/// picture (as `Painted::faces` has them), with no face where the model
+/// leaves one bare. Drawn normally, the sides are a little darker than the
+/// top, as Blockbench shows them.
+pub fn painted_mesh(size: Vec3, faces: &[Option<[f32; 4]>; 6], colours: bool) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let h = size / 2.0;
+    let sides = [
+        (Vec3::X, Vec3::NEG_Z, Vec3::Y),
+        (Vec3::NEG_X, Vec3::Z, Vec3::Y),
+        (Vec3::Z, Vec3::X, Vec3::Y),
+        (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
+        (Vec3::Y, Vec3::X, Vec3::NEG_Z),
+        (Vec3::NEG_Y, Vec3::X, Vec3::Z),
+    ];
+    let (mut pos, mut norm, mut uv, mut col, mut idx) = (vec![], vec![], vec![], vec![], vec![]);
+    for ((n, r, up), rect) in sides.into_iter().zip(faces) {
+        let Some([u0, v0, u1, v1]) = *rect else { continue };
+        let (hn, hr, hu) = ((n * h).length(), (r * h).length(), (up * h).length());
+        let base = pos.len() as u32;
+        let k = if n.y > 0.5 { 1.0 } else if n.y < -0.5 { 0.8 } else { 0.92 };
+        for (a, b) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            pos.push((n * hn + r * hr * a + up * hu * b).to_array());
+            norm.push(n.to_array());
+            uv.push([u0 + (u1 - u0) * (a + 1.0) / 2.0, v0 + (v1 - v0) * (1.0 - b) / 2.0]);
+            col.push([k, k, k, 1.0]);
+        }
+        idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, norm)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+        .with_inserted_indices(Indices::U32(idx));
+    if colours {
+        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    }
+    m
 }
 
 /// A part's box, `size` across, with its skin tiling at the same scale on
@@ -345,8 +416,9 @@ pub fn draw(
     mut images: ResMut<Assets<Image>>,
     mut cache: ResMut<PartMaterials>,
     rt: Option<Res<crate::render::Raytraced>>,
+    lib: Res<crate::creations::Library>,
 ) {
-    let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0) };
+    let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0), lib: Some(&lib) };
     let mut seen = std::collections::HashSet::new();
     for (e, mut v, mut t, children) in &mut views {
         let Some(b) = herd.bodies.get(&v.id) else {
@@ -402,6 +474,8 @@ struct Looks<'a> {
     images: &'a mut Assets<Image>,
     cache: &'a mut PartMaterials,
     rt: bool,
+    /// The creations' files, for models' pictures (bodies only).
+    lib: Option<&'a crate::creations::Library>,
 }
 
 impl Looks<'_> {
@@ -457,6 +531,57 @@ impl Looks<'_> {
         Some((mesh, mat, Transform::from_translation(at).with_scale(Vec3::new(s, s, 0.004))))
     }
 
+    /// A part's picture from its creation's model, as a mesh and material,
+    /// when this game has the model and can read it.
+    fn painted(&mut self, creation: &str, p: &Part) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        let pic = p.paint.as_ref()?;
+        let lib = self.lib?;
+        let images = &mut *self.images;
+        let image = self
+            .cache
+            .pictures
+            .entry((creation.to_string(), pic.file.clone(), pic.texture, pic.stamp))
+            .or_insert_with(|| {
+                let text = lib.list.get(creation)?.files.get(&pic.file)?;
+                let rgba = crate::model::image(text, pic.texture)?;
+                let mut img = Image::new(
+                    bevy::render::render_resource::Extent3d { width: rgba.width(), height: rgba.height(), depth_or_array_layers: 1 },
+                    bevy::render::render_resource::TextureDimension::D2,
+                    rgba.into_raw(),
+                    bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                    bevy::asset::RenderAssetUsages::RENDER_WORLD,
+                );
+                img.sampler = bevy::image::ImageSampler::nearest();
+                Some(images.add(img))
+            })
+            .clone()?;
+        let tint = pic.tint.map(|t| (t * 1000.0).round() as u16);
+        let mats = &mut *self.mats;
+        let mat = self
+            .cache
+            .painted_mats
+            .entry((image.id(), tint, p.glow))
+            .or_insert_with(|| {
+                let col = Color::srgb(pic.tint[0], pic.tint[1], pic.tint[2]);
+                mats.add(StandardMaterial {
+                    base_color: col,
+                    base_color_texture: Some(image.clone()),
+                    emissive: if p.glow { col.to_linear() * 2.0 } else { LinearRgba::BLACK },
+                    emissive_texture: p.glow.then(|| image.clone()),
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    perceptual_roughness: 0.85,
+                    reflectance: 0.3,
+                    ..default()
+                })
+            })
+            .clone();
+        let key = (p.size.to_array().map(|v| (v * 256.0).round().clamp(1.0, 65535.0) as u16), pic.faces.map(|f| f.map_or([u16::MAX; 4], |r| r.map(|x| (x * 4096.0).round() as u16))));
+        let rt = self.rt;
+        let meshes = &mut *self.meshes;
+        let mesh = self.cache.painted_meshes.entry(key).or_insert_with(|| meshes.add(painted_mesh(p.size, &pic.faces, !rt))).clone();
+        Some((mesh, mat))
+    }
+
     fn mesh(&mut self, p: &Part, skin: Skin) -> Handle<Mesh> {
         let key = (p.size.to_array().map(|v| (v * 256.0).round().clamp(1.0, 65535.0) as u16), skin);
         let rt = self.rt;
@@ -471,9 +596,12 @@ fn spawn_parts(commands: &mut Commands, e: Entity, b: &Body, looks: &mut Looks) 
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let skin = Skin::of(&p.name);
             let mut t = Transform::from_translation(p.at);
             pose(p, i, b.phase, &mut t);
+            if let Some((mesh, mat)) = looks.painted(&b.creation, p) {
+                return (mesh, mat, t, None);
+            }
+            let skin = Skin::of(&p.name);
             (looks.mesh(p, skin), looks.material(p, skin), t, looks.glint(p))
         })
         .collect();
@@ -540,6 +668,7 @@ pub fn person_parts(hue: f32) -> Vec<Part> {
         leg,
         head: false,
         glow: false,
+        paint: None,
     };
     let mut parts = vec![
         part("leg cloth", [0.25, 0.8, 0.27], [-0.13, 0.4, 0.0], trousers, true),
@@ -576,7 +705,7 @@ pub fn people(
     mut cache: ResMut<PartMaterials>,
     rt: Option<Res<crate::render::Raytraced>>,
 ) {
-    let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0) };
+    let mut looks = Looks { meshes: &mut meshes, mats: &mut mats, images: &mut images, cache: &mut cache, rt: rt.is_some_and(|r| r.0), lib: None };
     let dt = time.delta_secs().max(1e-4);
     for (e, mut p, t, children) in &mut people {
         if !p.dressed {
