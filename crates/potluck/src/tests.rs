@@ -1696,6 +1696,147 @@ end)
     assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
 
+/// sound 0.2: a creation's own sounds, made from numbers in its
+/// potluck.toml, the same on every game; played by name before the game's,
+/// by behaviours too; and mistakes in them say what's wrong.
+#[test]
+fn a_creation_makes_sounds_of_its_own() {
+    use crate::sound::{make_own, note, own_recipe, recipe, Own, OWN_LONGEST, RATE, SOUNDS};
+    home();
+    let sounds = r#"
+[sounds.moo]
+wave = "saw"
+pitch = [220, 160]
+length = 0.9
+attack = 0.08
+wobble = [5, 12]
+pulse = [7, 0.3]
+lowpass = 1600
+
+[[sounds.moo.layers]]
+wave = "noise"
+pitch = 900
+length = 0.3
+at = 0.05
+gain = 0.3
+
+[sounds.tada]
+wave = "square"
+notes = ["C5", "E5", "G5", "-", "C6"]
+each = 0.12
+
+[sounds.quack]
+caption = "A duck of its own"
+wave = "triangle"
+pitch = 300
+length = 9
+"#;
+    let with = |toml: &str, code: &str| {
+        let mut c = creation(code);
+        let text = format!("{}\n[needs]\nsound = \"0.2\"\n{toml}", c.files["potluck.toml"]);
+        c.manifest = toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        c.files.insert("potluck.toml".into(), text);
+        c
+    };
+    // notes by name
+    assert_eq!(note("A4"), Some(440.0));
+    assert!((note("C5").unwrap() - 523.25).abs() < 0.01 && (note("F#4").unwrap() - 369.99).abs() < 0.01 && (note("Bb3").unwrap() - 233.08).abs() < 0.01);
+    assert_eq!((note("-"), note("H2"), note("C12")), (Some(0.0), None, None));
+
+    // they're made the same every time, as loud as the game's, never too long
+    let c = with(sounds, "");
+    for (name, v) in &c.manifest.sounds {
+        let r = recipe(name, v).unwrap();
+        let key = format!("test/{name}");
+        let s = make_own(&r, &key);
+        let peak = s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(!s.is_empty() && s.len() <= (OWN_LONGEST * RATE as f32) as usize && peak > 0.2 && peak <= 0.8001 && s.iter().all(|x| x.is_finite()), "{name}: {} samples, peak {peak}", s.len());
+        assert_eq!(s, make_own(&r, &key), "{name} is the same every time");
+    }
+    let tada = recipe("tada", &c.manifest.sounds["tada"]).unwrap();
+    assert_eq!((tada.caption.as_str(), tada.layer.notes.len()), ("Tada", 5), "its caption is its name when it gives none");
+    assert!((make_own(&tada, "test/tada").len() as f32 / RATE as f32 - 0.6).abs() < 0.01, "five notes of 0.12 s");
+    assert_eq!(recipe("quack", &c.manifest.sounds["quack"]).unwrap().layer.length, OWN_LONGEST, "too long is brought down to the most");
+    // they're kept through a remix, which writes potluck.toml again
+    let again: Manifest = toml::from_str(&toml::to_string_pretty(&c.manifest).unwrap()).unwrap();
+    assert_eq!(again.sounds, c.manifest.sounds);
+
+    // played by name, its own first, as "creation/name" with its caption
+    let code = r##"
+local world = require("@potluck/world@0.10")
+local sound = require("@potluck/sound@0.2")
+local Cow = world.creature {
+	name = "Cow", count = 1, home = "paddock",
+	behaviours = { wander = false, chatter = { "Moo." }, sound = "moo" },
+	body = { { "body", size = { 1, 1, 1.4 }, at = { 0, 0.6, 0 }, color = "#ffffff" } },
+}
+world.on("player_joined", function(p)
+	sound.play("moo", { at = vector.create(0, 40, 0) })
+	sound.play_for(p, "tada")
+	sound.play("quack")
+	sound.play("chime", { caption = "Ding dong" })
+end)
+local names = sound.names()
+print(names[1] .. " " .. names[2] .. " " .. names[3] .. " " .. #names)
+print(pcall(sound.play, "trumpet"))
+"##;
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::new(1.0, 40.0, 0.0) }];
+    scripts.start(&with(sounds, code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    let log = vm.log.join("\n");
+    assert!(log.contains(&format!("moo quack tada {}", 3 + SOUNDS.len())), "its own first: {log}");
+    assert!(log.contains("false") && log.contains("[sounds.trumpet]"), "an unknown sound says where to make one: {log}");
+    let heard: Vec<(String, Option<String>)> = scripts.sound_changes().into_iter().map(|(_, p)| (p.name, p.caption)).collect();
+    let says = |n: &str, c: Option<&str>| (n.to_string(), c.map(String::from));
+    for want in [says("test/moo", Some("Moo")), says("test/tada", Some("Tada")), says("test/quack", Some("A duck of its own")), says("chime", Some("Ding dong"))] {
+        assert!(heard.contains(&want), "{want:?} in {heard:?}");
+    }
+    // behaviours make them too, heard by whoever's near the cow
+    let cow = herd.bodies.values().find(|b| b.creation == "test").unwrap();
+    let (cow, by) = (cow.id, cow.pos);
+    scripts.players[0].pos = by + Vec3::new(1.5, 0.0, 0.0);
+    let ada = scripts.players[0].clone();
+    scripts.event(&mut voxels, &mut herd, cow, "used", &ada);
+    assert!(scripts.sound_changes().iter().any(|(_, p)| p.name == "test/moo" && p.caption.as_deref() == Some("Moo")), "the cow moos when it's patted");
+
+    // every game makes them from the library, as they are now
+    let mut lib = Library::default();
+    let mut c = with(sounds, code);
+    lib.list.insert("test".into(), c.clone());
+    let moo = own_recipe(&lib, "test/moo").expect("the cow's moo");
+    assert_eq!(moo.layers.len(), 1);
+    assert!(own_recipe(&lib, "test/nope").is_none() && own_recipe(&lib, "chime").is_none() && own_recipe(&lib, "other/moo").is_none());
+    c.manifest.sounds.insert("moo".into(), serde_json::json!({ "wave": "sine", "pitch": 300 }));
+    lib.list.insert("test".into(), c);
+    assert_ne!(own_recipe(&lib, "test/moo").unwrap(), moo, "a changed recipe is made again");
+    assert!(Own::of("test", &BTreeMap::new()).unwrap().resolve("moo").is_none());
+
+    // mistakes say what's wrong, and it doesn't start
+    let too_many: String = (0..17).map(|i| format!("[sounds.s{i}]\npitch = 300\n")).collect();
+    for (bad, says) in [
+        ("[sounds.moo]\npiitch = 200\n", "there's no \"piitch\""),
+        ("[sounds.moo]\nwave = \"hum\"\n", "wave is one of sine, triangle, saw, square, noise"),
+        ("[sounds.moo]\npitch = \"high\"\n", "pitch is a number of Hz, or [from, to]"),
+        ("[sounds.moo]\nnotes = [\"H2\"]\n", "notes are names like"),
+        ("[sounds.Moo]\npitch = 200\n", "lowercase letters"),
+        ("[sounds.moo]\n[[sounds.moo.layers]]\ncaption = \"no\"\n", "sounds.moo.layers[1]: there's no \"caption\""),
+        (too_many.as_str(), "16 sounds of its own at most"),
+    ] {
+        let mut herd = Herd::default();
+        let mut scripts = Scripts::default();
+        let e = scripts.start(&with(bad, BOX), &mut herd).err().unwrap_or_default();
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    let mut herd = Herd::default();
+    let e = Scripts::default().start(&with("", &BOX.replace("count = 1,", "count = 1, behaviours = { sound = \"moo\" },")), &mut herd).err().unwrap_or_default();
+    assert!(e.contains("no sound called \"moo\""), "{e}");
+}
+
 /// Writes every sound as a WAV to listen to, and all of them in a row:
 /// `POTLUCK_SOUNDS=DIR cargo test --workspace -- --ignored write_the_sounds`.
 #[test]
@@ -1730,6 +1871,17 @@ fn write_the_sounds() {
         std::fs::write(dir.join(format!("{name}.wav")), wav(&v)).unwrap();
         all.extend_from_slice(&v);
         all.extend(std::iter::repeat_n(0.0, crate::sound::RATE as usize / 3));
+    }
+    // and the base creations' own
+    home();
+    for c in Library::load().list.values().filter(|c| c.origin == Origin::Base) {
+        for (name, v) in &c.manifest.sounds {
+            let key = format!("{}/{name}", c.id);
+            let s = crate::sound::make_own(&crate::sound::recipe(name, v).unwrap(), &key);
+            std::fs::write(dir.join(format!("{}-{name}.wav", c.id)), wav(&s)).unwrap();
+            all.extend_from_slice(&s);
+            all.extend(std::iter::repeat_n(0.0, crate::sound::RATE as usize / 3));
+        }
     }
     std::fs::write(dir.join("all.wav"), wav(&all)).unwrap();
 }

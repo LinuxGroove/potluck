@@ -40,6 +40,10 @@ pub struct Manifest {
     /// what only that player sees (`@potluck/net`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,
+    /// Sounds of its own, made from numbers: `[sounds.moo]` with a wave, a
+    /// pitch and a length (`sound::recipe` reads them).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sounds: BTreeMap<String, serde_json::Value>,
 }
 
 /// One of a creation's actions: what players see it called, and the pad
@@ -91,6 +95,7 @@ impl Default for Manifest {
             from: None,
             actions: BTreeMap::new(),
             client: None,
+            sounds: BTreeMap::new(),
         }
     }
 }

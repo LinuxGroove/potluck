@@ -37,8 +37,10 @@ pub struct Behaviours {
     pub hop_when_hit: f32,
     /// Lines it says now and then, and when it's used.
     pub chatter: Vec<String>,
-    /// The game's sound it makes with them, and when it's used or hit.
-    pub sound: Option<String>,
+    /// The sound it makes with them, and when it's used or hit: the name
+    /// games know it by (the creation's own are "creation/name") and what
+    /// subtitles say, if not the game's word.
+    pub sound: Option<(String, Option<String>)>,
 }
 
 /// Where one creature is with its behaviours.
@@ -54,7 +56,7 @@ pub struct Behaving {
 }
 
 /// Reads `behaviours = { ... }`, saying plainly what's wrong.
-pub fn parse(t: &Table) -> mlua::Result<Behaviours> {
+pub fn parse(t: &Table, own: &crate::sound::Own) -> mlua::Result<Behaviours> {
     for pair in t.pairs::<Value, Value>() {
         let (k, _) = pair?;
         let Value::String(k) = k else {
@@ -88,12 +90,10 @@ pub fn parse(t: &Table) -> mlua::Result<Behaviours> {
     for n in names("follow_food")? {
         follow_food.push(blocks::by_name(&n).ok_or_else(|| bad(format!("follow_food: there's no block called \"{n}\"")))?);
     }
-    let sound = t.get::<Option<String>>("sound")?;
-    if let Some(s) = &sound {
-        if crate::sound::caption_of(s).is_none() {
-            return Err(bad(format!("there's no sound called \"{s}\" (sound.names() lists them)")));
-        }
-    }
+    let sound = match t.get::<Option<String>>("sound")? {
+        Some(s) => Some(own.resolve(&s).ok_or_else(|| bad(crate::sound::Own::unknown(&s)))?),
+        None => None,
+    };
     Ok(Behaviours {
         wander: t.get::<Option<bool>>("wander")?.unwrap_or(true),
         follow_food,
@@ -116,8 +116,8 @@ fn face(b: &mut Body, at: Vec3) {
     }
 }
 
-fn sound(name: &str, b: &Body, pitch: f32) -> Play {
-    Play { name: name.to_string(), at: Some(b.pos.to_array()), volume: 0.8, pitch, caption: None }
+fn sound((name, caption): &(String, Option<String>), b: &Body, pitch: f32) -> Play {
+    Play { name: name.clone(), at: Some(b.pos.to_array()), volume: 0.8, pitch, caption: caption.clone() }
 }
 
 fn line(be: &Behaviours, rng: &mut Rng) -> Option<String> {

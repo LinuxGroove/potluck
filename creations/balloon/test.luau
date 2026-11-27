@@ -3,7 +3,7 @@
 -- this creation in it; nothing here reaches the world anyone plays in. Run
 -- them with the dev bridge's test tool, or `potluck-server --test=balloon`.
 
-local test = require("@potluck/test@0.1")
+local test = require("@potluck/test@0.2")
 local world = require("@potluck/world@0.9")
 
 local BASKET = "Balloon basket"
@@ -36,6 +36,7 @@ test.case("a basket put down fills up into a balloon", function()
 	only("Balloon (empty)")
 	test.wait(2)
 	only("Balloon (filling)")
+	test.check(test.heard("burner") > 0, "the burner roars as it fills")
 	test.wait(2)
 	only("Hot air balloon")
 end)
@@ -48,7 +49,9 @@ test.case("the burner lifts it and Vent brings it back down", function()
 	test.check(test.shown(p, "aboard") ~= nil, "riders are told how to fly it")
 	test.press(p, "burner")
 	test.same(only("Hot air balloon (burner on)").id, b.id, "the burner's lit")
+	local roars = test.heard("burner")
 	test.wait(4)
+	test.check(test.heard("burner") >= roars + 4, "it roars while it's lit")
 	test.release(p, "burner")
 	local high = test.creature(b.id).position.y
 	test.check(high > ground + 2, string.format("it rose from %.1f to only %.1f", ground, high))

@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 10), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1), ("test", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 10), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -943,7 +943,7 @@ pub(crate) fn from_json(lua: &Lua, j: &serde_json::Value) -> mlua::Result<Value>
 
 const RESERVED: &[&str] = &["id", "position", "rider", "kind"];
 
-fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
+fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
     let name: String = def.get::<Option<String>>("name")?.ok_or_else(|| bad("a creature needs a name"))?;
     let mut parts = Vec::new();
     if let Some(body) = def.get::<Option<Table>>("body")? {
@@ -1002,7 +1002,7 @@ fn parse_kind(def: &Table) -> mlua::Result<KindDef> {
         home,
         parts,
         behaviours: match def.get::<Option<Table>>("behaviours")? {
-            Some(t) => Some(crate::behaviours::parse(&t)?),
+            Some(t) => Some(crate::behaviours::parse(&t, own)?),
             None => None,
         },
     })
@@ -1056,6 +1056,7 @@ impl Vm {
             }
             Ok(VmState::Continue)
         });
+        let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
         let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, note_budget: NOTES_A_SECOND, ..default() }));
         let setup = || -> mlua::Result<(Table, Table, Table, Table)> {
@@ -1068,10 +1069,11 @@ impl Vm {
             {
                 let st = state.clone();
                 let base_mt = base_mt.clone();
+                let own = own.clone();
                 world.set(
                     "creature",
                     lua.create_function(move |_, def: Table| {
-                        let kind = parse_kind(&def)?;
+                        let kind = parse_kind(&def, &own)?;
                         def.set_metatable(Some(base_mt.clone()))?;
                         let mut s = st.lock().unwrap();
                         if s.kinds.iter().any(|(k, _)| k.name == kind.name) {
@@ -1448,14 +1450,14 @@ impl Vm {
                     })?,
                 )?;
             }
-            // sound 0.1: the game's sounds, by name, somewhere or for one player
+            // sound 0.1: the game's sounds, by name, somewhere or for one
+            // player; 0.2: and the creation's own, from potluck.toml
             let sound = lua.create_table()?;
             {
                 let options = sound_options;
-                let queue = |sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
-                    if crate::sound::caption_of(&name).is_none() {
-                        return Err(bad(format!("there's no sound called \"{name}\" (sound.names() lists them)")));
-                    }
+                let queue = move |own: &crate::sound::Own, sh: &Mutex<GameShared>, w: &Mutex<Waiting>, who: Option<u32>, name: String, (at, volume, pitch, caption): (Option<[f32; 3]>, f32, f32, Option<String>)| -> mlua::Result<bool> {
+                    let (name, own_caption) = own.resolve(&name).ok_or_else(|| bad(crate::sound::Own::unknown(&name)))?;
+                    let caption = caption.or(own_caption);
                     let mut w = w.lock().unwrap();
                     if w.sound_budget < 1.0 {
                         // too many at once: this one's skipped
@@ -1465,20 +1467,21 @@ impl Vm {
                     sh.lock().unwrap().sounds.push((who, crate::sound::Play { name, at, volume, pitch, caption }));
                     Ok(true)
                 };
-                let (sh, w) = (shared.clone(), waiting.clone());
+                let (sh, w, o) = (shared.clone(), waiting.clone(), own.clone());
                 sound.set(
                     "play",
-                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&sh, &w, None, name, options(opts)?))?,
+                    lua.create_function(move |_, (name, opts): (String, Option<Table>)| queue(&o, &sh, &w, None, name, options(opts)?))?,
                 )?;
-                let (sh, w) = (shared.clone(), waiting.clone());
+                let (sh, w, o) = (shared.clone(), waiting.clone(), own.clone());
                 sound.set(
                     "play_for",
                     lua.create_function(move |_, (player, name, opts): (Value, String, Option<Table>)| {
                         let pid = pid_of(&player)?;
-                        queue(&sh, &w, Some(pid), name, options(opts)?)
+                        queue(&o, &sh, &w, Some(pid), name, options(opts)?)
                     })?,
                 )?;
-                sound.set("names", lua.create_function(|_, ()| Ok(crate::sound::SOUNDS.iter().map(|s| s.0).collect::<Vec<_>>()))?)?;
+                let o = own.clone();
+                sound.set("names", lua.create_function(move |_, ()| Ok(o.names()))?)?;
             }
             // net 0.1: messages to and from the creation's client half
             let net = lua.create_table()?;
