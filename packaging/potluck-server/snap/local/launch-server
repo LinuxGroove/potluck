@@ -1,0 +1,30 @@
+#!/bin/bash
+# Service: the world itself.
+. "$SNAP/bin/common.sh"
+
+mkdir -p "$WORLD"
+chown -R "$DAEMON_UID:$DAEMON_UID" "$WORLD"
+
+args=(--name="$(cfg name "Potluck server")" --port="$(cfg port 47126)" --seed="$(cfg seed 26)" --data="$WORLD")
+if [ "$(cfg beacon true)" = "false" ]; then
+  args+=(--no-beacon)
+fi
+
+# Its own certificate: the server speaks TLS itself on tls.port. The files
+# are copied where the unprivileged server can read them.
+cert="$(in_common "$(cfg tls.cert)")"
+key="$(in_common "$(cfg tls.key)")"
+if [ -n "$cert" ] && [ -n "$key" ]; then
+  tls="$SNAP_DATA/tls"
+  mkdir -p "$tls"
+  install -m 0640 -o root -g "$DAEMON_UID" "$cert" "$tls/fullchain.pem"
+  install -m 0640 -o root -g "$DAEMON_UID" "$key" "$tls/privkey.pem"
+  args+=(--cert="$tls/fullchain.pem" --key="$tls/privkey.pem" --tls-port="$(cfg tls.port 443)")
+fi
+
+export HOME="$WORLD"
+if [ -n "$cert" ] && [ "$(cfg tls.port 443)" -lt 1024 ]; then
+  # binding a low port needs root; the world still runs nothing else as root
+  exec "$SNAP/bin/potluck-server" "${args[@]}"
+fi
+exec setpriv --clear-groups --reuid "$DAEMON_UID" --regid "$DAEMON_UID" -- "$SNAP/bin/potluck-server" "${args[@]}"

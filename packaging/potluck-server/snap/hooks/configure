@@ -1,0 +1,61 @@
+#!/bin/bash
+# Check settings, switch the HTTPS proxy on or off, and restart what changed.
+. "$SNAP/bin/common.sh"
+
+port_ok() {
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+port="$(cfg port 47126)"
+port_ok "$port" || fail "port must be a port number (got '$port')"
+tls_port="$(cfg tls.port 443)"
+port_ok "$tls_port" || fail "tls.port must be a port number (got '$tls_port')"
+seed="$(cfg seed 26)"
+[[ "$seed" =~ ^[0-9]{1,9}$ ]] || fail "seed must be a whole number (got '$seed')"
+case "$(cfg beacon true)" in
+  true | false) ;;
+  *) fail "beacon must be true or false" ;;
+esac
+name="$(cfg name "Potluck server")"
+[ "${#name}" -le 40 ] || fail "name must be 40 characters or fewer"
+
+domain="$(cfg domain)"
+if [ -n "$domain" ] && ! [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+  fail "domain must be a host name like potluck.example.org"
+fi
+
+cert="$(cfg tls.cert)"
+key="$(cfg tls.key)"
+if [ -n "$cert$key" ]; then
+  [ -n "$cert" ] && [ -n "$key" ] || fail "set both tls.cert and tls.key (or neither)"
+  for f in "$(in_common "$cert")" "$(in_common "$key")"; do
+    [ -r "$f" ] || fail "can't read $f: put certificate files in $SNAP_COMMON"
+  done
+  if [ -n "$domain" ] && [ "$tls_port" = 443 ]; then
+    fail "domain already serves HTTPS on port 443; set tls.port to another port, or unset tls.cert and tls.key"
+  fi
+fi
+
+if [ -n "$domain" ]; then
+  snapctl start --enable "$SNAP_INSTANCE_NAME.proxy"
+else
+  snapctl stop --disable "$SNAP_INSTANCE_NAME.proxy"
+fi
+
+# Restart a running service only when its settings changed.
+applied="$SNAP_DATA/applied"
+mkdir -p "$applied"
+is_active() {
+  [ "$(snapctl services "$SNAP_INSTANCE_NAME.$1" 2>/dev/null | awk 'NR == 2 { print $3 }')" = "active" ]
+}
+restart_if_changed() {
+  local name="$1" sum
+  shift
+  sum="$(for k in "$@"; do snapctl get -d "$k" 2>/dev/null || true; done | sha256sum | cut -d' ' -f1)"
+  if [ -f "$applied/$name" ] && [ "$(cat "$applied/$name")" != "$sum" ] && is_active "$name"; then
+    snapctl restart "$SNAP_INSTANCE_NAME.$name"
+  fi
+  echo "$sum" >"$applied/$name"
+}
+restart_if_changed potluck-server name port seed beacon tls
+restart_if_changed proxy domain proxy port

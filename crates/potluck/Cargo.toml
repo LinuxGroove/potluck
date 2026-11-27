@@ -1,0 +1,37 @@
+[package]
+name = "potluck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A block sandbox where everything is made by someone you know"
+
+[dependencies]
+bevy = "0.20.1"
+mlua = { version = "0.12.3", features = ["luau", "vendored", "send"] }
+ureq = "3"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+ctrlc = { version = "3.5.3", features = ["termination"] }
+
+[features]
+# Ultra lighting ray traced with Bevy's Solari, on graphics cards that can
+raytracing = ["bevy/bevy_solari"]
+
+[[bin]]
+name = "potluck"
+path = "src/main.rs"
+# the tests are in the library
+test = false
+
+[[bin]]
+name = "potluck-server"
+path = "src/server.rs"
+# the tests are in the library
+test = false
+
+[dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }

@@ -1,0 +1,110 @@
+name: Windows and macOS
+
+# Builds the game and the server for Windows (x86_64) and macOS (a universal,
+# ad-hoc signed app). Pushes to main keep the zips as artifacts for 5 days;
+# releases also attach them. Run it by hand to try a branch. Linux players get snaps.
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # attach the zips to a release
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-latest
+          - os: macos
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Stamp the version
+        id: version
+        run: |
+          v=$(tools/version.sh)
+          echo "$v" > VERSION
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Set the game server key
+        env:
+          GAME_SERVER_KEY: ${{ secrets.GAME_SERVER_KEY }}
+        run: |
+          if [ -z "$GAME_SERVER_KEY" ]; then
+            echo "::warning::GAME_SERVER_KEY is not set; this build can't share on the public game server"
+            exit 0
+          fi
+          case "$GAME_SERVER_KEY" in
+            *[!A-Za-z0-9_-]*) echo "::error::GAME_SERVER_KEY may only contain letters, digits, '-' and '_'"; exit 1 ;;
+          esac
+          printf '%s\n' "$GAME_SERVER_KEY" > server.key
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build for Windows
+        if: matrix.os == 'windows'
+        run: |
+          cargo build --release --locked --bins
+          mkdir -p dist/potluck
+          cp target/release/potluck.exe target/release/potluck-server.exe LICENSE dist/potluck/
+          cp assets/fonts/OFL.txt dist/potluck/fonts-OFL.txt
+          cd dist && 7z a -tzip "potluck-${{ steps.version.outputs.version }}-windows-x86_64.zip" potluck >/dev/null
+      - name: Build for macOS
+        if: matrix.os == 'macos'
+        run: |
+          v=${{ steps.version.outputs.version }}
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --bins --target "$t"
+          done
+          app=dist/Potluck.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist/server
+          lipo -create -output "$app/Contents/MacOS/potluck" target/{aarch64,x86_64}-apple-darwin/release/potluck
+          lipo -create -output dist/server/potluck-server target/{aarch64,x86_64}-apple-darwin/release/potluck-server
+          # macOS wants plain numbers in the app's version
+          short=${v%%+*}
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Potluck</string>
+            <key>CFBundleDisplayName</key><string>Potluck</string>
+            <key>CFBundleIdentifier</key><string>com.linuxgroove.potluck</string>
+            <key>CFBundleExecutable</key><string>potluck</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$short</string>
+            <key>CFBundleVersion</key><string>$short</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          codesign --force --deep -s - "$app"
+          cp LICENSE dist/
+          cp assets/fonts/OFL.txt dist/fonts-OFL.txt
+          cd dist && zip -q -r -y "potluck-$v-macos.zip" Potluck.app server LICENSE fonts-OFL.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: potluck-${{ matrix.os }}
+          path: dist/*.zip
+          retention-days: 5
+      - name: Attach to the release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref_name }}
+        run: gh release upload "$TAG" dist/*.zip --clobber

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Starts the game. Its world, settings and creations (remixes you edit in
+# your own editor) live in the snap's common folder, ~/snap/potluck/common,
+# which isn't copied for every revision.
+export POTLUCK_HOME="$SNAP_USER_COMMON"
+exec "$SNAP/bin/potluck" "$@"

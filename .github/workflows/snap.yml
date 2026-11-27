@@ -1,0 +1,92 @@
+name: Snaps
+
+# Builds two snaps: the game (potluck, from snap/) and the always-on world
+# server (potluck-server, from packaging/potluck-server/snap/). Publishing
+# waits on both names being registered, the STORE_LOGIN secret and the
+# PUBLISH_SNAP variable set to true.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# a new push to a pull request cancels the run it replaces
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  snap:
+    name: ${{ matrix.snap }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        snap: [potluck, potluck-server]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Every commit and tag, so tools/version.sh can describe this one.
+          fetch-depth: 0
+      # The snap build can't see the runner's environment, so the version
+      # (and the game's server key) go in files it reads.
+      - name: Stamp the version
+        run: tools/version.sh | tee VERSION
+      # Sharing creations uses the LinuxGroove game server's key. It isn't
+      # kept in the repository; builds without the secret (pull requests from
+      # forks) keep "defaultkey" and can only share on a local server.
+      - name: Set the game server key
+        if: matrix.snap == 'potluck'
+        env:
+          GAME_SERVER_KEY: ${{ secrets.GAME_SERVER_KEY }}
+        run: |
+          if [ -z "$GAME_SERVER_KEY" ]; then
+            echo "::warning::GAME_SERVER_KEY is not set; this build can't share on the public game server"
+            exit 0
+          fi
+          case "$GAME_SERVER_KEY" in
+            *[!A-Za-z0-9_-]*) echo "::error::GAME_SERVER_KEY may only contain letters, digits, '-' and '_'"; exit 1 ;;
+          esac
+          printf '%s\n' "$GAME_SERVER_KEY" > server.key
+      - name: Choose the project
+        id: project
+        run: |
+          if [ "${{ matrix.snap }}" = potluck-server ]; then
+            tools/server-snap.sh build/potluck-server
+            cp VERSION build/potluck-server/VERSION
+            echo "path=build/potluck-server" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=." >> "$GITHUB_OUTPUT"
+          fi
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: ${{ steps.project.outputs.path }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.snap }}-snap-${{ matrix.arch }}
+          path: ${{ steps.build.outputs.snap }}
+      - name: Publish to the candidate channel
+        if: vars.PUBLISH_SNAP == 'true' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'))
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: candidate
+      - name: Publish to the edge channel
+        if: vars.PUBLISH_SNAP == 'true' && github.event_name == 'push'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: edge

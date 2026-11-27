@@ -1,0 +1,27 @@
+#!/bin/bash
+# Prints how friends join, and who's playing now.
+. "$SNAP/bin/common.sh"
+
+port="$(cfg port 47126)"
+domain="$(cfg domain)"
+echo "$(cfg name "Potluck server")"
+echo
+echo "Friends join from Potluck: Join a friend's world, then type one of these:"
+if [ -n "$domain" ]; then
+  echo "  https://$domain"
+fi
+if [ -n "$(cfg tls.cert)" ]; then
+  echo "  wss://<this machine's name>:$(cfg tls.port 443)"
+fi
+for ip in $(hostname -I 2>/dev/null || true); do
+  case "$ip" in
+    *:*) ;;
+    *) echo "  $ip:$port" ;;
+  esac
+done
+echo
+if status="$(curl -fsS --max-time 3 "http://127.0.0.1:$port/status.json" 2>/dev/null)"; then
+  echo "Running: $status"
+else
+  echo "The world isn't answering on port $port. See: sudo snap logs potluck-server"
+fi

@@ -1,0 +1,123 @@
+name: potluck-server
+title: Potluck server
+adopt-info: potluck-server
+base: core24
+summary: A Potluck world that's always on, for friends to join at any time
+description: |
+  Runs a Potluck world with nobody at the keyboard, so friends can drop in
+  whenever they like. The world and the creations players bring are kept
+  between restarts.
+
+  Friends join from Potluck with "Join a friend's world" and the server's
+  address: a LAN address, a host name with a port, or an https:// address.
+  A web browser pointed at the same address shows who's playing.
+
+  Quick start, on the local network:
+
+      sudo snap install potluck-server
+      sudo potluck-server.info
+
+  A public world with HTTPS (a certificate from Let's Encrypt, renewed
+  automatically; ports 80 and 443 must reach this machine):
+
+      sudo snap set potluck-server domain=potluck.example.org
+
+  Or with a certificate of your own, kept in /var/snap/potluck-server/common:
+
+      sudo snap set potluck-server tls.cert=fullchain.pem tls.key=privkey.pem
+
+  Other settings: name (what players see), port (47126), seed (for a new
+  world), beacon (announce the world on the local network, true).
+
+  Docs: https://github.com/LinuxGroove/potluck
+license: MIT
+website: https://github.com/LinuxGroove/potluck
+source-code: https://github.com/LinuxGroove/potluck
+issues: https://github.com/LinuxGroove/potluck/issues
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+# The world server runs creations players bring, so it drops to snapd's
+# shared unprivileged user. Only Caddy, which binds ports 80 and 443, stays
+# root.
+system-usernames:
+  snap_daemon: shared
+
+apps:
+  potluck-server:
+    command: bin/launch-server
+    daemon: simple
+    restart-condition: on-failure
+    restart-delay: 5s
+    stop-timeout: 30s
+    plugs: [network, network-bind]
+
+  proxy:
+    command: bin/launch-proxy
+    daemon: simple
+    after: [potluck-server]
+    install-mode: disable
+    restart-condition: on-failure
+    # When ports 80 or 443 are taken, keep retrying instead of hitting
+    # systemd's start limit within a second and staying down.
+    restart-delay: 5s
+    plugs: [network, network-bind]
+
+  info:
+    command: bin/info
+    plugs: [network]
+
+parts:
+  potluck-server:
+    plugin: nil
+    source: .
+    build-snaps: [rustup]
+    build-packages:
+      - git
+      - pkg-config
+      - libasound2-dev
+      - libudev-dev
+      - libwayland-dev
+      - libxkbcommon-dev
+      - clang
+    stage-packages:
+      - libasound2t64
+      - libudev1
+    override-build: |
+      rustup toolchain install stable --profile minimal
+      rustup default stable
+      version="$(cat VERSION 2>/dev/null || tools/version.sh)"
+      craftctl set version="$(echo "$version" | cut -c1-32)"
+      POTLUCK_VERSION="$version" cargo build --release --locked --bin potluck-server
+      install -D -m 0755 target/release/potluck-server "$CRAFT_PART_INSTALL/bin/potluck-server"
+      install -D -m 0644 LICENSE "$CRAFT_PART_INSTALL/usr/share/doc/potluck-server/LICENSE"
+
+  caddy:
+    plugin: nil
+    build-snaps: [go/latest/stable]
+    override-build: |
+      export CGO_ENABLED=0 GOTOOLCHAIN=auto GOBIN="$CRAFT_PART_INSTALL/bin"
+      go install -trimpath -ldflags "-s -w" github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.7
+
+  # setpriv to drop to snap_daemon, curl for info's status check.
+  tools:
+    plugin: nil
+    stage-packages: [util-linux, curl]
+    stage:
+      - usr/bin/setpriv
+      - usr/bin/curl
+      - usr/lib/*/libcap-ng.so*
+      - usr/lib/*/libcurl.so*
+      - usr/lib/*/lib*.so*
+      - usr/share/doc/util-linux/copyright
+      - usr/share/doc/curl/copyright
+
+  scripts:
+    plugin: dump
+    source: packaging/potluck-server/snap/local
+    organize:
+      "*": bin/
