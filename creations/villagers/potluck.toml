@@ -1,0 +1,13 @@
+name = "Villagers"
+by = "Potluck"
+kind = "creature"
+about = "Rowan the carpenter and Ivy the mason live on the Green. In survival, trade them what you've gathered for planks, glass, lanterns and more."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.3"
+tweak = "0.1"
+ui = "0.1"
+sound = "0.1"

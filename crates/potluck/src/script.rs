@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 2), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 3), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1), ("sound", 0, 1), ("net", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -117,6 +117,67 @@ pub struct GameShared {
     /// Messages creations sent their client halves since the host last
     /// looked: (one player, or everyone here; the message).
     pub notes: Vec<(Option<u32>, Note)>,
+    /// The blocks each player carries, as their game last said.
+    pub pockets: HashMap<u32, Pockets>,
+}
+
+/// The most blocks `world.give` or `world.take` moves at once.
+pub const MAX_GIVE: u32 = 64;
+
+/// What a player carries (`world.pockets`). Their blocks live on their own
+/// game: the host goes by what it last heard, and sends changes back.
+#[derive(Default, Clone, Debug)]
+pub struct Pockets {
+    /// In creative a player has every block, and nothing is counted.
+    pub survival: bool,
+    pub items: BTreeMap<blocks::BlockId, u32>,
+    /// How many lots of changes the host has sent them, so a report from
+    /// before the last one arrived is ignored.
+    pub sent: u32,
+    /// Changes not sent yet: (block, more or fewer).
+    pub changes: Vec<(blocks::BlockId, i32)>,
+}
+
+impl Pockets {
+    /// What `world.give` puts in a survival player's hotbar: all of it, if
+    /// they carry that block already or have a slot free.
+    fn give(&mut self, b: blocks::BlockId, n: u32) -> u32 {
+        let carried = self.items.get(&b).is_some_and(|c| *c > 0);
+        if !carried && self.items.values().filter(|c| **c > 0).count() >= 9 {
+            return 0;
+        }
+        *self.items.entry(b).or_default() += n;
+        self.changes.push((b, n as i32));
+        n
+    }
+
+    fn take(&mut self, b: blocks::BlockId, n: u32) -> bool {
+        let have = self.items.entry(b).or_default();
+        if *have < n {
+            return false;
+        }
+        *have -= n;
+        self.changes.push((b, -(n as i32)));
+        true
+    }
+}
+
+/// A block a player can carry, by name, for give and take.
+fn carried_block(name: &str) -> mlua::Result<blocks::BlockId> {
+    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+    if id == blocks::AIR || id == blocks::WATER || blocks::block(id).hardness < 0.0 {
+        return Err(bad(format!("players can't carry {name}")));
+    }
+    Ok(id)
+}
+
+/// How many for give and take: a whole number from 1 to `MAX_GIVE`, 1 if left out.
+fn how_many(n: Option<f64>) -> mlua::Result<u32> {
+    match n {
+        None => Ok(1),
+        Some(n) if n.fract() == 0.0 && (1.0..=MAX_GIVE as f64).contains(&n) => Ok(n as u32),
+        Some(_) => Err(bad(format!("give and take move a whole number of blocks, 1 to {MAX_GIVE}"))),
+    }
 }
 
 /// A message between a creation and its client half (`@potluck/net`): a
@@ -868,6 +929,65 @@ impl Vm {
                 )?;
             }
             world.set("spot", lua.create_function(|_, name: String| Ok(spot(&name).map(vector)))?)?;
+            // world 0.3: the blocks players carry
+            {
+                let sh = shared.clone();
+                world.set(
+                    "pockets",
+                    lua.create_function(move |lua, player: Value| {
+                        let pid = pid_of(&player)?;
+                        let sh = sh.lock().unwrap();
+                        let p = sh.pockets.get(&pid);
+                        if p.is_some_and(|p| !p.survival) {
+                            return Ok(Value::Nil);
+                        }
+                        let t = lua.create_table()?;
+                        for (b, n) in p.iter().flat_map(|p| p.items.iter()).filter(|(_, n)| **n > 0) {
+                            t.set(blocks::block(*b).name, *n)?;
+                        }
+                        Ok(Value::Table(t))
+                    })?,
+                )?;
+                let sh = shared.clone();
+                world.set(
+                    "has",
+                    lua.create_function(move |_, (player, name): (Value, String)| {
+                        let pid = pid_of(&player)?;
+                        let b = carried_block(&name)?;
+                        Ok(match sh.lock().unwrap().pockets.get(&pid) {
+                            Some(p) if !p.survival => f64::INFINITY,
+                            Some(p) => p.items.get(&b).copied().unwrap_or(0) as f64,
+                            None => 0.0,
+                        })
+                    })?,
+                )?;
+                let sh = shared.clone();
+                world.set(
+                    "take",
+                    lua.create_function(move |_, (player, name, n): (Value, String, Option<f64>)| {
+                        let pid = pid_of(&player)?;
+                        let (b, n) = (carried_block(&name)?, how_many(n)?);
+                        Ok(match sh.lock().unwrap().pockets.get_mut(&pid) {
+                            Some(p) if !p.survival => true,
+                            Some(p) => p.take(b, n),
+                            None => false,
+                        })
+                    })?,
+                )?;
+                let sh = shared.clone();
+                world.set(
+                    "give",
+                    lua.create_function(move |_, (player, name, n): (Value, String, Option<f64>)| {
+                        let pid = pid_of(&player)?;
+                        let (b, n) = (carried_block(&name)?, how_many(n)?);
+                        Ok(match sh.lock().unwrap().pockets.get_mut(&pid) {
+                            Some(p) if !p.survival => n,
+                            Some(p) => p.give(b, n),
+                            None => 0,
+                        })
+                    })?,
+                )?;
+            }
             // world 0.2: timers and world events, kept between ticks
             {
                 let w = waiting.clone();
@@ -1745,6 +1865,31 @@ impl Scripts {
         }
     }
 
+    /// What a player's game says they carry. A report from before the
+    /// host's last changes reached them is ignored.
+    pub fn set_pockets(&mut self, player: u32, survival: bool, items: &[(blocks::BlockId, u32)], seen: u32) {
+        let mut sh = self.shared.lock().unwrap();
+        let p = sh.pockets.entry(player).or_default();
+        if seen < p.sent || !p.changes.is_empty() {
+            return;
+        }
+        p.survival = survival;
+        p.items = items.iter().filter(|(_, n)| *n > 0).map(|(b, n)| (*b, (*n).min(1 << 20))).collect();
+    }
+
+    /// Changes creations made to what players carry: (player, how many
+    /// lots they've been sent now, the changes).
+    pub fn pocket_changes(&mut self) -> Vec<(u32, u32, Vec<(blocks::BlockId, i32)>)> {
+        let mut sh = self.shared.lock().unwrap();
+        let mut out = vec![];
+        for (pid, p) in sh.pockets.iter_mut().filter(|(_, p)| !p.changes.is_empty()) {
+            p.sent += 1;
+            out.push((*pid, p.sent, std::mem::take(&mut p.changes)));
+        }
+        out.sort_by_key(|c| c.0);
+        out
+    }
+
     /// Messages creations sent their client halves, and who each is for:
     /// the player named, or everyone in `players`.
     pub fn net_changes(&mut self, players: &[u32]) -> Vec<(u32, Note)> {
@@ -1805,6 +1950,7 @@ impl Scripts {
             let mut sh = self.shared.lock().unwrap();
             for p in &left {
                 sh.input.forget_player(p.id);
+                sh.pockets.remove(&p.id);
                 sh.ui.forget_player(p.id);
             }
             sh.ui.joined.extend(joined.iter().map(|p| p.id));

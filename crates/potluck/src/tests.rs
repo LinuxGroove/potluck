@@ -1935,3 +1935,144 @@ fn the_rodeo_rams_clock_runs_on_the_riders_game() {
     assert_eq!(h.take().pieces.last().map(|p| p.2.clone()), Some(None), "gone after a while");
     assert_eq!(h.list["rodeo-ram"].error, None);
 }
+
+#[test]
+fn creations_give_and_take_the_blocks_survival_players_carry() {
+    use crate::blocks::{by_name, PLANKS, SAND, STONE};
+    use crate::game::Action;
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::Me;
+    home();
+    let log_id = by_name("Oak log").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.3")
+world.after(0.1, function()
+	local p = world.pockets(7)
+	print("ada logs " .. tostring(p["Oak log"]) .. " sand " .. tostring(p.Sand))
+	print("ada has " .. world.has(7, "oak log"))
+	print("take 2 " .. tostring(world.take(7, "Oak log", 2)))
+	print("take 5 " .. tostring(world.take(7, "Oak log", 5)))
+	print("give " .. world.give(7, "Planks", 8))
+	print("bo " .. tostring(world.pockets(8)) .. " " .. tostring(world.has(8, "Stone") == math.huge) .. " " .. tostring(world.take(8, "Stone", 64)) .. " " .. world.give(8, "Glass", 3))
+	print("cy " .. tostring(next(world.pockets(9)) == nil) .. " " .. world.has(9, "Stone") .. " " .. tostring(world.take(9, "Stone")) .. " " .. world.give(9, "Stone"))
+	print(pcall(world.give, 7, "Bedrock") and "bedrock ok" or "no bedrock")
+	print(pcall(world.give, 7, "Water") and "water ok" or "no water")
+	print(pcall(world.give, 7, "Planks", 65) and "65 ok" or "no 65")
+	print(pcall(world.give, 7, "Planks", 1.5) and "half ok" or "no half")
+	print(pcall(world.has, 7, "Unobtainium") and "unob ok" or "no unob")
+	for _, b in { "Stone", "Dirt", "Glass", "Hay", "Snow", "Gravel" } do
+		world.give(7, b)
+	end
+	print("tenth " .. world.give(7, "Lantern") .. " more " .. world.give(7, "Stone", 3))
+end)
+"#;
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO };
+    let cy = PlayerInfo { id: 9, name: "Cy".into(), pos: Vec3::ZERO };
+    scripts.players = vec![ada.clone(), bo.clone(), cy.clone()];
+    scripts.set_pockets(7, true, &[(log_id, 3), (SAND, 2)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let l = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{l}");
+    for want in [
+        "ada logs 3 sand 2",
+        "ada has 3",
+        "take 2 true",
+        "take 5 false",
+        "give 8",
+        "bo nil true true 3",
+        "cy true 0 false 0",
+        "no bedrock",
+        "no water",
+        "no 65",
+        "no half",
+        "no unob",
+        "tenth 0 more 3",
+    ] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // the changes go to Ada alone, once
+    let changes = scripts.pocket_changes();
+    assert_eq!(changes.len(), 1, "{changes:?}");
+    let (pid, seq, list) = changes[0].clone();
+    assert_eq!((pid, seq), (7, 1));
+    assert_eq!(&list[..3], &[(log_id, -2), (PLANKS, 8), (STONE, 1)]);
+    assert!(scripts.pocket_changes().is_empty());
+    // a report from before they arrived changes nothing
+    scripts.set_pockets(7, true, &[(log_id, 3), (SAND, 2)], 0);
+    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].items[&log_id], 1);
+
+    // on Ada's game: the hotbar takes them, and says so next time
+    let mut me = Me::default();
+    me.hotbar[0] = log_id;
+    me.counts[0] = 3;
+    me.hotbar[1] = SAND;
+    me.counts[1] = 2;
+    me.change_pockets(&list);
+    me.pockets_seen = seq;
+    let carried = me.carried();
+    assert!(carried.contains(&(log_id, 1)) && carried.contains(&(PLANKS, 8)) && carried.contains(&(STONE, 4)) && carried.contains(&(SAND, 2)), "{carried:?}");
+    assert_eq!(carried.len(), 9, "a full hotbar: {carried:?}");
+    me.change_pockets(&[(SAND, -5)]);
+    assert!(!me.carried().iter().any(|c| c.0 == SAND), "never fewer than none");
+    scripts.set_pockets(7, true, &me.carried(), me.pockets_seen);
+    assert!(!scripts.shared.lock().unwrap().pockets[&7].items.contains_key(&SAND), "an up to date report counts");
+
+    // Ada goes, and what she carried with her
+    scripts.players = vec![bo.clone(), cy.clone()];
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert!(!scripts.shared.lock().unwrap().pockets.contains_key(&7));
+
+    // what goes between devices
+    for m in [Msg::Pockets { seq: 2, changes: vec![(PLANKS, 4), (log_id, -1)] }, Msg::Act(Action::Pockets { survival: true, items: vec![(PLANKS, 4)], seen: 2 })] {
+        let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+}
+
+#[test]
+fn villagers_trade_what_survival_players_gathered() {
+    use crate::blocks::{by_name, PLANKS};
+    home();
+    let lib = Library::load();
+    let villagers = lib.list["villagers"].clone();
+    let log_id = by_name("Oak log").unwrap();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let ada = PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO };
+    let bo = PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO };
+    scripts.players = vec![ada.clone(), bo.clone()];
+    scripts.set_pockets(7, true, &[(log_id, 2)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&villagers, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let rowan = herd.bodies.values().find(|b| b.kind == "Carpenter").map(|b| b.id).expect("Rowan's on the Green");
+    assert!(herd.bodies.values().any(|b| b.kind == "Mason"), "and Ivy");
+    let asked = |scripts: &mut Scripts, pid: u32| scripts.shared.lock().unwrap().ui.panels.get(&pid).and_then(|q| q.front().cloned());
+    scripts.event(&mut voxels, &mut herd, rowan, "used", &ada);
+    let panel = asked(&mut scripts, 7).expect("Rowan asks what to make");
+    assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
+    assert_eq!(panel.choices.len(), 4);
+    scripts.answer(7, panel.ask, Some(0));
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let items = scripts.shared.lock().unwrap().pockets[&7].items.clone();
+    assert_eq!((items.get(&log_id).copied(), items.get(&PLANKS).copied()), (Some(1), Some(4)), "{items:?}");
+    // a trade she can't pay for takes nothing
+    scripts.event(&mut voxels, &mut herd, rowan, "used", &ada);
+    let panel = asked(&mut scripts, 7).unwrap();
+    scripts.answer(7, panel.ask, Some(3));
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.shared.lock().unwrap().pockets[&7].items.get(&PLANKS).copied(), Some(4));
+    assert!(herd.bodies[&rowan].says.as_ref().is_some_and(|s| s.0.contains("You'll need 6 Planks")), "{:?}", herd.bodies[&rowan].says);
+    // in creative, there's nothing to trade for
+    scripts.event(&mut voxels, &mut herd, rowan, "used", &bo);
+    let panel = asked(&mut scripts, 8).unwrap();
+    assert!(panel.text.contains("creative"), "{}", panel.text);
+    assert_eq!(scripts.vms["villagers"].error, None);
+}
