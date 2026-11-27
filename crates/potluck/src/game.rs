@@ -25,6 +25,9 @@ pub enum Action {
     Ride(Vec2, f32),
     /// One of a creation's actions (`@potluck/input`), pressed or let go.
     Press { creation: String, action: String, down: bool },
+    /// An answer to a creation's question (`ui.ask`): a choice from 0, or
+    /// None for closing it.
+    Answer { ask: u32, choice: Option<u32> },
 }
 
 /// What players did this frame: (player id, action).
@@ -78,6 +81,23 @@ pub fn interact(
         what.join("   ")
     }).filter(|p| !p.is_empty());
     me.pressing = (live, now);
+    // a creation's question: it opens once nothing else is on the screen,
+    // and goes when the creation takes it back
+    if focus.screen == Screen::Panel {
+        match &me.panel {
+            Some(p) if focus.panel.as_ref().map(|q| q.ask) != Some(p.ask) => focus.panel = Some(p.clone()),
+            Some(_) => {}
+            None => {
+                focus.panel = None;
+                focus.go(Screen::Playing);
+            }
+        }
+    } else if focus.playing() {
+        if let Some(p) = &me.panel {
+            focus.panel = Some(p.clone());
+            focus.go(Screen::Panel);
+        }
+    }
     if !focus.playing() {
         // a menu open while riding: the creature stands and waits
         if me.riding.is_some() {
@@ -162,6 +182,7 @@ pub fn host_step(
     mut toasts: ResMut<Toasts>,
     mut rng: ResMut<HerdRng>,
     settings: Res<Settings>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     if matches!(net.role, Role::Client(_)) {
         return;
@@ -207,6 +228,7 @@ pub fn host_step(
                     scripts.press(pid, &creation, &action, down);
                 }
             }
+            Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
         }
     }
     let w = &*voxels;
@@ -223,6 +245,23 @@ pub fn host_step(
             me.as_mut().unwrap().focus = creation;
         } else {
             net.send_focus(pid, creation);
+        }
+    }
+    // what creations show players, and ask them
+    let here: Vec<u32> = players.iter().map(|p| p.id).collect();
+    for (pid, change) in scripts.ui_changes(&here) {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().show(change);
+        } else {
+            net.send_ui(pid, change);
+        }
+    }
+    // sounds creations played, to whoever's near
+    for (pid, play) in scripts.sound_changes() {
+        if pid == my_id && me.is_some() {
+            heard.0.push(play);
+        } else {
+            net.send_sound(pid, play);
         }
     }
     for (pid, v) in std::mem::take(&mut scripts.out.throws) {
@@ -386,6 +425,7 @@ pub fn do_acts(
     mut info: ResMut<WorldInfo>,
     shares: Res<ShareJobs>,
     mut green: ResMut<Green>,
+    mut actions: ResMut<Actions>,
     mut exit: MessageWriter<AppExit>,
 ) {
     // what the Green's arches can offer, asked for now and then while playing
@@ -692,8 +732,22 @@ pub fn do_acts(
                 settings.save();
                 focus.go(to);
             }
+            Act::Answer(choice) => {
+                // the one on the screen; the host says what's next
+                if let Some(p) = focus.panel.take() {
+                    actions.0.push((net.my_id, Action::Answer { ask: p.ask, choice }));
+                    if me.panel.as_ref().is_some_and(|q| q.ask == p.ask) {
+                        me.panel = None;
+                    }
+                }
+                if focus.screen == Screen::Panel {
+                    focus.go(Screen::Playing);
+                }
+            }
             Act::Leave => {
                 me.focus = None;
+                me.pieces.clear();
+                me.panel = None;
                 net.leave();
                 *voxels = crate::world::generate(voxels.seed);
                 herd.bodies.clear();
@@ -725,6 +779,12 @@ fn goes_online(act: &Act) -> bool {
 pub fn start_world(lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, net: &mut Net, toasts: &mut Toasts) {
     lib.running.clear();
     scripts.vms.clear();
+    {
+        // what creations held of players' controls and screens goes with them
+        let mut sh = scripts.shared.lock().unwrap();
+        sh.input = Default::default();
+        sh.ui = Default::default();
+    }
     let base: Vec<String> = lib.list.values().filter(|c| c.origin == Origin::Base).map(|c| c.id.clone()).collect();
     for id in base {
         bring(&id, lib, scripts, herd, net, toasts);

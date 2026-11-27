@@ -28,8 +28,10 @@ store = "0.1"
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
+| `@potluck/ui` | 0.1 | Lines on players' screens, and questions with choices |
+| `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
 
-Still to come, each as its own module with its own version: `@potluck/ui` (panels and HUD pieces), `@potluck/sound`, and `@potluck/net` (a creation's client half, for what only one player sees).
+Still to come, as its own module with its own version: `@potluck/net` (a creation's client half, for what only one player sees). Sounds of a creation's own, from its files, come with a later `sound`.
 
 A creation's actions are part of `potluck.toml`, so the market and the game know them before it runs:
 
@@ -72,13 +74,16 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Shortest timer | 0.1 s, the length of a tick |
 | World event and input handlers (`world.on`, `input.on`) | 32 |
 | Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
+| Lines on screens (`ui.show`) | 8 at once (different ids), each up to 60 letters |
+| Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds |
+| Sounds | 10 a second; heard within 40 blocks |
 | Boards | 16, of 100 players each |
 | Store | 64 KB, counted as JSON |
 | Messages | `world.say` 120 letters, a creature's `say` 80 |
 
 A creation over a time limit stops with an error, and the world carries on. After about 30 errors close together it's paused, and Look inside says why.
 
-What a creation can never do, at any version: read or write files, reach the network, see another creation's memory, load code from anything but its own files, or shake, roll or zoom the player's camera.
+What a creation can never do, at any version: read or write files, reach the network, see another creation's memory, load code from anything but its own files, shake, roll or zoom the player's camera, or put anything over the game's own menus. Its questions always say whose they are and can always be closed.
 
 ## Changes
 
@@ -90,6 +95,14 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/input`
 
 - **0.1**: the first version: `[actions]` in `potluck.toml`, and `input.on`, `input.held`, `input.focus` and `input.focused`.
+
+### `@potluck/sound`
+
+- **0.1**: the first version: `sound.play`, `sound.play_for` and `sound.names`, with the game's own sounds.
+
+### `@potluck/ui`
+
+- **0.1**: the first version: `ui.show`, `ui.hide`, `ui.ask` and `ui.close`.
 
 ### `@potluck/store`
 

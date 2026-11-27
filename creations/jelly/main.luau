@@ -4,6 +4,7 @@
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	colour = { "#6fd6b8", label = "Jelly colour", order = 1 },
@@ -59,6 +60,7 @@ function Jelly:hit(player)
 	if #world.creatures(Jellylet) + 2 > MOST_LETS then
 		self:hop(knobs.bounce * 1.5)
 		self:say("Blorp!")
+		sound.play("boing", { at = self })
 		return
 	end
 	local here = self.position
@@ -83,5 +85,6 @@ end
 
 function Jellylet:hit(player)
 	self:say("Pop!")
+	sound.play("pop", { at = self })
 	self:remove()
 end

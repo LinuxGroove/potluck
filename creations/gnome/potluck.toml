@@ -9,3 +9,5 @@ licence = "CC-BY-4.0"
 [needs]
 world = "0.1"
 tweak = "0.1"
+ui = "0.1"
+sound = "0.1"

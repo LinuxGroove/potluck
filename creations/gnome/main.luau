@@ -1,9 +1,12 @@
 --!strict
 -- Gnome Gardener: keeps the Green in flowers, a few at a time, and tells
--- anyone who asks how things work round here.
+-- anyone who asks how things work round here (a question with choices,
+-- from @potluck/ui).
 
 local world = require("@potluck/world")
 local tweak = require("@potluck/tweak")
+local ui = require("@potluck/ui@0.1")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	hat = { "#c0392b", label = "Hat colour", order = 1 },
@@ -32,20 +35,49 @@ local Gnome = world.creature {
 
 local FLOWERS = { "Red flower", "Blue flower", "White flower", "Violet flower" }
 
-local TIPS = {
-	"Everything here is a creation someone made. Even me!",
-	"Look inside anything: press L, or hold Y on a pad.",
-	"Tweak changes a creation's knobs. No code needed.",
-	"Remix a creation and it's yours to change.",
-	"Share a creation and you get a code your friends can type.",
-	"The market lists servers you can join, all over.",
-	"Ride a mossback if you dare. They buck!",
-	"Try the Rodeo Ram by the paddock. Hold on as long as you can.",
+-- what to ask about, and what a gardener says
+local TOPICS = {
+	{
+		"Making things",
+		"Everything here is a creation someone made. Even me!\n\nLook inside anything to read how it works (L, or hold Y on a pad). Tweak turns its knobs, no code needed, and Remix gives you a copy of your own to change in any editor.",
+	},
+	{
+		"Sharing",
+		"Share a creation from Look inside and you get a code. Your friends type it in Load a creation from a code.\n\nShare it to Everyone and it goes on the market, once a moderator has had a look.",
+	},
+	{
+		"The arches",
+		"The four arches on the north side of the Green show what friends brought into this world, and what the market has: favourites of the jams, this week's jam and what's trending.\n\nWalk up to one and Interact to bring it in.",
+	},
+	{
+		"Playing together",
+		"Host a world for friends from the title screen, or join theirs. Servers on the market are always on.\n\nRide a mossback if you dare, and try the Rodeo Ram by the paddock.",
+	},
 }
+
+local function ask(gnome, player)
+	local choices = {}
+	for _, t in TOPICS do
+		table.insert(choices, t[1])
+	end
+	ui.ask(player, { title = "Gnome Gardener", text = "Hello! What would you like to know?", choices = choices }, function(who, choice)
+		local topic = choice and TOPICS[choice]
+		if not topic then
+			gnome:say("Happy gardening!")
+			return
+		end
+		ui.ask(who, { title = topic[1], text = topic[2], choices = { "Something else", "Thanks!" } }, function(again, more)
+			if more == 1 then
+				ask(gnome, again)
+			else
+				gnome:say("Happy gardening!")
+			end
+		end)
+	end)
+end
 
 function Gnome:spawned()
 	self.chore = world.random(5, 20)
-	self.tip = math.floor(world.random(1, #TIPS + 1))
 end
 
 -- a flower on bare grass near the middle of the Green, if there's room
@@ -83,6 +115,7 @@ function Gnome:tick(dt: number)
 			if spot then
 				self:walk_to(spot, 1.6)
 				self:say("There we are.")
+				sound.play("dig", { at = self, volume = 0.5 })
 				return
 			end
 		end
@@ -98,8 +131,9 @@ end
 
 function Gnome:used(player)
 	self:face(player.position)
-	self:say(TIPS[self.tip])
-	self.tip = self.tip % #TIPS + 1
+	self:say("Hello there!")
+	sound.play("chime", { at = self, volume = 0.5 })
+	ask(self, player)
 end
 
 function Gnome:hit(player)

@@ -218,6 +218,7 @@ fn tick(bot: &mut Bot, dt: f32, address: &str, ground: &mut Ground, counts: &mut
     }
     // everything the server sent
     let mut gone = false;
+    let mut answers = vec![];
     if let Some(rx) = &bot.rx {
         loop {
             match rx.try_recv() {
@@ -249,6 +250,11 @@ fn tick(bot: &mut Bot, dt: f32, address: &str, ground: &mut Ground, counts: &mut
                         }
                         Some(Event::Msg(_, Msg::Thrown(_))) => bot.riding = None,
                         Some(Event::Msg(_, Msg::Go { .. })) => gone = true,
+                        // a creation's question: a choice, or now and then Close
+                        Some(Event::Msg(_, Msg::Panel(Some(p)))) => {
+                            let pick = (rng.next() * (p.choices.len() as f32 + 1.0)) as u32;
+                            answers.push(Action::Answer { ask: p.ask, choice: (pick < p.choices.len() as u32).then_some(pick) });
+                        }
                         Some(Event::Gone(_)) => gone = true,
                         _ => {}
                     }
@@ -260,6 +266,9 @@ fn tick(bot: &mut Bot, dt: f32, address: &str, ground: &mut Ground, counts: &mut
                 }
             }
         }
+    }
+    for a in answers {
+        send(bot, &Msg::Act(a));
     }
     if gone {
         if bot.welcomed {

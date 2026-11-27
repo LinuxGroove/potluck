@@ -1,13 +1,16 @@
 --!strict
 -- Tag Bot: a mini game. A little robot runs from anyone who comes close;
 -- catch it and hit it to tag it. Each player's tags go on the board, and
--- the world keeps count (in the store) even after it restarts. Interact
--- with it to hear who's tagged it most.
+-- the world keeps count (in the store) even after it restarts. A tag shows
+-- your count on your screen for a while, and Interact with it shows its
+-- board (both from @potluck/ui).
 
 local world = require("@potluck/world@0.2")
 local tweak = require("@potluck/tweak")
 local game = require("@potluck/game@0.1")
 local store = require("@potluck/store@0.1")
+local ui = require("@potluck/ui@0.1")
+local sound = require("@potluck/sound@0.1")
 
 local knobs = tweak {
 	paint = { "#d9dde3", label = "Paint", order = 1 },
@@ -42,6 +45,19 @@ world.on("player_joined", function(player)
 	end
 end)
 
+-- your count on your screen, for a few seconds after each tag
+local hiding: { [number]: number } = {}
+local function show_tags(player, n: number)
+	ui.show(player, "tags", "Tag Bot: " .. n .. (if n == 1 then " tag" else " tags"))
+	if hiding[player.id] then
+		world.cancel(hiding[player.id])
+	end
+	hiding[player.id] = world.after(8, function()
+		ui.hide(player, "tags")
+		hiding[player.id] = nil
+	end)
+end
+
 function Bot:spawned()
 	self.dizzy = 0
 end
@@ -74,20 +90,25 @@ function Bot:hit(player)
 	tags[player.name] = n
 	store.set("tags", tags)
 	game.score("tags", player, n)
+	show_tags(player, n)
 	self.dizzy = 1.5
 	self:hop(0.8)
 	self:say("Tagged! That's " .. n .. " for " .. player.name .. ".")
+	sound.play("beep", { at = self })
 end
 
 function Bot:used(player)
-	local top = game.board("tags", 3)
+	local top = game.board("tags", 5)
 	if #top == 0 then
 		self:say("Beep! Nobody's caught me yet.")
+		sound.play("beep", { at = self, pitch = 1.2 })
 		return
 	end
-	local parts = {}
+	local lines = {}
 	for i, s in top do
-		table.insert(parts, i .. ". " .. s.name .. " " .. math.floor(s.value))
+		table.insert(lines, i .. ". " .. s.name .. ": " .. math.floor(s.value))
 	end
-	self:say(table.concat(parts, "  "))
+	self:say("Beep! Here's my board.")
+	sound.play("beep", { at = self, pitch = 1.2 })
+	ui.ask(player, { title = "Who's tagged Tag Bot most", text = table.concat(lines, "\n"), choices = { "OK" } }, function() end)
 end

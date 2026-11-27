@@ -58,6 +58,8 @@ pub enum Screen {
     Parents,
     /// Creations' actions, and the buttons they're on.
     Controls,
+    /// A creation's question (`ui.ask`), with its choices.
+    Panel,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -120,6 +122,9 @@ pub enum Act {
     Rebind(String, String),
     /// Every creation's actions back on the buttons it chose.
     ResetControls,
+    /// An answer to the creation's question on the screen: a choice from 0,
+    /// or None for Close.
+    Answer(Option<u32>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -187,6 +192,8 @@ pub struct Focus {
     pub parents_open: bool,
     /// Wrong PINs lately: a few in a row wait a while.
     pub pin_misses: Vec<std::time::Instant>,
+    /// The creation's question on the Panel screen.
+    pub panel: Option<crate::script::Panel>,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -211,6 +218,7 @@ impl Default for Focus {
             link_code: None,
             parents_open: false,
             pin_misses: vec![],
+            panel: None,
             qr: None,
         }
     }
@@ -625,6 +633,20 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::OpenSettings));
             ("Creations' buttons".into(), v)
         }
+        Screen::Panel => {
+            let Some(p) = &focus.panel else { return (String::new(), vec![button("Close", Act::Answer(None))]) };
+            // always says whose question it is
+            let from = lib.list.get(&p.creation).map(|c| format!("From {} by {}", c.manifest.name, c.manifest.by)).unwrap_or_else(|| "From a creation in this world".into());
+            let mut v = vec![note(from)];
+            if !p.text.is_empty() {
+                v.push(note(p.text.clone()));
+            }
+            for (i, c) in p.choices.iter().enumerate() {
+                v.push(button(c.clone(), Act::Answer(Some(i as u32))));
+            }
+            v.push(button("Close", Act::Answer(None)));
+            (p.title.clone(), v)
+        }
         Screen::Settings => {
             let v = vec![
                 Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: focus.fields.get("name").cloned().unwrap_or_else(|| settings.name.clone()) } },
@@ -633,6 +655,8 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
                 Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
                 Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
+                Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
+                Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
                 button("Creations' buttons", Act::OpenControls),
@@ -709,6 +733,7 @@ pub fn menu_input(
     time: Res<Time>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut last_cursor: Local<Option<Vec2>>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     // a button drawn again under a resting pointer counts as hovered; only a
     // pointer that moved should take the selection from the keys or the pad
@@ -784,6 +809,7 @@ pub fn menu_input(
     match &item.kind {
         Kind::Button(act) => {
             if accept {
+                heard.click();
                 acts.0.push(act.clone());
             }
         }
@@ -857,6 +883,7 @@ pub fn menu_input(
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
             Screen::Devices | Screen::Parents | Screen::Controls => Some(Act::OpenSettings),
+            Screen::Panel => Some(Act::Answer(None)),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {
@@ -876,6 +903,8 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("fov", KnobValue::Number(n)) => settings.fov = n.round() as f32,
         ("invert", KnobValue::Toggle(b)) => settings.invert_y = b,
         ("survival", KnobValue::Toggle(b)) => settings.survival = b,
+        ("volume", KnobValue::Number(n)) => settings.volume = n.clamp(0.0, 1.0) as f32,
+        ("subtitles", KnobValue::Toggle(b)) => settings.subtitles = b,
         // a parent's, once unlocked
         ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
         ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,
@@ -1105,6 +1134,12 @@ pub struct HealthBar;
 pub struct Crosshair;
 #[derive(Component)]
 pub struct LabelText(usize);
+/// Where creations' lines go (`ui.show`): an index into `script::PLACES`.
+#[derive(Component)]
+pub struct PieceText(usize);
+/// Subtitles for sounds, bottom right.
+#[derive(Component)]
+pub struct CaptionText;
 
 pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
     let ui = fonts.ui.clone();
@@ -1171,6 +1206,34 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                     });
                 }
             });
+            // creations' lines: top right, top left (under the world's line), above the hotbar
+            let places = [
+                Node { position_type: PositionType::Absolute, right: px(18), top: px(14), max_width: percent(40), ..default() },
+                Node { position_type: PositionType::Absolute, left: px(18), top: px(40), max_width: percent(40), ..default() },
+                Node { position_type: PositionType::Absolute, bottom: px(130), width: percent(100), justify_content: JustifyContent::Center, ..default() },
+            ];
+            for (i, node) in places.into_iter().enumerate() {
+                h.spawn((
+                    PieceText(i),
+                    Text::new(""),
+                    TextFont { font: ui.clone().into(), font_size: FontSize::Px(17.0), ..default() },
+                    TextColor(INK),
+                    TextLayout::justify(if i == 0 { Justify::Right } else if i == 2 { Justify::Center } else { Justify::Left }),
+                    TextShadow::default(),
+                    node,
+                    Visibility::Hidden,
+                ));
+            }
+            h.spawn((
+                CaptionText,
+                Text::new(""),
+                TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() },
+                TextColor(INK),
+                TextLayout::justify(Justify::Right),
+                Node { position_type: PositionType::Absolute, right: px(18), bottom: px(96), padding: UiRect::axes(px(10), px(6)), border_radius: BorderRadius::all(px(8)), ..default() },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+                Visibility::Hidden,
+            ));
             for i in 0..24 {
                 h.spawn((
                     LabelText(i),
@@ -1211,6 +1274,8 @@ pub fn update_hud(
         Query<(&mut Text, &mut Visibility), (With<ToastText>, Without<Hud>)>,
         Query<&mut Text, With<InfoText>>,
         Query<(&LabelText, &mut Text, &mut Node, &mut Visibility)>,
+        Query<(&PieceText, &mut Text, &mut Visibility), Without<Hud>>,
+        Query<(&mut Text, &mut Visibility), (With<CaptionText>, Without<Hud>)>,
     )>,
     mut health: Query<(&mut Node, &mut BackgroundColor), (With<HealthBar>, Without<LabelText>)>,
     cam: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -1273,6 +1338,17 @@ pub fn update_hud(
     }
     if let Ok(mut t) = texts.p3().single_mut() {
         t.0 = info.line.clone();
+    }
+    // subtitles, newest at the bottom
+    if let Ok((mut t, mut v)) = texts.p6().single_mut() {
+        t.0 = me.captions.iter().map(|c| c.0.as_str()).collect::<Vec<_>>().join("\n");
+        *v = if t.0.is_empty() || !show { Visibility::Hidden } else { Visibility::Inherited };
+    }
+    // creations' lines, each place's in the order of their creation and id
+    for (place, mut t, mut v) in &mut texts.p5() {
+        let at = crate::script::PLACES[place.0];
+        t.0 = me.pieces.values().filter(|p| p.at == at).map(|p| p.text.as_str()).collect::<Vec<_>>().join("\n");
+        *v = if t.0.is_empty() { Visibility::Hidden } else { Visibility::Inherited };
     }
     if let Ok((mut n, mut bg)) = health.single_mut() {
         n.width = percent((me.health / MAX_HEALTH * 100.0).max(0.0));

@@ -62,6 +62,14 @@ pub struct Me {
     pub pressing: (Option<String>, Vec<String>),
     /// What the live creation's buttons do, for the HUD.
     pub live_prompt: Option<String>,
+    /// Lines creations show on this screen (`ui.show`), by (creation, id).
+    pub pieces: std::collections::BTreeMap<(String, String), crate::script::Piece>,
+    /// The question a creation asks this player now (`ui.ask`), as the host said.
+    pub panel: Option<crate::script::Panel>,
+    /// Subtitles for sounds just heard, and the seconds each has left.
+    pub captions: Vec<(String, f32)>,
+    /// Blocks walked since the last step's sound.
+    stride: f32,
     regen: f32,
     /// Seconds since the last hurt, for the HUD's flash.
     pub hurt: f32,
@@ -94,6 +102,10 @@ impl Default for Me {
             focus: None,
             pressing: (None, vec![]),
             live_prompt: None,
+            pieces: Default::default(),
+            panel: None,
+            captions: vec![],
+            stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
         }
@@ -101,6 +113,19 @@ impl Default for Me {
 }
 
 impl Me {
+    /// What a creation shows this player, or asks them, from the host.
+    pub fn show(&mut self, change: crate::script::UiChange) {
+        match change {
+            crate::script::UiChange::Piece { creation, id, piece: Some(p) } => {
+                self.pieces.insert((creation, id), p);
+            }
+            crate::script::UiChange::Piece { creation, id, piece: None } => {
+                self.pieces.remove(&(creation, id));
+            }
+            crate::script::UiChange::Panel(p) => self.panel = p,
+        }
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.pos + Vec3::Y * EYE
     }
@@ -256,6 +281,7 @@ pub fn walk(
     time: Res<Time>,
     mut me: ResMut<Me>,
     mut toasts: ResMut<crate::ui::Toasts>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     let dt = time.delta_secs().min(0.05);
     let now = time.elapsed_secs_f64();
@@ -288,7 +314,11 @@ pub fn walk(
     }
     let feet = me.pos.floor().as_ivec3();
     let mid = (me.pos + Vec3::Y * 0.9).floor().as_ivec3();
+    let was_wet = me.in_water;
     me.in_water = voxels.at(feet) == WATER || voxels.at(mid) == WATER;
+    if me.in_water && !was_wet && me.vel.y < -3.0 {
+        heard.game("splash", me.pos, 0.5, 1.0);
+    }
 
     let mut vel = me.vel;
     if me.flying {
@@ -325,9 +355,17 @@ pub fn walk(
     if hit.x { vel.x = 0.0 }
     if hit.z { vel.z = 0.0 }
     if hit.y { vel.y = 0.0 }
+    // a little variety in each step
+    let wobble = 0.92 + (now * 7.3).fract() as f32 * 0.16;
+    let under = crate::sound::material(voxels.at((pos - Vec3::Y * 0.1).floor().as_ivec3()));
     // fall damage, in survival
     if landed {
         let fell = me.fall_from - pos.y;
+        if fell > 1.2 && !me.in_water {
+            if let Some(n) = under.step() {
+                heard.game(n, pos, 0.55, wobble * 0.85);
+            }
+        }
         if settings.survival && !me.in_water && fell > 3.5 {
             me.hurt((fell - 3.0).floor());
         }
@@ -341,6 +379,16 @@ pub fn walk(
     }
     me.pos = pos;
     me.vel = vel;
+    // footsteps, by what's underfoot
+    if me.on_ground && !me.flying && !me.in_water {
+        me.stride += Vec2::new(vel.x, vel.z).length() * dt;
+        if me.stride > if me.sprint { 2.4 } else { 1.9 } {
+            me.stride = 0.0;
+            if let Some(n) = under.step() {
+                heard.game(n, pos, if playing && c.crouch { 0.12 } else { 0.3 }, wobble);
+            }
+        }
+    }
     // health comes back slowly
     if me.health < MAX_HEALTH {
         me.regen += dt;
@@ -369,6 +417,7 @@ pub fn build(
     mut voxels: ResMut<Voxels>,
     mut me: ResMut<Me>,
     herd: Res<crate::creatures::Herd>,
+    mut heard: ResMut<crate::sound::Heard>,
 ) {
     let dt = time.delta_secs();
     let dir = me.forward();
@@ -392,6 +441,8 @@ pub fn build(
         return;
     }
     // breaking
+    let centre = hit.block.as_vec3() + Vec3::splat(0.5);
+    let stuff = crate::sound::material(hit.id);
     if c.break_held {
         let hardness = blocks::block(hit.id).hardness;
         if hardness >= 0.0 {
@@ -404,7 +455,18 @@ pub fn build(
                     voxels.set(hit.block, AIR);
                     me.give(hit.id);
                     me.breaking = None;
+                    if let Some(n) = stuff.breaks() {
+                        heard.game(n, centre, 0.7, 1.0);
+                    }
                 } else {
+                    // a knock now and then while it gives
+                    me.repeat -= dt;
+                    if me.repeat <= 0.0 {
+                        me.repeat = 0.25;
+                        if let Some(n) = stuff.step() {
+                            heard.game(n, centre, 0.4, 0.8);
+                        }
+                    }
                     me.breaking = Some((hit.block, progress));
                 }
             } else {
@@ -412,6 +474,9 @@ pub fn build(
                 if c.break_pressed || me.repeat <= 0.0 {
                     voxels.set(hit.block, AIR);
                     me.repeat = 0.22;
+                    if let Some(n) = stuff.breaks() {
+                        heard.game(n, centre, 0.6, 1.0);
+                    }
                 }
             }
         }
@@ -448,9 +513,12 @@ pub fn build(
         if blocks::shape(id) == Shape::Cross && !blocks::is_opaque(voxels.at(at - IVec3::Y)) {
             return;
         }
-        if voxels.set(at, id) && settings.survival {
-            let s = me.slot;
-            me.counts[s] -= 1;
+        if voxels.set(at, id) {
+            heard.game("place", at.as_vec3() + Vec3::splat(0.5), 0.6, crate::sound::material(id).knock());
+            if settings.survival {
+                let s = me.slot;
+                me.counts[s] -= 1;
+            }
         }
     }
 }
