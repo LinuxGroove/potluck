@@ -153,7 +153,7 @@ fn shot(
                         })
                 };
                 let (cx, cz) = (x.floor() as i32, z.floor() as i32);
-                if let Some((dx, dz)) = (0..=6)
+                if let Some((dx, dz)) = (0..=6i32)
                     .flat_map(|r| (-r..=r).flat_map(move |dx| (-r..=r).map(move |dz| (dx, dz))).filter(move |&(dx, dz)| dx.abs().max(dz.abs()) == r))
                     .find(|&(dx, dz)| clear(cx + dx, cz + dz))
                 {
