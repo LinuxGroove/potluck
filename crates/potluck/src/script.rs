@@ -5,7 +5,7 @@
 //! docs/api.md is the promise that goes with it.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 2), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 2), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -32,6 +32,19 @@ pub const MAX_HANDLERS: usize = 32;
 pub const EVENTS: &[&str] = &["player_joined", "player_left"];
 /// What one creation may keep with `@potluck/store`, counted as JSON.
 pub const STORE_QUOTA: usize = 64 << 10;
+/// Pieces (different ids) one creation may show at once with `@potluck/ui`.
+pub const MAX_PIECES: usize = 8;
+/// Where a piece can go: top right, top left, or above the hotbar.
+pub const PLACES: &[&str] = &["right", "left", "bottom"];
+/// Choices a panel can offer.
+pub const MAX_CHOICES: usize = 4;
+/// Panels waiting on one player's screen, from every creation together.
+pub const MAX_PANELS: usize = 8;
+/// Questions one creation may have waiting for answers, over every player.
+pub const MAX_ASKS: usize = 64;
+/// After a player closes a creation's panel, its questions to them are
+/// answered with nil for this many seconds.
+pub const QUIET: f64 = 10.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum KnobValue {
@@ -89,6 +102,117 @@ pub struct GameShared {
     pub links: Vec<String>,
     pub store: Store,
     pub input: InputState,
+    pub ui: UiState,
+}
+
+/// A line a creation shows on a player's screen (`@potluck/ui`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Piece {
+    pub text: String,
+    /// One of `PLACES`.
+    pub at: String,
+}
+
+/// A question a creation asks one player, and the choices they have.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Panel {
+    pub creation: String,
+    pub ask: u32,
+    pub title: String,
+    pub text: String,
+    pub choices: Vec<String>,
+}
+
+/// What a player's screen should change, for the host to tell them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiChange {
+    Piece { creation: String, id: String, piece: Option<Piece> },
+    /// The panel to show now, or none.
+    Panel(Option<Panel>),
+}
+
+/// What creations show on players' screens.
+#[derive(Default)]
+pub struct UiState {
+    /// (one player, or None for everyone; creation; id): what's shown.
+    pub pieces: BTreeMap<(Option<u32>, String, String), Piece>,
+    changed: Vec<(Option<u32>, String, String)>,
+    /// Each player's panels waiting, the first one on their screen.
+    pub panels: BTreeMap<u32, VecDeque<Panel>>,
+    /// The panel each player was last told about.
+    shown: BTreeMap<u32, u32>,
+    panels_changed: BTreeSet<u32>,
+    /// (player, creation): its questions get nil until then, in world time.
+    quiet: BTreeMap<(u32, String), f64>,
+    /// Players who just arrived, to be shown what's up for everyone.
+    joined: Vec<u32>,
+    next_ask: u32,
+    time: f64,
+}
+
+impl UiState {
+    fn forget_player(&mut self, pid: u32) {
+        self.pieces.retain(|k, _| k.0 != Some(pid));
+        self.changed.retain(|k| k.0 != Some(pid));
+        self.panels.remove(&pid);
+        self.shown.remove(&pid);
+        self.panels_changed.remove(&pid);
+        self.quiet.retain(|k, _| k.0 != pid);
+        self.joined.retain(|p| *p != pid);
+    }
+
+    fn forget_creation(&mut self, creation: &str) {
+        let gone: Vec<_> = self.pieces.keys().filter(|k| k.1 == creation).cloned().collect();
+        for k in gone {
+            self.pieces.remove(&k);
+            self.changed.push(k);
+        }
+        self.forget_panels(creation);
+        self.quiet.retain(|k, _| k.1 != creation);
+    }
+
+    /// Takes a creation's panels off every screen (when it stops or reloads,
+    /// nothing is left to hear the answers).
+    fn forget_panels(&mut self, creation: &str) {
+        for (pid, q) in self.panels.iter_mut() {
+            if q.front().is_some_and(|p| p.creation == creation) {
+                self.panels_changed.insert(*pid);
+            }
+            q.retain(|p| p.creation != creation);
+        }
+    }
+
+    /// What one player sees for a creation's piece: their own, or everyone's.
+    fn seen_by(&self, pid: u32, creation: &str, id: &str) -> Option<Piece> {
+        let k = |who| (who, creation.to_string(), id.to_string());
+        self.pieces.get(&k(Some(pid))).or_else(|| self.pieces.get(&k(None))).cloned()
+    }
+
+    /// Shows a piece (or hides it, with None), to one player or everyone.
+    pub fn set_piece(&mut self, who: Option<u32>, creation: &str, id: &str, piece: Option<Piece>) -> Result<(), String> {
+        let key = (who, creation.to_string(), id.to_string());
+        match piece {
+            Some(p) => {
+                let ids: BTreeSet<&String> = self.pieces.keys().filter(|k| k.1 == creation).map(|k| &k.2).collect();
+                if !ids.contains(&key.2) && ids.len() >= MAX_PIECES {
+                    return Err(format!("a creation can show at most {MAX_PIECES} pieces: ui.hide one first, or show it again with the same id"));
+                }
+                if self.pieces.get(&key) != Some(&p) {
+                    self.pieces.insert(key.clone(), p);
+                    self.changed.push(key);
+                }
+            }
+            None => {
+                // hiding it for everyone hides it for each player too
+                let gone: Vec<_> = self.pieces.keys().filter(|k| k.1 == key.1 && k.2 == key.2 && (who.is_none() || k.0 == who)).cloned().collect();
+                for k in gone {
+                    self.pieces.remove(&k);
+                    self.changed.push(k);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Which creations' actions players hold, and which creation has each
@@ -215,6 +339,10 @@ struct Waiting {
     inputs: Vec<(String, Function)>,
     /// (player, action): pressed since the last tick.
     presses: Vec<(u32, String)>,
+    /// `ui.ask` questions waiting: (ask, player, what to call).
+    asks: Vec<(u32, u32, Function)>,
+    /// (ask, player, choice from 0): answers to give on the next tick.
+    answers: Vec<(u32, u32, Option<u32>)>,
 }
 
 struct Timer {
@@ -631,6 +759,114 @@ impl Vm {
                     })?,
                 )?;
             }
+            // ui 0.1: lines on players' screens, and questions with choices
+            let ui = lua.create_table()?;
+            {
+                let who_of = |v: &Value| -> mlua::Result<Option<u32>> { if v.is_nil() { Ok(None) } else { pid_of(v).map(Some) } };
+                let id_ok = |id: &str| -> mlua::Result<()> {
+                    if id.is_empty() || id.chars().count() > 32 {
+                        return Err(bad("a piece's id is 1 to 32 letters"));
+                    }
+                    Ok(())
+                };
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                ui.set(
+                    "show",
+                    lua.create_function(move |_, (player, id, text, opts): (Value, String, String, Option<Table>)| {
+                        let who = who_of(&player)?;
+                        id_ok(&id)?;
+                        let at = match &opts {
+                            Some(o) => o.get::<Option<String>>("at")?.unwrap_or_else(|| "right".into()),
+                            None => "right".into(),
+                        };
+                        if !PLACES.contains(&at.as_str()) {
+                            return Err(bad(format!("a piece can go at: {}", PLACES.join(", "))));
+                        }
+                        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(60).collect();
+                        let piece = (!text.is_empty()).then_some(Piece { text, at });
+                        sh.lock().unwrap().ui.set_piece(who, &me, &id, piece).map_err(bad)
+                    })?,
+                )?;
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                ui.set(
+                    "hide",
+                    lua.create_function(move |_, (player, id): (Value, String)| {
+                        let who = who_of(&player)?;
+                        sh.lock().unwrap().ui.set_piece(who, &me, &id, None).map_err(bad)
+                    })?,
+                )?;
+                let (sh, w, me, name) = (shared.clone(), waiting.clone(), creation.id.clone(), creation.manifest.name.clone());
+                ui.set(
+                    "ask",
+                    lua.create_function(move |_, (player, spec, f): (Value, Table, Function)| {
+                        let pid = pid_of(&player)?;
+                        let line = |s: String, n: usize| -> String { s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(n).collect() };
+                        let title = line(spec.get::<Option<String>>("title")?.unwrap_or_else(|| name.clone()), 40);
+                        // the text keeps its line breaks
+                        let text: String = spec.get::<Option<String>>("text")?.unwrap_or_default().trim().chars().filter(|c| *c == '\n' || !c.is_control()).take(300).collect();
+                        let mut choices = vec![];
+                        if let Some(list) = spec.get::<Option<Table>>("choices")? {
+                            for c in list.sequence_values::<String>() {
+                                let c = line(c?, 30);
+                                if !c.is_empty() {
+                                    choices.push(c);
+                                }
+                            }
+                        }
+                        if choices.len() > MAX_CHOICES {
+                            return Err(bad(format!("a panel has at most {MAX_CHOICES} choices")));
+                        }
+                        if choices.is_empty() {
+                            choices.push("OK".into());
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        let ui = &mut sh.ui;
+                        let mut w = w.lock().unwrap();
+                        if w.asks.len() >= MAX_ASKS {
+                            return Err(bad(format!("a creation can have at most {MAX_ASKS} questions waiting for answers")));
+                        }
+                        ui.next_ask += 1;
+                        let ask = ui.next_ask;
+                        w.asks.push((ask, pid, f));
+                        let q = ui.panels.entry(pid).or_default();
+                        // one question to a player at a time: a new one takes the old one's place
+                        if let Some(i) = q.iter().position(|p| p.creation == me) {
+                            let old = q.remove(i).unwrap();
+                            w.answers.push((old.ask, pid, None));
+                            if i == 0 {
+                                ui.panels_changed.insert(pid);
+                            }
+                        }
+                        let quiet = ui.quiet.get(&(pid, me.clone())).is_some_and(|t| *t > ui.time);
+                        if quiet || q.len() >= MAX_PANELS {
+                            w.answers.push((ask, pid, None));
+                        } else {
+                            q.push_back(Panel { creation: me.clone(), ask, title, text, choices });
+                            if q.len() == 1 {
+                                ui.panels_changed.insert(pid);
+                            }
+                        }
+                        Ok(ask)
+                    })?,
+                )?;
+                let (sh, w, me) = (shared.clone(), waiting.clone(), creation.id.clone());
+                ui.set(
+                    "close",
+                    lua.create_function(move |_, player: Value| {
+                        let pid = pid_of(&player)?;
+                        let mut sh = sh.lock().unwrap();
+                        let ui = &mut sh.ui;
+                        let Some(q) = ui.panels.get_mut(&pid) else { return Ok(false) };
+                        let Some(i) = q.iter().position(|p| p.creation == me) else { return Ok(false) };
+                        let old = q.remove(i).unwrap();
+                        if i == 0 {
+                            ui.panels_changed.insert(pid);
+                        }
+                        w.lock().unwrap().asks.retain(|a| a.0 != old.ask);
+                        Ok(true)
+                    })?,
+                )?;
+            }
             // store 0.1: what this creation keeps in this world
             let store = lua.create_table()?;
             {
@@ -702,6 +938,7 @@ impl Vm {
                         "game" => Value::Table(g2.clone()),
                         "store" => Value::Table(store.clone()),
                         "input" => Value::Table(input.clone()),
+                        "ui" => Value::Table(ui.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -1145,6 +1382,8 @@ impl Scripts {
         if let Some(old) = self.vms.remove(&creation.id) {
             let mem = old.memories();
             vm.restore(herd, &creation.id, &mem);
+            // its questions' answers went with the old sandbox; what it shows stays
+            self.shared.lock().unwrap().ui.forget_panels(&creation.id);
         }
         // creatures of kinds that are gone go too; the rest take the new look
         herd.bodies.retain(|_, b| b.creation != creation.id || vm.kinds.iter().any(|k| k.name == b.kind));
@@ -1159,7 +1398,10 @@ impl Scripts {
 
     pub fn stop(&mut self, id: &str, herd: &mut Herd) {
         self.vms.remove(id);
-        self.shared.lock().unwrap().input.forget_creation(id);
+        let mut sh = self.shared.lock().unwrap();
+        sh.input.forget_creation(id);
+        sh.ui.forget_creation(id);
+        drop(sh);
         herd.bodies.retain(|_, b| b.creation != id);
     }
 
@@ -1191,6 +1433,67 @@ impl Scripts {
         changed.sort();
         changed.dedup();
         changed.into_iter().map(|p| (p, sh.input.focus.get(&p).cloned())).collect()
+    }
+
+    /// A player answered a creation's question: a choice (from 0), or None
+    /// if they closed it. Its function runs on the next tick.
+    pub fn answer(&mut self, player: u32, ask: u32, choice: Option<u32>) {
+        let (creation, choice) = {
+            let mut sh = self.shared.lock().unwrap();
+            let ui = &mut sh.ui;
+            let Some(q) = ui.panels.get_mut(&player) else { return };
+            let Some(i) = q.iter().position(|p| p.ask == ask) else { return };
+            let p = q.remove(i).unwrap();
+            if i == 0 {
+                ui.panels_changed.insert(player);
+            }
+            let choice = choice.filter(|c| (*c as usize) < p.choices.len());
+            if choice.is_none() {
+                // closed: leave them be for a while
+                ui.quiet.insert((player, p.creation.clone()), ui.time + QUIET);
+            }
+            (p.creation, choice)
+        };
+        if let Some(vm) = self.vms.get(&creation) {
+            vm.waiting.lock().unwrap().answers.push((ask, player, choice));
+        }
+    }
+
+    /// What players' screens should change since last asked: pieces shown
+    /// or hidden, and the panel each should see now. `players` is who's here.
+    pub fn ui_changes(&mut self, players: &[u32]) -> Vec<(u32, UiChange)> {
+        let mut sh = self.shared.lock().unwrap();
+        let ui = &mut sh.ui;
+        let mut out = vec![];
+        let mut told: BTreeSet<(u32, String, String)> = BTreeSet::new();
+        let mut keys: Vec<(u32, String, String)> = vec![];
+        for (who, c, id) in std::mem::take(&mut ui.changed) {
+            match who {
+                Some(p) => keys.push((p, c, id)),
+                None => keys.extend(players.iter().map(|p| (*p, c.clone(), id.clone()))),
+            }
+        }
+        // newcomers see what's up for everyone
+        for p in std::mem::take(&mut ui.joined) {
+            keys.extend(ui.pieces.keys().filter(|k| k.0.is_none()).map(|k| (p, k.1.clone(), k.2.clone())));
+        }
+        for k in keys {
+            if players.contains(&k.0) && told.insert(k.clone()) {
+                let piece = ui.seen_by(k.0, &k.1, &k.2);
+                out.push((k.0, UiChange::Piece { creation: k.1, id: k.2, piece }));
+            }
+        }
+        for pid in std::mem::take(&mut ui.panels_changed) {
+            let front = ui.panels.get(&pid).and_then(|q| q.front()).cloned();
+            if front.as_ref().map(|p| p.ask) != ui.shown.get(&pid).copied() {
+                match &front {
+                    Some(p) => ui.shown.insert(pid, p.ask),
+                    None => ui.shown.remove(&pid),
+                };
+                out.push((pid, UiChange::Panel(front)));
+            }
+        }
+        out
     }
 
     /// Calls a creature's handler for something a player did to it.
@@ -1234,8 +1537,14 @@ impl Scripts {
         let joined: Vec<PlayerInfo> = players.iter().filter(|p| !self.seen.iter().any(|q| q.id == p.id)).cloned().collect();
         let left: Vec<PlayerInfo> = self.seen.iter().filter(|q| !players.iter().any(|p| p.id == q.id)).cloned().collect();
         self.seen = players.clone();
-        for p in &left {
-            self.shared.lock().unwrap().input.forget_player(p.id);
+        {
+            let mut sh = self.shared.lock().unwrap();
+            for p in &left {
+                sh.input.forget_player(p.id);
+                sh.ui.forget_player(p.id);
+            }
+            sh.ui.joined.extend(joined.iter().map(|p| p.id));
+            sh.ui.time = time;
         }
         for (id, vm) in self.vms.iter_mut() {
             if vm.paused {
@@ -1266,6 +1575,12 @@ impl Scripts {
             }
             let mut log = Vec::new();
             let waiting = vm.waiting.clone();
+            if !left.is_empty() {
+                // questions to players who went get no answer
+                let mut w = waiting.lock().unwrap();
+                w.asks.retain(|a| !left.iter().any(|p| p.id == a.1));
+                w.answers.retain(|a| !left.iter().any(|p| p.id == a.1));
+            }
             let r = vm.session(voxels, herd, &players, &mut self.out, id, time, &mut log, |lua, _| {
                 // who came and went
                 if !joined.is_empty() || !left.is_empty() {
@@ -1277,6 +1592,17 @@ impl Scripts {
                             }
                         }
                     }
+                }
+                // answers to its questions: the choice, from 1, or nil
+                let answers = std::mem::take(&mut waiting.lock().unwrap().answers);
+                for (ask, pid, choice) in answers {
+                    let f = {
+                        let mut w = waiting.lock().unwrap();
+                        let Some(i) = w.asks.iter().position(|a| a.0 == ask) else { continue };
+                        w.asks.remove(i).2
+                    };
+                    let Some(p) = players.iter().find(|p| p.id == pid) else { continue };
+                    f.call::<()>((player_table(lua, p)?, choice.map(|c| c + 1)))?;
                 }
                 // actions players pressed
                 let presses = std::mem::take(&mut waiting.lock().unwrap().presses);
