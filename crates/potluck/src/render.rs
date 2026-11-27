@@ -337,7 +337,9 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
                 ..default()
             });
         }
-        if on("contact") {
+        // contact shadows cost High half a millisecond for nothing anyone
+        // could see on the p16g3, so only Ultra without ray tracing keeps them
+        if ultra && on("contact") {
             commands.entity(cam).insert(ContactShadows::default());
         }
         if on("haze") {
@@ -379,7 +381,7 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         ));
     }
     let mut sun = commands.spawn((
-        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high && on("contact"), illuminance: lux::RAW_SUNLIGHT, ..default() },
+        DirectionalLight { shadow_maps_enabled: !rt.0, contact_shadows_enabled: high && ultra && on("contact"), illuminance: lux::RAW_SUNLIGHT, ..default() },
         cascades,
         SunDisk::EARTH,
         Transform::default(),
