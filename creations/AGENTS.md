@@ -61,13 +61,13 @@ end
 local carried = world.pockets(player)     -- { ["Oak log"] = 3, Sand = 2 }, or nil in creative
 ```
 
-- In survival a player carries what's in their hotbar, nine kinds of block at most. In creative they have every block, and nothing is counted.
-- `world.pockets(player)` is what they carry, by block name, or nil for a player in creative.
-- `world.has(player, block)` is how many of that block they carry (`math.huge` in creative).
-- `world.take(player, block, n?)` takes `n` (1 if left out) if they carry that many, and returns whether it did. In creative it returns true and takes nothing.
-- `world.give(player, block, n?)` puts `n` in their hotbar and returns how many it gave: 0 if they've nine other kinds already. In creative it returns `n` and gives nothing.
+- In survival a player carries things in 36 slots: the hotbar's nine and a backpack of 27 more. A slot holds up to 99 of a block, or one tool or sword. In creative they have every block, and nothing is counted.
+- `world.pockets(player)` is what they carry, by name, or nil for a player in creative.
+- `world.has(player, thing)` is how many of that block or item they carry (`math.huge` in creative).
+- `world.take(player, thing, n?)` takes `n` (1 if left out) if they carry that many, and returns whether it did. It takes from the backpack first, so what's in hand lasts. In creative it returns true and takes nothing.
+- `world.give(player, thing, n?)` puts up to `n` in their pockets and returns how many it gave, which is fewer when they haven't room. It tops up what they carry first, then fills empty slots, the hotbar before the backpack. In creative it returns `n` and gives nothing.
 - `n` is a whole number from 1 to 64. Players can't carry air, water or bedrock.
-- A player's blocks live on their own game, so what a creation sees is what their game last said, a moment ago. A player nobody's heard from yet carries nothing.
+- A player's pockets live on their own game, so what a creation sees is what their game last said, a moment ago. A player nobody's heard from yet carries nothing.
 
 Night and day, lights, and players' health (new in 0.4), for things that come out after dark:
 
@@ -129,7 +129,7 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Some blocks are things to hold, not to build with: the pickaxes, axes, shovels and swords. They're carried, given and taken like any block, but never put down, and `world.set_block` with one is an error.
+- Items are things to hold, not blocks: the pickaxes, axes, shovels and swords. They're carried, given and taken by name like blocks, one to a slot, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
@@ -252,7 +252,7 @@ print(store.used() .. " bytes of 65536")
 
 - `store.get(key)` is the value kept under `key`, or nil. `store.set(key, value)` keeps it; nil forgets it. Keys are 1 to 64 letters. Values are numbers, strings, true or false, vectors and tables of those (six deep); functions and creatures aren't kept.
 - `store.keys()` lists the keys; `store.used()` is the bytes they take as JSON. Each creation has 64 KB in each world, and `store.set` fails with an error past it.
-- Each world keeps its own: a server saves it with the world (`store.json`), and a world you play in the game keeps it while it's open.
+- Each world keeps its own: a server saves it with the world (`store.json`), and so does each world a player keeps in the game (Play alone's list). A friend's world keeps it on the friend's game.
 
 ### `@potluck/input` 0.1
 
@@ -465,7 +465,7 @@ end)
 ## Rules of the sandbox
 
 - No files, no network, no other creation's memory. `os`, `io` and loading bytecode aren't there.
-- Each creation gets 32 MB and a slice of each tick (15 ms for its timers, events and creatures together); a loop that never ends is stopped with an error. A client half gets 16 MB and 4 ms a frame on its player's game.
+- Each creation gets 32 MB and a slice of each tick (15 ms for its timers, events and creatures together, counting only while its code runs, not while the computer is busy with something else); a loop that never ends is stopped with an error. A client half gets 16 MB and 4 ms a frame on its player's game.
 - At most 64 creatures and 16 kinds per creation.
 - Creations can't shake, roll or zoom the player's camera, and can't cover the game's own menus: their lines and questions sit under them.
 
@@ -474,6 +474,17 @@ end)
 Run the world (alone is fine), stand near your creation, save the file, and watch it change. Look inside it (L, or hold Y on a pad) for its log and any error, and for how it's doing against its budgets: how long its ticks take of their 15 ms, on average and at most lately, and its memory of 32 MB.
 
 To check it keeps doing what it should as you change it, give it tests of its own in `test.luau` (see `@potluck/test`) and run them with the dev bridge's `test` tool or `potluck-server --test=<its folder>`.
+
+### The type checker
+
+Each time you save one of your own creations, the game runs Luau's type checker over its files with the API's types (`types/potluck.d.luau`), and Look inside lists what it found under **The type checker spotted**, with the file and line. It speaks up only when it's sure something is wrong:
+
+- a name a module doesn't have (`world.spwan`, with the name it probably should be);
+- a global that isn't one (`pritn`);
+- a call given too many or too few values;
+- a plain value of the wrong kind: text where a number goes, or a word an option doesn't take (`at = "middle"`).
+
+Everything it can only guess at stays quiet, so no hints doesn't mean the code is right; tests do that. `--!strict` at the top changes nothing: it checks every file as strictly and still says only what it's sure of. `--!nocheck` on a file's first line leaves that file out, if it's ever wrong. The dev bridge's `check` tool and `potluck-server --typecheck=<its folder>` (or an id, or `all`; it ends with 1 if it found anything, for scripts) run the same checks.
 
 ### With a coding helper: the dev bridge
 
@@ -485,6 +496,7 @@ A coding helper on the same computer can work with the game while you play: turn
 - `log`: what it printed, its last error, and its client half's lines.
 - `run`: a few lines of Luau inside a running creation, as if they were part of its code (`return #require("@potluck/world").creatures()`), with what they printed and returned. Its files' locals aren't reachable, and it has one tick's time.
 - `test`: runs its own tests (`test.luau`, as saved in its folder) in a copy of the world, and says which cases passed and why the others failed, with the line and what it printed. Nothing it does reaches the world.
+- `check`: runs the type checker over its files as saved, and lists what it's sure is wrong, with the file and line (see The type checker above).
 - `tweak`: turns one of its knobs, as Tweak does.
 - `look_around`: where you are and what's near you: the block you look at, creatures with their creation, kind, rider and the fields their code keeps, other players, the blocks about and the time of day.
 - `screenshot`: the screen as it is, as a picture.

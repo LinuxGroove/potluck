@@ -6,6 +6,7 @@ pub mod behaviours;
 pub mod blocks;
 pub mod bridge;
 pub mod chat;
+pub mod check;
 pub mod creations;
 pub mod creatures;
 pub mod demo;
@@ -14,6 +15,7 @@ pub mod green;
 pub mod halves;
 pub mod hosting;
 pub mod input;
+pub mod items;
 pub mod keyboard;
 pub mod made;
 pub mod map;
@@ -36,6 +38,7 @@ pub mod transport;
 pub mod ui;
 pub mod waypoints;
 pub mod world;
+pub mod worlds;
 
 use bevy::prelude::*;
 
@@ -70,6 +73,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<halves::Halves>()
         .init_resource::<chat::Chat>()
         .init_resource::<photos::Photos>()
+        .init_resource::<check::Hints>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
@@ -86,6 +90,11 @@ pub fn sim(app: &mut App, seed: u32) {
     // the dev bridge, for coding helpers: where there's a screen and a player
     if app.is_plugin_added::<bevy::window::WindowPlugin>() {
         bridge::add(app);
+        // and type checking the player's own creations as they're made
+        app.add_systems(Update, check::keep_checking);
+        // and the worlds the player keeps, saved as they play
+        app.init_resource::<worlds::Current>()
+            .add_systems(Update, (worlds::acts.after(chat::acts).before(game::do_acts), worlds::autosave.after(Sim)));
     }
 }
 

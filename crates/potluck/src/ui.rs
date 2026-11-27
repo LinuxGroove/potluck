@@ -80,12 +80,28 @@ pub enum Screen {
     Friend(String),
     /// A parent's PIN before a younger player's new friend; then the act.
     ParentOk(Box<Act>),
+    /// The worlds the player keeps, to play (or host, when true).
+    Worlds(bool),
+    /// One kept world: rename it or delete it.
+    Forget(String),
+    /// What the player carries: the backpack and the hotbar (survival).
+    Backpack,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     Resume,
+    /// Into the world as it is (the title's own, which isn't kept): `--play`.
     PlayAlone,
+    /// The kept worlds, to play alone or (true) to host for friends.
+    OpenWorlds(bool),
+    /// A new kept world, played (or hosted) straight away.
+    NewWorld(bool),
+    PlayWorld(String, bool),
+    /// A kept world's own page: rename it, delete it.
+    OpenForget(String),
+    ForgetWorld(String),
+    RenameWorld(String),
     Host,
     JoinAddress(String),
     OpenJoin,
@@ -178,8 +194,7 @@ pub enum Act {
     Say(String),
     /// Share where you are in chat.
     SharePlace,
-    /// Every block to choose from (creative); in survival, a word on where
-    /// blocks come from.
+    /// Every block to choose from (creative); in survival, the backpack.
     OpenBlocks,
     /// Put a block in your hand from Blocks.
     Hold(blocks::BlockId),
@@ -209,6 +224,11 @@ pub enum Act {
     ParentOk(String),
     /// An act a parent said yes to, done now.
     Approved(Box<Act>),
+    /// On the backpack: choose a slot to move, or where the chosen one
+    /// goes (true for half of it).
+    Slot(usize, bool),
+    /// Put the backpack in order.
+    Tidy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +254,9 @@ pub enum Kind {
     Choice { act: Act, value: String },
     /// A block on the Blocks sheet, as its picture; A puts it in your hand.
     Tile(blocks::BlockId),
+    /// A slot of the pockets on the backpack (`items::POCKETS`): A moves
+    /// what's in it, X half of it.
+    Slot(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +304,13 @@ pub struct Focus {
     pub link: Option<(String, String)>,
     /// Servers listed on the market.
     pub servers: Vec<crate::share::Listed>,
+    /// The kept worlds, as the Worlds screen lists them.
+    pub worlds: Vec<crate::worlds::Kept>,
+    /// What the player carries, as the backpack shows it (`game::pockets`
+    /// copies it in while it's open).
+    pub pockets: crate::items::Slots,
+    /// The slot being moved on the backpack, and whether only half of it.
+    pub moving: Option<(usize, bool)>,
     /// Who this device plays as on the market, once asked.
     pub account: Option<crate::share::Account>,
     /// The jam running now, once the market's said.
@@ -317,7 +347,7 @@ pub struct Focus {
     /// The player's friends, once the market's said.
     pub friends: Option<crate::share::Friends>,
     /// Friends' worlds open now, for Join a friend's world.
-    pub worlds: Vec<crate::share::OpenWorld>,
+    pub open_worlds: Vec<crate::share::OpenWorld>,
     /// This world, while it's shared from home.
     pub shared: Option<SharedWorld>,
 }
@@ -355,6 +385,9 @@ impl Default for Focus {
             suggestions: vec![],
             link: None,
             servers: vec![],
+            worlds: vec![],
+            pockets: Default::default(),
+            moving: None,
             account: None,
             jam: None,
             rebinding: None,
@@ -372,7 +405,7 @@ impl Default for Focus {
             first: 0,
             qr: None,
             friends: None,
-            worlds: vec![],
+            open_worlds: vec![],
             shared: None,
         }
     }
@@ -414,7 +447,7 @@ pub fn shelves(in_world: bool) -> &'static [&'static str] {
 pub const BLOCK_PAGES: &[&str] = &["Building", "Nature", "Things", "From creations"];
 
 /// The blocks on a page of Blocks: the game's own by what they're for, or
-/// those creations here made. Never air, bedrock or what's only held.
+/// those creations here made. Never air or bedrock.
 pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
     use blocks::Shape;
     if page == "From creations" {
@@ -424,7 +457,7 @@ pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
     (1..blocks::BLOCKS.len() as blocks::BlockId)
         .filter(|&id| {
             let b = blocks::block(id);
-            b.shape != Shape::Air && !b.item && id != blocks::BEDROCK
+            b.shape != Shape::Air && id != blocks::BEDROCK
         })
         .filter(|&id| {
             let b = blocks::block(id);
@@ -515,8 +548,8 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             "Potluck".into(),
             vec![
                 note("A block world where everything is made by someone you know."),
-                button("Play alone", Act::PlayAlone),
-                button("Host a world for friends", Act::Host),
+                button("Play alone", Act::OpenWorlds(false)),
+                button("Host a world for friends", Act::OpenWorlds(true)),
                 button("Join a friend's world", Act::OpenJoin),
                 button("Friends", Act::OpenFriends),
                 button("Load a creation from a code", Act::OpenCode),
@@ -766,7 +799,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Join => {
             let mut v = vec![];
             if settings.join_worlds {
-                for w in &focus.worlds {
+                for w in &focus.open_worlds {
                     let here = if w.players == 1 { "1 here".to_string() } else { format!("{} here", w.players) };
                     let label = if w.invited { format!("{} invited you: {}  ·  {here}", w.by, w.name) } else { format!("{}  ·  {here}", w.name) };
                     v.push(button(label, Act::JoinCode(w.code.clone())));
@@ -832,6 +865,43 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::Back));
             ("Servers".into(), v)
         }
+        Screen::Worlds(host) => {
+            let host = *host;
+            let mut v = vec![];
+            if host {
+                v.push(note("Friends on this network can join, or anyone you give the address to."));
+            }
+            v.push(button("A new world", Act::NewWorld(host)));
+            for k in &focus.worlds {
+                v.push(button(format!("{}  \u{b7}  {}", k.name, crate::worlds::ago(k.played)), Act::PlayWorld(k.id.clone(), host)));
+            }
+            if !focus.worlds.is_empty() {
+                v.push(note("Each world saves as you play."));
+                v.push(button("Rename or delete a world", Act::OpenForget(String::new())));
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::Back));
+            ((if host { "Host a world" } else { "Your worlds" }).into(), v)
+        }
+        Screen::Forget(id) if id.is_empty() => {
+            let mut v: Vec<Item> = focus.worlds.iter().map(|k| button(k.name.clone(), Act::OpenForget(k.id.clone()))).collect();
+            v.push(button("Back", Act::OpenWorlds(false)));
+            ("Which world?".into(), v)
+        }
+        Screen::Forget(id) => {
+            let Some(k) = focus.worlds.iter().find(|k| k.id == *id) else { return ("Gone".into(), vec![button("Back", Act::OpenWorlds(false))]) };
+            let name = focus.fields.get("world_name").cloned().unwrap_or_else(|| k.name.clone());
+            let mut v = vec![field("Name", "world_name", name), button("Rename it", Act::RenameWorld(id.clone()))];
+            v.push(note("Deleting a world is for good: everything built in it goes too."));
+            v.push(button(format!("Delete {} for good", k.name), Act::ForgetWorld(id.clone())));
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenWorlds(false)));
+            (k.name.clone(), v)
+        }
         Screen::Code => {
             let code = focus.fields.get("code").cloned().unwrap_or_default();
             let mut v = vec![note("Codes are 8 letters and numbers, like N8GT-3WFA.")];
@@ -879,6 +949,20 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 }));
             }
             ("Creations".into(), v)
+        }
+        Screen::Backpack => {
+            use crate::items::{HOTBAR, POCKETS};
+            // the backpack's rows, then the hotbar, as they're drawn
+            let order = (HOTBAR..POCKETS).chain(0..HOTBAR);
+            let mut v: Vec<Item> = order
+                .map(|i| {
+                    let s = focus.pockets.0[i];
+                    let label = if s.empty() { String::new() } else { format!("{} \u{00d7}{}", crate::items::name(s.thing), s.count) };
+                    Item { label, kind: Kind::Slot(i) }
+                })
+                .collect();
+            v.push(button("Tidy the backpack", Act::Tidy));
+            ("Backpack".into(), v)
         }
         Screen::Blocks => {
             let page = pages(focus, info).map(|(list, n)| list[n]).unwrap_or("Building");
@@ -1016,7 +1100,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                         v.push(note("No friends here yet."));
                     }
                     for p in &f.friends {
-                        let playing = focus.worlds.iter().any(|w| w.handle == p.handle);
+                        let playing = focus.open_worlds.iter().any(|w| w.handle == p.handle);
                         v.push(button(if playing { format!("{}  ·  playing now", p.name) } else { p.name.clone() }, Act::OpenFriend(p.handle.clone())));
                     }
                     for p in &f.asked {
@@ -1037,7 +1121,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Friend(handle) => {
             let name = focus.friends.as_ref().and_then(|f| f.friends.iter().find(|p| p.handle == *handle)).map(|p| p.name.clone()).unwrap_or_else(|| handle.clone());
             let mut v = vec![note(format!("{name} (@{handle})"))];
-            if let Some(w) = focus.worlds.iter().find(|w| w.handle == *handle).filter(|_| settings.join_worlds) {
+            if let Some(w) = focus.open_worlds.iter().find(|w| w.handle == *handle).filter(|_| settings.join_worlds) {
                 v.push(button(format!("Join {}", w.name), Act::JoinCode(w.code.clone())));
             }
             v.push(button("Remove friend", Act::RemoveFriend(handle.clone())));
@@ -1299,7 +1383,7 @@ pub fn menu_input(
     }
     // small buttons side by side: left and right go along them too
     let chip = matches!(items.get(focus.sel).map(|i| &i.kind), Some(Kind::Chip(_)));
-    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_) | Kind::Tile(_))) {
+    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_) | Kind::Tile(_) | Kind::Slot(_))) {
         // cards in rows: left and right along a row, up and down a row at a time
         let cols = focus.cols.max(1) as i32;
         let last = selectable.len() as i32 - 1;
@@ -1345,6 +1429,12 @@ pub fn menu_input(
             if accept {
                 heard.click();
                 acts.0.push(Act::Hold(*id));
+            }
+        }
+        Kind::Slot(i) => {
+            if accept || interact {
+                heard.click();
+                acts.0.push(Act::Slot(*i, interact && !accept));
             }
         }
         Kind::Choice { act, .. } => {
@@ -1411,7 +1501,7 @@ pub fn menu_input(
         _ => {}
     }
     // the key that opened Blocks closes it
-    let shut = focus.screen == Screen::Blocks && c.blocks;
+    let shut = matches!(focus.screen, Screen::Blocks | Screen::Backpack) && c.blocks;
     if (c.back || shut || prompt == Some(MenuPrompt::Back)) && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
         let back = match &focus.screen {
             Screen::Title => None,
@@ -1422,6 +1512,12 @@ pub fn menu_input(
             Screen::Friend(_) | Screen::ParentOk(_) => Some(Act::OpenFriends),
             Screen::Panel => Some(Act::Answer(None)),
             Screen::Map | Screen::Chat | Screen::Blocks => Some(Act::Resume),
+            // putting back what was being moved, then away
+            Screen::Backpack if focus.moving.is_some() && !shut => {
+                focus.moving = None;
+                None
+            }
+            Screen::Backpack => Some(Act::Resume),
             Screen::Waypoint(_) | Screen::Shared(_) => Some(Act::OpenMap),
             _ => Some(Act::Back),
         };
@@ -1726,15 +1822,17 @@ pub fn update_hud(
         *v = if show { Visibility::Inherited } else { Visibility::Hidden };
     }
     for (s, mut img, mut border) in &mut slots {
-        let id = me.hotbar[s.0];
-        let empty = settings.survival && me.counts[s.0] == 0;
-        img.image = if empty { Handle::default() } else { atlas.icons.get(blocks::block(id).faces[1]).cloned().unwrap_or_default() };
+        let slot = me.pockets.0[s.0];
+        let empty = settings.survival && slot.empty() || slot.thing == 0;
+        img.image = if empty { Handle::default() } else { atlas.icons.get(crate::items::icon(slot.thing)).cloned().unwrap_or_default() };
         img.color = if empty { Color::NONE } else { Color::WHITE };
         *border = BorderColor::all(if s.0 == me.slot { Color::srgb(1.0, 1.0, 1.0) } else { Color::srgba(0.0, 0.0, 0.0, 0.5) });
     }
     for (s, mut t) in &mut texts.p0() {
-        let n = me.counts[s.0];
-        t.0 = if settings.survival && n > 0 { n.to_string() } else { String::new() };
+        let n = me.pockets.0[s.0].count;
+        // one of a thing that only comes one to a slot (a tool) needs no number
+        let one = n == 1 && crate::items::stack(me.pockets.0[s.0].thing) == 1;
+        t.0 = if settings.survival && n > 0 && !one { n.to_string() } else { String::new() };
     }
     // what pressing would do
     let pad = c.pad;

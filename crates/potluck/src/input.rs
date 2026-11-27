@@ -283,13 +283,8 @@ pub fn read(
             }
         } else {
             if c.y_held > 0.0 && c.y_held < 0.35 {
-                // a tap: every block in creative; survival has only what
-                // you carry, so there it looks inside too
-                if settings.survival {
-                    c.look_inside = true;
-                } else {
-                    c.blocks = true;
-                }
+                // a tap: every block in creative, the backpack in survival
+                c.blocks = true;
             }
             c.y_held = 0.0;
         }
@@ -373,7 +368,7 @@ pub fn glyph(pad: bool, action: &str) -> &'static str {
         (true, "break") => "RT",
         (true, "place") => "LT",
         (true, "interact") => "X",
-        (true, "inside") => "Y",
+        (true, "inside") => "Hold Y",
         (true, "blocks") => "Y",
         (true, "jump") => "A",
         (true, "back") => "B",

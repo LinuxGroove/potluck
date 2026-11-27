@@ -30,7 +30,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -122,7 +122,7 @@ pub enum Msg {
     Net(crate::script::Note),
     /// Blocks creations gave you or took (`world.give`, `world.take`): the
     /// host's count of these so far, and (block, more or fewer).
-    Pockets { seq: u32, changes: Vec<(crate::blocks::BlockId, i32)> },
+    Pockets { seq: u32, changes: Vec<(crate::items::Thing, i32)> },
     /// A creation hurt (less than 0) or healed (more) you.
     Health(f32),
     /// How fast you heal by yourself now (1 as usual, 0 not at all).
@@ -132,7 +132,7 @@ pub enum Msg {
     HurtTo(f32, f32),
     /// How much faster each thing held digs each kind of block now
     /// (`world.digging`): all of it, in the order of `sound::DIG_KINDS`.
-    Digging(Vec<(crate::blocks::BlockId, [f32; 5])>),
+    Digging(Vec<(crate::items::Thing, [f32; 5])>),
     /// What a player asks to say in chat (to the host).
     Say(crate::chat::Say),
     /// Lines of chat, as the host keeps them (from the host).
@@ -568,7 +568,7 @@ impl Net {
     pub fn broadcast_toast(&mut self, t: &str) {
         self.pending.push(Msg::Toast(t.to_string()));
     }
-    pub fn broadcast_digging(&mut self, digging: Vec<(crate::blocks::BlockId, [f32; 5])>) {
+    pub fn broadcast_digging(&mut self, digging: Vec<(crate::items::Thing, [f32; 5])>) {
         self.pending.push(Msg::Digging(digging));
     }
     pub fn send_creation(&self, c: &Creation) {
@@ -917,7 +917,7 @@ impl Net {
     }
 
     /// A sound for one player to hear.
-    pub fn send_pockets(&self, pid: u32, seq: u32, changes: Vec<(crate::blocks::BlockId, i32)>) {
+    pub fn send_pockets(&self, pid: u32, seq: u32, changes: Vec<(crate::items::Thing, i32)>) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
                 let _ = o.send(frame_msg(&Msg::Pockets { seq, changes }));

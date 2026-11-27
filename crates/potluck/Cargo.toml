@@ -26,6 +26,16 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # sharing a world from home: QUIC dialled by key, through NATs, with our relay as the fallback
 iroh = "1.5"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+# type checking creations as they're made: Luau's own checker, in Rust (MIT)
+luau-analysis = "=0.739.0"
+luau-common = "=0.739.0"
+luau-config = "=0.739.0"
+luau-syntax = "=0.739.0"
+strsim = "0.11"
+
+# how long a creation's code really ran, not counting time the machine gave to others
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 # Ultra lighting ray traced with Bevy's Solari, on graphics cards that can

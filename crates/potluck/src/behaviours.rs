@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use mlua::{Table, Value};
 
-use crate::blocks::{self, BlockId};
+use crate::items::Thing;
 use crate::creatures::{Body, Herd};
 use crate::noise::Rng;
 use crate::script::{bad, KindDef, PlayerInfo};
@@ -27,8 +27,8 @@ const NEAR: f32 = 2.2;
 pub struct Behaviours {
     /// Wanders about its home when it has nothing else to do.
     pub wander: bool,
-    /// Blocks it follows a player holding, from `FOOD_REACH` away.
-    pub follow_food: Vec<BlockId>,
+    /// Things it follows a player holding, from `FOOD_REACH` away.
+    pub follow_food: Vec<Thing>,
     /// Seconds it follows whoever used it.
     pub follow_when_used: f32,
     /// How far it runs from whoever hit it.
@@ -88,7 +88,7 @@ pub fn parse(t: &Table, own: &crate::sound::Own) -> mlua::Result<Behaviours> {
     };
     let mut follow_food = Vec::new();
     for n in names("follow_food")? {
-        follow_food.push(blocks::by_name(&n).ok_or_else(|| bad(format!("follow_food: there's no block called \"{n}\"")))?);
+        follow_food.push(crate::items::by_name(&n).ok_or_else(|| bad(format!("follow_food: there's nothing called \"{n}\"")))?);
     }
     let sound = match t.get::<Option<String>>("sound")? {
         Some(s) => Some(own.resolve(&s).ok_or_else(|| bad(crate::sound::Own::unknown(&s)))?),
@@ -127,7 +127,7 @@ fn line(be: &Behaviours, rng: &mut Rng) -> Option<String> {
 
 /// One tick of what a creation's creatures with behaviours do.
 #[allow(clippy::too_many_arguments)]
-pub fn step(herd: &mut Herd, creation: &str, kinds: &[KindDef], players: &[PlayerInfo], held: &HashMap<u32, BlockId>, state: &mut HashMap<u64, Behaving>, rng: &mut Rng, dt: f32, sounds: &mut Vec<Play>) {
+pub fn step(herd: &mut Herd, creation: &str, kinds: &[KindDef], players: &[PlayerInfo], held: &HashMap<u32, Thing>, state: &mut HashMap<u64, Behaving>, rng: &mut Rng, dt: f32, sounds: &mut Vec<Play>) {
     for b in herd.bodies.values_mut().filter(|b| b.creation == creation) {
         let Some(k) = kinds.iter().find(|k| k.name == b.kind) else { continue };
         let Some(be) = &k.behaviours else { continue };
