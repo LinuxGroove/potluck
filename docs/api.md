@@ -31,6 +31,7 @@ store = "0.1"
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
+| `@potluck/test` | 0.1 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
 Every module planned for the API is here. Still to come in later minor versions: sounds of a creation's own, from its files (`sound`), and more of the API in client halves (`net`).
 
@@ -99,7 +100,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
-- **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields).
+- **0.9**: `flies` for `world.creature` and `creature:climb` (fliers with no gravity, easing into how fast they rise or sink, steered by riders in the air), `creature:on_ground` and `creature:become` (turn into another of the creation's kinds, keeping its fields, and still counting toward the `count` of the kind it came as). `world.spawn` puts a creature wider than a block that's set down beside a wall just clear of it.
 - **0.8**: `world.held` (what's in a player's hand), `world.kind` (what a block is made of) and `world.digging` (a thing held breaks some kinds of block faster, 0 to 10 times; creations' speeds multiply). Tools and swords are things to hold, never put down: `world.set_block` with one is an error.
 - **0.7**: `down_to` for `world.hurt`, the least health a hurt leaves (0 to 20).
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
@@ -137,3 +138,7 @@ What a creation can never do, at any version: read or write files, reach the net
 ### `@potluck/tweak`
 
 - **0.1**: the first version.
+
+### `@potluck/test`
+
+- **0.1**: the first version: `test.case`, `check` and `same`; `wait`; `player` and `move`; what players do (`place`, `dig`, `use_block`, `use`, `hit`, `ride`, `get_off`, `press`, `release`, `answer`); and looking (`kind`, `creature`, `health`, `shown`, `asked`).

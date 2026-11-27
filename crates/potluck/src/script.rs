@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 9), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 9), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 1), ("net", 0, 1), ("test", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -615,7 +615,7 @@ struct LoadState {
 }
 
 pub struct Vm {
-    lua: Lua,
+    pub(crate) lua: Lua,
     world: Table,
     base: Table,
     game: Table,
@@ -626,8 +626,11 @@ pub struct Vm {
     /// Where `print` writes, read after every call into the creation.
     state: Arc<Mutex<LoadState>>,
     pub kinds: Vec<KindDef>,
-    kind_tables: HashMap<String, Table>,
+    pub(crate) kind_tables: HashMap<String, Table>,
     instances: HashMap<u64, Table>,
+    /// What `@potluck/test` shares with the harness: the cases its
+    /// `test.luau` gave, and what the harness tells it (`testing.rs`).
+    pub(crate) test_harness: Table,
     pub knobs: Vec<Knob>,
     pub log: Vec<String>,
     pub error: Option<String>,
@@ -1047,7 +1050,7 @@ impl Vm {
         });
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
         let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, note_budget: NOTES_A_SECOND, ..default() }));
-        let setup = || -> mlua::Result<(Table, Table, Table)> {
+        let setup = || -> mlua::Result<(Table, Table, Table, Table)> {
             let world = lua.create_table()?;
             let game = lua.create_table()?;
             let base = lua.create_table()?;
@@ -1553,6 +1556,9 @@ impl Vm {
             let cache = lua.create_table()?;
             let w2 = world.clone();
             let g2 = game.clone();
+            // test 0.1: a creation's own tests, which only run in test runs
+            let (test, test_harness): (Table, Table) = lua.load(crate::testing::TEST_MODULE).set_name("=@potluck/test").eval()?;
+            let t2 = test.clone();
             let req = lua.create_function(move |lua, name: String| {
                 if let Some(module) = api_module(&name)? {
                     return Ok(match module {
@@ -1563,6 +1569,7 @@ impl Vm {
                         "ui" => Value::Table(ui.clone()),
                         "sound" => Value::Table(sound.clone()),
                         "net" => Value::Table(net.clone()),
+                        "test" => Value::Table(t2.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -1578,9 +1585,9 @@ impl Vm {
                 }
             })?;
             lock_down(&lua)?;
-            Ok((world, base, game))
+            Ok((world, base, game, test_harness))
         };
-        let (world, base, game) = setup().map_err(|e| e.to_string())?;
+        let (world, base, game, test_harness) = setup().map_err(|e| e.to_string())?;
         let main = creation.manifest.main.clone();
         let src = creation.files.get(&main).ok_or_else(|| format!("{} has no {main}", creation.manifest.name))?;
         let mut vm = Vm {
@@ -1594,6 +1601,7 @@ impl Vm {
             state: state.clone(),
             kinds: vec![],
             kind_tables: HashMap::new(),
+            test_harness,
             instances: HashMap::new(),
             knobs: vec![],
             log: vec![],
@@ -1633,7 +1641,7 @@ impl Vm {
 
     /// Runs `f` with the API's world functions bound to this tick's state.
     #[allow(clippy::too_many_arguments)]
-    fn session<R>(
+    pub(crate) fn session<R>(
         &mut self,
         voxels: &mut Voxels,
         herd: &mut Herd,
@@ -1747,6 +1755,25 @@ impl Vm {
                 let mut p = p;
                 if ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::AIR && ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::WATER {
                     p.y = ctx.voxels.top(p.x.floor() as i32, p.z.floor() as i32) as f32 + 1.2;
+                }
+                // one wider than a block, put down beside a wall, starts just
+                // clear of it rather than stuck in it
+                let h = def.half;
+                let clear = |q: Vec3| !crate::player::blocked(ctx.voxels, Vec3::new(q.x - h.x, q.y, q.z - h.x), Vec3::new(h.x * 2.0, h.y, h.x * 2.0));
+                if !clear(p) {
+                    let reach = (h.x - 0.45).max(0.0) + 0.05;
+                    let mut best: Option<(f32, Vec3)> = None;
+                    for i in -4..=4 {
+                        for j in -4..=4 {
+                            let off = Vec3::new(i as f32, 0.0, j as f32) * (reach / 4.0);
+                            if clear(p + off) && best.is_none_or(|(d, _)| off.length() < d) {
+                                best = Some((off.length(), p + off));
+                            }
+                        }
+                    }
+                    if let Some((_, q)) = best {
+                        p = q;
+                    }
                 }
                 Ok(ctx.herd.spawn(&creation, &def, p))
             })?)?;
@@ -1950,7 +1977,7 @@ impl Vm {
     }
 
     /// The Lua table for a creature, made the first time it's needed.
-    fn instance(&mut self, b: &Body) -> mlua::Result<(Table, bool)> {
+    pub(crate) fn instance(&mut self, b: &Body) -> mlua::Result<(Table, bool)> {
         if let Some(t) = self.instances.get(&b.id) {
             return Ok((t.clone(), false));
         }
@@ -1964,7 +1991,12 @@ impl Vm {
         Ok((t, true))
     }
 
-    fn fill(&self, t: &Table, b: &Body, players: &[PlayerInfo]) -> mlua::Result<()> {
+    /// A creature's Lua table, if it has had one made already.
+    pub(crate) fn known(&self, id: u64) -> Option<Table> {
+        self.instances.get(&id).cloned()
+    }
+
+    pub(crate) fn fill(&self, t: &Table, b: &Body, players: &[PlayerInfo]) -> mlua::Result<()> {
         t.raw_set("position", vector(b.pos))?;
         t.raw_set("kind", b.kind.as_str())?;
         let rider = match b.rider.and_then(|r| players.iter().find(|p| p.id == r)) {
@@ -2366,6 +2398,11 @@ impl Scripts {
         }
     }
 
+    /// The world's time as creations see it, in seconds.
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
     /// Runs a few lines of Luau in a running creation's sandbox, as if they
     /// were part of its code, with one tick's time: what they printed and
     /// returned (the dev bridge's `run`). An error here is the caller's, so
@@ -2424,9 +2461,9 @@ impl Scripts {
             if vm.paused {
                 continue;
             }
-            // keep each kind's numbers up
+            // keep each kind's numbers up, counting those that came as it
             for k in vm.kinds.clone() {
-                let have = herd.bodies.values().filter(|b| b.creation == *id && b.kind == k.name).count() as u32;
+                let have = herd.bodies.values().filter(|b| b.creation == *id && b.born == k.name).count() as u32;
                 for i in have..k.count {
                     let a = i as f32 * 2.4;
                     let mut at = k.home + Vec3::new(a.cos() * 2.5, 2.0, a.sin() * 2.5);

@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.9, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1
+-- @potluck/world 0.9, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.1, @potluck/net 0.1, @potluck/test 0.1
 
 export type Position = vector | { number }
 
@@ -155,6 +155,39 @@ export type ClientNet = {
 	send: (topic: string, value: Stored?) -> boolean,
 	on: (topic: string, fn: (value: Stored) -> ()) -> (),
 	me: () -> Player,
+}
+
+-- In test.luau, while the creation's tests run (the dev bridge's test, potluck-server --test).
+export type TestPlayerOptions = {
+	at: Position?,
+	survival: boolean?,
+	carrying: { [string]: number }?,
+}
+
+export type Test = {
+	case: (name: string, fn: () -> ()) -> (),
+	check: (ok: any, message: string?) -> any,
+	same: (got: any, want: any, message: string?) -> (),
+	-- these hand over to the game: keep each on a line of its own
+	wait: (seconds: number) -> (),
+	player: (name: string?, opts: TestPlayerOptions?) -> Player,
+	move: (player: Player, at: Position) -> Player,
+	place: (player: Player, at: Position, block: string) -> (),
+	dig: (player: Player, at: Position) -> (),
+	use_block: (player: Player, at: Position) -> (),
+	use: (player: Player, creature: Creature | number) -> (),
+	hit: (player: Player, creature: Creature | number) -> (),
+	ride: (player: Player, creature: Creature | number) -> (),
+	get_off: (player: Player) -> (),
+	press: (player: Player, action: string) -> (),
+	release: (player: Player, action: string) -> (),
+	answer: (player: Player, choice: number) -> (),
+	-- these only look
+	kind: (name: string) -> any,
+	creature: (id: number | Creature) -> Creature?,
+	health: (player: Player | number) -> number?,
+	shown: (player: Player | number, id: string) -> string?,
+	asked: (player: Player | number) -> { title: string, text: string, choices: { string } }?,
 }
 
 export type Knob = { any, min: number?, max: number?, label: string?, order: number? }

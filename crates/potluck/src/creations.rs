@@ -214,8 +214,6 @@ pub fn slug(s: &str) -> String {
     if out.is_empty() { "creation".into() } else { out }
 }
 
-/// The base game's creations, built into the binary: each folder in
-/// `creations/` with its manifest and code, and the API's notes and types.
 /// The base game's creations, built in: each one's potluck.toml and
 /// main.luau, the files after a `+`, and the API's notes and types.
 macro_rules! base {
@@ -230,7 +228,7 @@ macro_rules! base {
     };
 }
 
-const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon"];
+const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming", "hunger", "tools", "balloon" + "test.luau"];
 
 pub const AGENTS_MD: &str = include_str!("../../../creations/AGENTS.md");
 pub const TYPES: &str = include_str!("../../../creations/types/potluck.d.luau");
@@ -310,6 +308,27 @@ fn load_dir(id: &str, dir: &Path) -> Option<Creation> {
 }
 
 impl Library {
+    /// A creation as its files are now, for its tests: a folder by its path,
+    /// one of the player's from its folder (as saved, whether or not it's
+    /// been reloaded), or any other in the library. Its knobs are as its
+    /// code sets them, so tests go the same way for everyone.
+    pub fn to_test(&self, what: &str) -> Result<Creation, String> {
+        let path = Path::new(what);
+        let dir = if what.contains('/') || what.starts_with('.') { path.to_path_buf() } else { mine_dir().join(what) };
+        let mut c = if dir.join("potluck.toml").is_file() {
+            let toml_text = std::fs::read_to_string(dir.join("potluck.toml")).map_err(|e| format!("{}: {e}", dir.display()))?;
+            toml::from_str::<Manifest>(&toml_text).map_err(|e| format!("potluck.toml: {}", e.message()))?;
+            let id = dir.canonicalize().ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_else(|| what.to_string());
+            load_dir(&id, &dir).ok_or_else(|| format!("couldn't read {}", dir.display()))?
+        } else if what.contains('/') || what.starts_with('.') {
+            return Err(format!("there's no potluck.toml in {}", dir.display()));
+        } else {
+            self.list.get(what).cloned().ok_or_else(|| format!("there's no creation called \"{what}\""))?
+        };
+        c.knobs.clear();
+        Ok(c)
+    }
+
     pub fn load() -> Self {
         let mut lib = Library::default();
         for (id, files) in BASE {
