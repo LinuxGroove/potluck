@@ -13,9 +13,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.7")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.7. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.8")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.8. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.7
+### `@potluck/world` 0.8
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -115,6 +115,21 @@ world.hurt(player, 1, { down_to = 10 })   -- never below half health
 
 - `down_to` is the least health the hurt leaves, 0 to 20 (0, or leaving it out, is no limit). A player already at or below it isn't hurt at all.
 - Only the player's own game knows their health, so it works out how much to take when the hurt arrives.
+
+What players hold, and tools (new in 0.8), for pickaxes, swords, wands and anything else that does something in hand:
+
+```luau
+if world.held(player) == "Stone sword" then hits = 3 end     -- what's in their hand, or nil
+world.digging("Wooden pickaxe", { hard = 2.5 })               -- stone and brick break 2.5 times as fast
+world.digging("Wooden pickaxe", nil)                          -- as usual again
+print(world.kind("Oak log"))                                  -- "wood"
+```
+
+- Some blocks are things to hold, not to build with: the pickaxes, axes, shovels and swords. They're carried, given and taken like any block, but never put down, and `world.set_block` with one is an error.
+- `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
+- `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
+- `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
+- Nothing wears out by itself: count `block_broken` while `world.held` is your tool, and `world.take` it when it's done.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 
@@ -218,7 +233,7 @@ end)
 - `ui.show(player, id, text, { at = ... }?)` shows one line, or changes the one with that id. `at` is `"right"` (top right, the default), `"left"` (top left) or `"bottom"` (above the hotbar). `player` nil shows it to everyone in the world, now and when they arrive. A line is up to 60 letters, on one line; a creation shows at most 8 at once (different ids).
 - `ui.hide(player, id)` takes it off; `ui.hide(nil, id)` takes it off every screen, including lines shown to one player with that id.
 - `ui.meter(player, id, value, { color = "#rrggbb" }?)` shows a bar beside the health bar, `value` full from 0 to 1, amber if no colour is given (food, air, a mini game's clock). nil for `value` takes it away, as does `ui.hide`. They share the row above the hotbar with the health bar (which shows only in survival); a screen shows 3 at most, from every creation together. Meters count among a creation's 8 pieces. Give each a colour of its own and say once, with a line, what it means.
-- `ui.ask(player, { title?, text?, choices? }, fn)` asks one player a question. `title` is up to 40 letters (the creation's name if left out), `text` up to 300 (`"\n"` starts a new line), and up to 4 `choices` of 30 letters (`{ "OK" }` if left out). `fn(player, choice)` is called once, on a later tick, with the number of their choice, or nil if they closed it, the creation asked them something else first, or it couldn't be shown. It returns an id.
+- `ui.ask(player, { title?, text?, choices? }, fn)` asks one player a question. `title` is up to 40 letters (the creation's name if left out), `text` up to 300 (`"\n"` starts a new line), and up to 8 `choices` of 30 letters (`{ "OK" }` if left out). `fn(player, choice)` is called once, on a later tick, with the number of their choice, or nil if they closed it, the creation asked them something else first, or it couldn't be shown. It returns an id.
 - `ui.close(player)` takes this creation's question back off their screen, and `fn` isn't called.
 - The panel opens when the player isn't in a menu, and the game always adds who it's from and a Close button. One question from each creation waits for a player at a time. After a player closes one, the creation's questions to them get nil at once for 10 seconds, so ask again only when they come back to it (using one of its creatures, or a block it hears `block_used` for, lets it ask at once).
 - Lines and questions go when the creation stops, and a reload takes its questions away (its lines stay until it shows them again). A player who leaves takes theirs with them, and their `fn` isn't called.

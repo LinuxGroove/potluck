@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 12;
+pub const PROTOCOL: u32 = 13;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -121,6 +121,9 @@ pub enum Msg {
     /// A creation hurt you, but only down to some health: (how much, the
     /// least it leaves).
     HurtTo(f32, f32),
+    /// How much faster each thing held digs each kind of block now
+    /// (`world.digging`): all of it, in the order of `sound::DIG_KINDS`.
+    Digging(Vec<(crate::blocks::BlockId, [f32; 5])>),
 }
 
 pub enum Event {
@@ -393,6 +396,9 @@ impl Net {
     pub fn broadcast_toast(&mut self, t: &str) {
         self.pending.push(Msg::Toast(t.to_string()));
     }
+    pub fn broadcast_digging(&mut self, digging: Vec<(crate::blocks::BlockId, [f32; 5])>) {
+        self.pending.push(Msg::Digging(digging));
+    }
     pub fn send_creation(&self, c: &Creation) {
         self.send_host(&Msg::Creation(c.payload()));
     }
@@ -534,6 +540,11 @@ pub fn host_net(
                             sent += f.len();
                             let _ = out.send(f);
                         }
+                    }
+                    // what tools dig faster here
+                    let digging = scripts.digging();
+                    if !digging.is_empty() {
+                        let _ = out.send(frame_msg(&Msg::Digging(digging)));
                     }
                     p.welcomed = true;
                     h.sent.0 += sent;
@@ -914,6 +925,7 @@ pub fn client_net(
                     lib.running.clear();
                     lib.world += 1;
                     scripts.vms.clear();
+                    me.digging.clear();
                     if let Role::Client(c) = &mut net.role {
                         c.welcomed = true;
                         c.host_name = host.clone();
@@ -1029,6 +1041,10 @@ pub fn client_net(
                 }
                 Msg::Health(change) if change.is_finite() => me.health_due += change.clamp(-MAX_HEALTH, MAX_HEALTH),
                 Msg::Healing(rate) if rate.is_finite() => me.healing = rate.clamp(0.0, crate::script::MAX_HEALING as f32),
+                Msg::Digging(list) => {
+                    let ok = |s: &[f32; 5]| s.iter().all(|v| v.is_finite());
+                    me.digging = list.into_iter().filter(|(_, s)| ok(s)).map(|(b, s)| (b, s.map(|v| v.clamp(0.0, crate::script::MAX_DIGGING as f32)))).collect();
+                }
                 Msg::HurtTo(n, down_to) if n.is_finite() && down_to.is_finite() && me.hurts.len() < 64 => {
                     me.hurts.push((n.clamp(0.0, MAX_HEALTH), down_to.clamp(0.0, MAX_HEALTH)))
                 }
