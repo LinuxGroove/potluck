@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.6")
+local world = require("@potluck/world@0.7")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.6"
+world = "0.7"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.6 | Blocks and lights, creatures, players, their health (and how fast it comes back) and the blocks they carry, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.7 | Blocks and lights, creatures, players, their health (and how fast it comes back) and the blocks they carry, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -97,6 +97,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.7**: `down_to` for `world.hurt`, the least health a hurt leaves (0 to 20).
 - **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
 - **0.5**: `world.on` for `"block_placed"`, `"block_broken"` and `"block_used"`: a player put down, broke or used (Interact on) a block, with the player, the middle of the block and its name.
 - **0.4**: `world.daytime` and `world.daylight` (the time of day), `world.find_light` (the nearest lantern, brazier, candle or other block that gives light), and `world.hurt` and `world.heal` for survival players' health. A client half has `daytime` and `daylight` too.

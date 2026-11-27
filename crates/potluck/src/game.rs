@@ -300,11 +300,16 @@ pub fn host_step(
         }
     }
     // creations that hurt or healed players
-    for (pid, change) in scripts.health_changes() {
+    for (pid, change, down_to) in scripts.health_changes() {
         if pid == my_id && me.is_some() {
-            me.as_mut().unwrap().health_due += change;
+            let me = me.as_mut().unwrap();
+            if down_to > 0.0 && change < 0.0 {
+                me.hurts.push((-change, down_to));
+            } else {
+                me.health_due += change;
+            }
         } else {
-            net.send_health(pid, change);
+            net.send_health(pid, change, down_to);
         }
     }
     // how fast creations let players heal by themselves

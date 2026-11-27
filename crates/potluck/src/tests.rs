@@ -2197,7 +2197,7 @@ end)
         assert!(l.contains(want), "{want}: {l}");
     }
     // one change for Ada: three, back one, and at most a whole bar
-    assert_eq!(scripts.health_changes(), vec![(7, -3.0 + 1.0 - MAX_HEALTH)]);
+    assert_eq!(scripts.health_changes(), vec![(7, -3.0 + 1.0 - MAX_HEALTH, 0.0)]);
     assert!(scripts.health_changes().is_empty());
     scripts.set_day(0.5);
     assert_eq!(crate::render::Clock { time: 0.5, running: true }.daylight(), 1.0);
@@ -2766,21 +2766,108 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     run(&mut scripts, &mut voxels, &mut herd, 202.0);
     assert_eq!(bar(&scripts, 7), Some(0.0));
     assert_eq!(scripts.healing_changes(), vec![(7, 0.0)]);
-    assert!(shown(&scripts, "hungry").is_some_and(|t| t.contains("won't heal")), "{:?}", shown(&scripts, "hungry"));
+    assert!(shown(&scripts, "hungry").is_some_and(|t| t.contains("starving") && t.chars().count() <= 60), "{:?}", shown(&scripts, "hungry"));
+    // and it hurts, a little every few seconds, but only down to half
+    let hurts = scripts.health_changes();
+    assert!(!hurts.is_empty() && hurts.iter().all(|h| h.0 == 7 && h.1 == -1.0 && h.2 == 10.0), "{hurts:?}");
     run(&mut scripts, &mut voxels, &mut herd, 10.0);
     assert!(shown(&scripts, "hungry").is_none(), "said for a few seconds");
-    // a carrot again: eaten at once, and healing as usual
+    assert_eq!(scripts.health_changes(), vec![(7, -2.0, 10.0)], "one every five seconds");
+    // a carrot again: eaten at once, healing as usual and no more hurting
     scripts.pocket_changes();
     scripts.set_pockets(7, true, &[(carrots, 1)], 1000);
     run(&mut scripts, &mut voxels, &mut herd, 1.5);
     assert_eq!(carried(&scripts, carrots), 0);
     assert_eq!(scripts.healing_changes(), vec![(7, 1.0)]);
+    scripts.health_changes();
+    run(&mut scripts, &mut voxels, &mut herd, 10.0);
+    assert!(scripts.health_changes().is_empty(), "fed again");
     // into creative: the bar goes and so does the slowing
     scripts.pocket_changes();
     scripts.set_pockets(7, false, &[], 1000);
     run(&mut scripts, &mut voxels, &mut herd, 1.5);
     assert_eq!(bar(&scripts, 7), None);
     assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
+}
+
+/// world 0.7: a creation can hurt a player only down to some health, which
+/// their own game works out, since only it knows their health.
+#[test]
+fn creations_can_hurt_players_only_down_to_some_health() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::{Me, MAX_HEALTH};
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let code = r#"
+local world = require("@potluck/world@0.7")
+world.after(0.1, function()
+	print("hurt " .. tostring(world.hurt(7, 4, { down_to = 10 })) .. " " .. tostring(world.hurt(7, 3, { down_to = 10 })) .. " " .. tostring(world.hurt(7, 2)) .. " " .. tostring(world.hurt(7, 1, {})))
+	print("heal " .. tostring(world.heal(7, 1, { down_to = 5 })))
+	print("creative " .. tostring(world.hurt(8, 3, { down_to = 10 })))
+	print(pcall(world.hurt, 7, 1, { down_to = 21 }) and "over ok" or "no over")
+	print(pcall(world.hurt, 7, 1, { down_to = -1 }) and "under ok" or "no under")
+	print(pcall(world.hurt, 7, 1, { down_to = 0/0 }) and "nan ok" or "no nan")
+end)
+"#;
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let l = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{l}");
+    for want in ["hurt true true true true", "heal true", "creative false", "no over", "no under", "no nan"] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // the plain ones together (a heal has no down_to), then the ones that stop at 10
+    assert_eq!(scripts.health_changes(), vec![(7, -2.0, 0.0), (7, -7.0, 10.0)]);
+
+    // the host's own game: it stops at 10, and doesn't hurt at all below it
+    for survival in [true, false] {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        crate::sim(&mut app, crate::SEED);
+        app.insert_resource(Settings { survival, ..default() }).insert_resource(Me::default());
+        app.init_resource::<crate::input::Controls>().init_resource::<crate::ui::Focus>().init_resource::<crate::ui::Toasts>();
+        app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+        let bite = creation("local world = require(\"@potluck/world@0.7\")\nworld.after(0.1, function() for _, p in world.players() do world.hurt(p, 15, { down_to = 10 }) end end)");
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            let mut herd = w.resource_mut::<Herd>();
+            s.start(&bite, &mut herd).unwrap();
+        });
+        app.world_mut().run_system_once(crate::player::report_pockets).unwrap();
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+            w.resource_scope(|w, mut v: Mut<Voxels>| {
+                let mut h = w.resource_mut::<Herd>();
+                s.tick(&mut v, &mut h, 0.2);
+            })
+        });
+        app.world_mut().run_system_once(crate::game::host_step).unwrap();
+        let me = app.world().resource::<Me>();
+        assert_eq!((me.health_due, me.hurts.clone()), (0.0, if survival { vec![(15.0, 10.0)] } else { vec![] }), "survival {survival}");
+        app.world_mut().resource_mut::<Me>().hurts = vec![(15.0, 10.0)]; // as if sent anyway
+        app.world_mut().run_system_once(crate::player::walk).unwrap();
+        let me = app.world().resource::<Me>();
+        assert_eq!((me.health, me.hurts.len()), (if survival { 10.0 } else { MAX_HEALTH }, 0), "survival {survival}");
+        // at or below it, nothing happens, not even the flash
+        let mut me = app.world_mut().resource_mut::<Me>();
+        me.health = 8.0;
+        me.hurt = 9.0;
+        me.hurts = vec![(3.0, 10.0)];
+        app.world_mut().run_system_once(crate::player::walk).unwrap();
+        let me = app.world().resource::<Me>();
+        assert!(me.health == 8.0 && me.hurt >= 9.0 && me.hurts.is_empty(), "survival {survival}: {} {}", me.health, me.hurt);
+    }
+
+    // what goes between devices
+    let m = Msg::HurtTo(7.0, 10.0);
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
 
 /// The Gnome Gardeners tell survival players how to get by.
