@@ -30,6 +30,9 @@ pub enum Action {
     Answer { ask: u32, choice: Option<u32> },
     /// A message from this player's client half to its creation (`@potluck/net`).
     Net(crate::script::Note),
+    /// What this player carries now (survival), and how many lots of the
+    /// host's changes they've had (`world.pockets`).
+    Pockets { survival: bool, items: Vec<(crate::blocks::BlockId, u32)>, seen: u32 },
 }
 
 /// What players did this frame: (player id, action).
@@ -232,6 +235,7 @@ pub fn host_step(
             }
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
             Action::Net(note) => scripts.hear(pid, note),
+            Action::Pockets { survival, items, seen } => scripts.set_pockets(pid, survival, &items, seen),
         }
     }
     let w = &*voxels;
@@ -257,6 +261,16 @@ pub fn host_step(
             me.as_mut().unwrap().show(change);
         } else {
             net.send_ui(pid, change);
+        }
+    }
+    // blocks creations gave players or took from them
+    for (pid, seq, changes) in scripts.pocket_changes() {
+        if pid == my_id && me.is_some() {
+            let me = me.as_mut().unwrap();
+            me.change_pockets(&changes);
+            me.pockets_seen = seq;
+        } else {
+            net.send_pockets(pid, seq, changes);
         }
     }
     // messages creations sent their client halves

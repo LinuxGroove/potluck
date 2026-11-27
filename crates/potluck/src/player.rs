@@ -71,6 +71,9 @@ pub struct Me {
     /// Messages creations sent their client halves on this game, for
     /// `halves::run` to hand over.
     pub notes: Vec<crate::script::Note>,
+    /// How many lots of changes to the hotbar creations have made here
+    /// (`world.give`, `world.take`), for the host to know a report is new.
+    pub pockets_seen: u32,
     /// Blocks walked since the last step's sound.
     stride: f32,
     regen: f32,
@@ -109,6 +112,7 @@ impl Default for Me {
             panel: None,
             captions: vec![],
             notes: vec![],
+            pockets_seen: 0,
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
@@ -158,6 +162,36 @@ impl Me {
         } else if let Some(i) = (0..9).find(|&i| self.counts[i] == 0) {
             self.hotbar[i] = id;
             self.counts[i] = 1;
+        }
+    }
+
+    /// What's in the hotbar, by block (survival).
+    pub fn carried(&self) -> Vec<(BlockId, u32)> {
+        let mut out: Vec<(BlockId, u32)> = vec![];
+        for (b, n) in self.hotbar.iter().zip(self.counts).filter(|(_, n)| *n > 0) {
+            match out.iter_mut().find(|(c, _)| c == b) {
+                Some(c) => c.1 += n,
+                None => out.push((*b, n)),
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Blocks a creation gave (more) or took (fewer).
+    pub fn change_pockets(&mut self, changes: &[(BlockId, i32)]) {
+        for &(b, d) in changes {
+            if d > 0 {
+                for _ in 0..d.min(crate::script::MAX_GIVE as i32) {
+                    self.give(b);
+                }
+            }
+            let mut left = d.min(0).unsigned_abs();
+            for i in (0..9).filter(|&i| self.hotbar[i] == b) {
+                let n = self.counts[i].min(left);
+                self.counts[i] -= n;
+                left -= n;
+            }
         }
     }
 
@@ -562,4 +596,30 @@ pub fn place_camera(me: Res<Me>, voxels: Res<Voxels>, mut cam: Query<&mut Transf
         t.translation = eye;
     }
     t.rotation = rot;
+}
+
+/// Tells the host what this player carries whenever it changes, for
+/// creations' `world.pockets`, `has`, `give` and `take`.
+pub fn report_pockets(
+    me: Option<ResMut<Me>>,
+    settings: Res<Settings>,
+    info: Res<crate::ui::WorldInfo>,
+    lib: Res<crate::creations::Library>,
+    net: Res<crate::net::Net>,
+    mut actions: ResMut<crate::game::Actions>,
+    mut last: Local<Option<(u32, bool, Vec<(BlockId, u32)>, u32)>>,
+) {
+    let Some(mut me) = me else { return };
+    if !info.in_world {
+        return;
+    }
+    if last.as_ref().is_some_and(|l| l.0 != lib.world) {
+        // a new world counts the host's changes from nothing
+        me.pockets_seen = 0;
+    }
+    let now = (lib.world, settings.survival, if settings.survival { me.carried() } else { vec![] }, me.pockets_seen);
+    if last.as_ref() != Some(&now) {
+        actions.0.push((net.my_id, crate::game::Action::Pockets { survival: now.1, items: now.2.clone(), seen: now.3 }));
+        *last = Some(now);
+    }
 }

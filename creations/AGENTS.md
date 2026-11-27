@@ -6,16 +6,16 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 | File | What |
 |---|---|
-| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.2"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.1"` for sounds, `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
+| `potluck.toml` | Its name, who made it, what kind of thing it is, which file to run (`main`), the API it needs (`[needs] world = "0.3"`, `game = "0.1"` for boards, `store = "0.1"` to keep things, `input = "0.1"` for buttons of its own, `ui = "0.1"` for lines on the screen and questions, `sound = "0.1"` for sounds, `net = "0.1"` for a client half), its `client` file if it has one, its `[actions]` if it has any, and its licence. A remix also says what it's a remix of (`remix_of`, and `[from]` with the market's code and version): leave those as the game wrote them, so the market can show its family tree and send suggested changes back |
 | `main.luau` | The code, in Luau (Lua 5.1 with types). `require("./other")` loads `other.luau` from this folder. It runs on the world's host, the only place the world changes |
 | `client.luau` | Only if it has a client half (`client = "client.luau"` in potluck.toml): code that runs on each player's own game, for what only they see. See `@potluck/net` |
 | `types/potluck.d.luau` | The API's types, for editors and AI helpers. Don't edit it: the game writes it |
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.2")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.2. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.3")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.3. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.2
+### `@potluck/world` 0.3
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -47,6 +47,23 @@ world.on("player_left", function(player) print(player.name .. " went home") end)
 - `world.after(seconds, fn)` calls `fn` once, `seconds` from now; `world.every(seconds, fn)` calls it every `seconds`. Both return an id for `world.cancel(id)`. Timers run on the world's ticks, ten a second, so 0.1 is the shortest; at most 64 wait at once.
 - `world.on(event, fn)`: `"player_joined"` when someone arrives in the world and `"player_left"` when they go, each with the player. Players already here when the creation starts are in `world.players()`.
 - A creation's top level runs again when it reloads, and sets its timers and handlers up again. Timers started inside handlers don't carry over a reload.
+
+The blocks players carry (new in 0.3), for trading, crafting and prizes:
+
+```luau
+if world.has(player, "Oak log") >= 2 and world.take(player, "Oak log", 2) then
+	world.give(player, "Planks", 8)
+end
+local carried = world.pockets(player)     -- { ["Oak log"] = 3, Sand = 2 }, or nil in creative
+```
+
+- In survival a player carries what's in their hotbar, nine kinds of block at most. In creative they have every block, and nothing is counted.
+- `world.pockets(player)` is what they carry, by block name, or nil for a player in creative.
+- `world.has(player, block)` is how many of that block they carry (`math.huge` in creative).
+- `world.take(player, block, n?)` takes `n` (1 if left out) if they carry that many, and returns whether it did. In creative it returns true and takes nothing.
+- `world.give(player, block, n?)` puts `n` in their hotbar and returns how many it gave: 0 if they've nine other kinds already. In creative it returns `n` and gives nothing.
+- `n` is a whole number from 1 to 64. Players can't carry air, water or bedrock.
+- A player's blocks live on their own game, so what a creation sees is what their game last said, a moment ago. A player nobody's heard from yet carries nothing.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 

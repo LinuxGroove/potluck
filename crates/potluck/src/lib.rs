@@ -59,7 +59,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
-        .add_systems(Update, halves::run.before(Sim))
+        .add_systems(Update, (halves::run, player::report_pockets).before(Sim))
         .add_systems(
             Update,
             (game::host_step, net::host_net, game::reloads, game::share_results).chain().in_set(Sim),
