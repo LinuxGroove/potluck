@@ -54,6 +54,18 @@ pub struct Settings {
     pub waypoint_labels: bool,
     /// A parent can turn chat off: no lines shown, none sent.
     pub chat: bool,
+    /// Who may join this player's world when they share it from home:
+    /// "friends" or "code" (anyone with the code).
+    pub world_who: String,
+    /// Worlds shared from home always go through LinuxGroove's relay, so
+    /// friends never see this computer's address. On for younger players.
+    pub through_relay: bool,
+    /// A parent can turn off sharing worlds from home.
+    pub share_worlds: bool,
+    /// A parent can turn off joining friends' worlds from home.
+    pub join_worlds: bool,
+    /// A younger player's new friends need a parent's OK (their PIN) first.
+    pub friends_ok: bool,
 }
 
 /// A creation's action on buttons the player chose.
@@ -91,6 +103,11 @@ impl Default for Settings {
             minimap_turns: false,
             waypoint_labels: true,
             chat: true,
+            world_who: "friends".into(),
+            through_relay: false,
+            share_worlds: true,
+            join_worlds: true,
+            friends_ok: true,
         }
     }
 }

@@ -8,6 +8,7 @@ What it takes to run Potluck online: one world for friends, the market, and worl
 |---|---|---|---|
 | **World server** (`potluck-server`) | One world: its blocks, creatures and running creations, and the players in it. Host-authoritative over WebSocket (`net.rs`), 30 ticks a second, snapshots 20 times a second. | `crates/potluck/src/server.rs`, the `potluck-server` snap (`packaging/potluck-server`) | One process per world. More worlds, more processes: they share nothing but the market. |
 | **The market** (`potluck-share`, Forgejo, a file store) | Shares, versions, remixes, suggestions, jams, the server list and passes, boards, the web pages. Creations' files by SHA-256. | `crates/share-service`, `deploy/market` | One service in front of SQLite, Forgejo and a folder or S3 bucket. Read-heavy; files go to a CDN. |
+| **The relay** (`iroh-relay`) | Worlds shared from home: introduces two players' games so they can reach each other through home routers (hole punching), and carries the connections that can't. The market says which keys may use it. | `deploy/relay`, `crates/potluck/src/p2p.rs` | Bandwidth only for the connections it carries; more relays in more places when one fills. |
 | **The game server** (Nakama) | Device sign-in for the market, the older share codes, the launch ping. Shared by every LinuxGroove game. | `LinuxGroove/game-server` (its `docs/operations.md`) | Already running at `play.linuxgroove.com`; Potluck adds a sign-in per session. |
 
 Players' games do the expensive work: drawing, meshing, their own movement, and client halves of creations. A world server does no drawing and no meshing; it runs creations' Luau, moves creatures, and tells each player what changed near them.
@@ -62,6 +63,17 @@ For comparison, hosting companies size a Minecraft Java server at 4 to 16 GB for
 - **Its git repository** in Forgejo: 72 KB on disk for a first version with an empty hook template (git's directories each take a 4 KB block; the files themselves are 2 to 4 KB compressed), and about 12 KB more per version until git packs it. Forgejo adds its hooks and a few database rows. **Estimate:** 100 to 150 KB per creation all told, so a million creations is 100 to 150 GB, almost all of it git's directory overhead.
 - **The index** (`market.db`): 1.26 KB per creation with one version, **measured** with 100,000 made-up creations (below; real ones add a row to the search index too). amd-halo's test market, with the 17 base creations and a few test shares and accounts, is 151 KB. The `plays` table gains a row per creation, player and day (about 50 bytes); nothing prunes it yet, so at 100,000 players loading five creations a day it would grow by about 25 MB a day.
 - **The service:** **measured** with 100,000 made-up creations from 20,000 makers put straight into its index (no Forgejo, so reads only): 13 MB resident when idle and 16 MB under load. It loaded creations by code 1,570 times a second on two cores (median 4.8 ms, 99th percentile 14 ms), each load also writing a play. The index came to 1.26 KB per creation with one version. `/api/green` is the weak spot: it sorts every listed creation on each call, 70 ms each at 100,000, and since the index has one connection, 13 calls a second fill a core and hold up every other request (median 660 ms under load). It needs a cache before the market has tens of thousands of creations; every game asks on entering a world and every half hour.
+
+### Worlds shared from home
+
+A world shared from home (Share this world) runs on the host's own game, and friends connect to it peer to peer (`p2p.rs`: iroh, QUIC dialled by the host's key). What we pay for:
+
+- **The market:** one heartbeat a minute per shared world (a few hundred bytes of JSON and one row in `worlds`), one request per friend joining, and a row per key in `relay_keys` (the host's for five minutes after its last heartbeat, a joiner's for eight hours). **Estimate:** nothing next to loading creations.
+- **The relay, introducing:** every shared world and every friend joining holds a connection open to the relay while it plays, and the two games exchange their addresses through it to punch through their routers. **Estimate** (iroh's own figures): a few KB per connection, and pings every few seconds.
+- **The relay, carrying:** the connections that can't go direct, about **one in ten** by n0's account of their public relays (two strict NATs, some phone networks and campus networks). A relayed friend costs what a player costs a world server, about **20 KB/s from the host to the friend** (measured on world servers, above), so **72 MB an hour**. The relay passes it on, so it's counted in and out.
+- **Always connect through LinuxGroove** (a setting, on by default for players under 13) sends every connection of that player's through the relay, so their address never reaches anyone. If most younger players' parents leave it on, younger players' play is all relay traffic.
+
+Caps in `deploy/relay/relay.toml`: each game may send **192 KB/s** through the relay (about ten friends' worth, with a 4 MB burst for a friend's first download of the world), and a world from home takes the host and 8 friends at once (`game::HOME_PLAYERS`), each about 20 KB/s of the host's upload. **Estimate** of a month: if 2,000 players a day share or join for two hours and one in ten (plus the younger players who always go through) is relayed, 400 relayed hours a day at 72 MB is 29 GB a day, under 1 TB a month. A cheap VPS with 20 TB of traffic covers about twenty times that. Watch `relayserver` `bytes_sent` on the relay's metrics (`127.0.0.1:9090`): alarm at half the plan's traffic, and if it gets there, lower `bytes_per_second` or set `relay = ""` in share.toml for a while (friends on the same network still connect; others can't).
 
 ### The game server
 
@@ -195,6 +207,22 @@ What to keep:
 | `caddy` volume | Certificates | none needed; Caddy fetches them again |
 
 Files: with `[store] kind = "s3"` and `public_url` (a bucket with a CDN in front), the game fetches creations' files from the CDN and the market only sends small JSON. Files are named by their SHA-256 and never change, so they cache forever (`/f/<sha>` already says `immutable`).
+
+### The relay
+
+The relay is `deploy/relay/compose.yaml`: iroh-relay built from crates.io at the version the game uses, on a machine of its own (the smallest VPS will do: it's bandwidth, not CPU) with TCP 80 and 443 and UDP 7842 open, and `relay.potluck.linuxgroove.com` pointing at it. It gets its own certificate from LetsEncrypt, which is why it can't sit behind the market's Caddy: QUIC address discovery needs its own TLS on UDP.
+
+```sh
+# one token, kept by both: the relay sends it, the market checks it
+head -c 24 /dev/urandom | base64 > relay.token && chmod 600 relay.token
+cd deploy/relay
+# relay.toml: set contact (LetsEncrypt's email) first
+RELAY_TOKEN=$(cat ../../relay.token) docker compose up -d
+# then the market, with the same token and share.toml's relay set
+cd ../market && RELAY_TOKEN=$(cat ../../relay.token) FORGEJO_TOKEN=$(cat forgejo.token) docker compose up -d
+```
+
+Start the relay first: a market that names a relay that isn't there leaves friends on different networks unable to find each other. Nothing on it needs keeping (certificates come again); the market's `relay_keys` rows run out by themselves.
 
 ### The game server
 

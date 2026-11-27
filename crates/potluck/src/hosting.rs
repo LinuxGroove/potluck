@@ -214,6 +214,10 @@ pub struct Pass {
     /// Under 13, as their game told the market.
     #[serde(default)]
     pub young: bool,
+    /// For a world shared from home: the key of the player's game it's
+    /// for, so a pass copied to another device opens nothing.
+    #[serde(default)]
+    pub peer: String,
 }
 
 pub fn now() -> i64 {
@@ -303,6 +307,29 @@ impl Rules {
             None => name.chars().take(20).collect(),
         };
         Ok((shown, handle))
+    }
+
+    /// Whether someone who came peer to peer, from a world shared from
+    /// home, may come in: only with the market's pass for this world
+    /// (`address` is `p2p:<this host's key>`) and for the key they came
+    /// with. The market already decided who may have one (friends, or anyone
+    /// with the code, never a stranger's world for a younger player); this
+    /// checks the pass and the room. Returns (name, handle, young).
+    pub fn admit_peer(&self, pass: Option<&str>, players: usize, peer: &str) -> Result<(String, Option<String>, bool), String> {
+        if players >= self.max_players {
+            return Err(format!("This world is full ({} players).", self.max_players));
+        }
+        let Some(key) = &self.market_key else { return Err("This world can't check who you are just now.".into()) };
+        let Some(pass) = pass.filter(|p| !p.is_empty()) else { return Err("Join with the world's code, under Join a friend's world.".into()) };
+        let p = Pass::open(pass, key, &self.address).map_err(|e| format!("The market couldn't vouch for you: {e}."))?;
+        if !same_address(&p.aud, &self.address) || p.peer != peer {
+            return Err("That pass is for another world: join again with its code.".into());
+        }
+        let handle = p.handle.to_lowercase();
+        if self.ban.contains(&handle) {
+            return Err("You can't join this world.".into());
+        }
+        Ok((p.name.chars().take(20).collect(), Some(handle), p.young))
     }
 
     pub fn may_bring(&self, handle: Option<&str>) -> bool {

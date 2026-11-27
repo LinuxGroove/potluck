@@ -2,6 +2,8 @@
 //! over TLS when a server has a certificate, so a server can sit at an
 //! https address (`wss://potluck.example.com`) or behind any web proxy.
 //! The same port answers plain web requests with the server's status.
+//! Worlds shared from home come in peer to peer instead (`p2p.rs`), as the
+//! same events.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -17,6 +19,18 @@ pub enum Wire {
     Joined(u32, Sender<Vec<u8>>),
     Data(u32, Vec<u8>),
     Gone(u32),
+    /// Who's at the other end of a peer-to-peer connection, and which way
+    /// it goes now: sent when it opens and whenever that changes.
+    Link(u32, Link),
+}
+
+/// A peer-to-peer connection's other end and path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    /// Their iroh key, as hex: a pass must name it.
+    pub peer: String,
+    /// Through the relay (LinuxGroove's) rather than straight between the two.
+    pub relayed: bool,
 }
 
 /// A server side stream: plain TCP or TLS.
@@ -263,6 +277,9 @@ pub fn connect(addr: &str, default_port: u16, tx: Sender<Wire>) -> Result<Sender
     let tcp = TcpStream::connect_timeout(&sa, Duration::from_secs(5)).map_err(|e| e.to_string())?;
     let _ = tcp.set_nodelay(true);
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(8)));
+    // tungstenite asks rustls for the process's provider: with the market's
+    // and iroh's crates in the build, rustls has two to pick from and won't
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let (ws, _) = tungstenite::client_tls_with_config(url.as_str(), tcp, None, None).map_err(|e| match e {
         tungstenite::HandshakeError::Failure(e) => e.to_string(),
         _ => "the world didn't answer".into(),

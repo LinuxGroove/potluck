@@ -115,3 +115,11 @@ pub fn git_blob_sha(bytes: &[u8]) -> String {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// Two secrets compared in the same time whatever they hold, so timing
+/// says nothing about how much of a guess was right.
+pub fn same_secret(a: &str, b: &str) -> bool {
+    use sha2::Digest;
+    let (x, y) = (sha2::Sha256::digest(a.as_bytes()), sha2::Sha256::digest(b.as_bytes()));
+    x.iter().zip(y.iter()).fold(0u8, |acc, (p, q)| acc | (p ^ q)) == 0
+}

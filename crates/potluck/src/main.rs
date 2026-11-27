@@ -385,6 +385,8 @@ fn shot(
                 "blocks" => ui::Screen::Blocks,
                 "market" => ui::Screen::Link,
                 "question" => ui::Screen::Panel,
+                "share" => ui::Screen::ShareWorld,
+                "friends" => ui::Screen::Friends,
                 _ => ui::Screen::Playing,
             });
             focus.settings_page = page;
@@ -398,6 +400,28 @@ fn shot(
                 // as a creation asks: through Me, which keeps it open
                 me.panel = Some(potluck::script::Panel { creation: id.clone(), ask: 1, title: "Ride me?".into(), text: "I'll take you up the hill, but you'll have to hold on.".into(), choices: vec!["Climb on".into(), "Not now".into()] });
                 focus.panel = me.panel.clone();
+            }
+            if sc == "share" {
+                // a world shared from home, with two friends in it
+                focus.shared = Some(ui::SharedWorld {
+                    code: "K7FQ2M".into(),
+                    url: "https://potluck.linuxgroove.com/w/K7FQ2M".into(),
+                    who: "friends".into(),
+                    name: "Ken's world".into(),
+                    players: vec![("Kaden".into(), false), ("Drew".into(), true)],
+                    ..Default::default()
+                });
+            }
+            if sc == "friends" {
+                let friend = |handle: &str, name: &str| share::Friend { handle: handle.into(), name: name.into() };
+                focus.friends = Some(share::Friends {
+                    code: "N8GT3WFA".into(),
+                    friends: vec![friend("drew", "Drew"), friend("kaden", "Kaden")],
+                    asking: vec![share::Asking { id: 1, handle: "cy".into(), name: "Cy".into(), young: false }],
+                    asked: vec![friend("bo", "Bo")],
+                    blocked: vec![],
+                });
+                focus.worlds = vec![share::OpenWorld { code: "K7FQ2M".into(), name: "Kaden's world".into(), by: "Kaden".into(), handle: "kaden".into(), players: 3, max_players: 9, invited: true }];
             }
             if sc == "keyboard" {
                 // a pad typing a line
