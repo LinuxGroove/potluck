@@ -335,18 +335,49 @@ fn every_baked_block_texture_is_read() {
 
 #[test]
 fn grass_grows_tufts_that_sway_and_hangs_over_edges() {
+    use crate::mesh::Detail;
     let mut images = Assets::<Image>::default();
     let atlas = crate::textures::build(&mut images);
     let w = world();
     let (x, z) = (world::START.x as i32, world::START.z as i32);
     let c = IVec3::new(x, w.top(x, z), z) / world::CHUNK;
-    let thick = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), true);
-    let bare = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover { density: 0.0, shadows: false }, true);
+    let thick = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), Detail::Near);
+    let bare = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover { density: 0.0, shadows: false, ..default() }, Detail::Near);
+    assert!(thick.varies);
     let cover = thick.layers.into_iter().nth(crate::mesh::COVER).unwrap();
     let lips = bare.layers.into_iter().nth(crate::mesh::COVER).unwrap();
     assert!(!lips.is_empty(), "grass hangs over the edges of terraces even with no tufts");
     assert!(cover.into_mesh(false).has_morph_targets(), "tufts sway in the wind");
     assert!(!lips.into_mesh(false).has_morph_targets(), "grass lips don't");
+}
+
+#[test]
+fn far_chunks_keep_fewer_tufts_and_keep_still() {
+    use crate::mesh::Detail;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let w = world();
+    let (x, z) = (world::START.x as i32, world::START.z as i32);
+    let c = IVec3::new(x, w.top(x, z), z) / world::CHUNK;
+    let quads = |d: Detail| {
+        let m = crate::mesh::mesh_chunk(&w, &atlas, c, crate::mesh::Cover::default(), d);
+        let mut l = m.layers.into_iter();
+        let opaque = l.next().unwrap().into_mesh(false).count_vertices();
+        let cover = l.nth(crate::mesh::COVER - 1).unwrap().into_mesh(false);
+        (opaque, cover.count_vertices(), cover.has_morph_targets())
+    };
+    let (near, mid, far, distant) = (quads(Detail::Near), quads(Detail::Mid), quads(Detail::Far), quads(Detail::Distant));
+    assert!(near.0 == distant.0, "the blocks themselves are the same at every distance");
+    assert!(near.1 > mid.1 && mid.1 > far.1 && far.1 > distant.1, "{near:?} {mid:?} {far:?} {distant:?}");
+    assert!(near.2 && !mid.2 && !far.2, "only near chunks sway");
+    // a chunk at a boundary keeps its level until it's well past it
+    let mid_of = |c: IVec3| (c * world::CHUNK).as_vec3() + Vec3::splat(world::CHUNK as f32 / 2.0);
+    let at = mid_of(IVec3::new(2, 1, 2));
+    let edge = at + Vec3::new(52.0, 0.0, 0.0);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), edge, Some(Detail::Near)), Detail::Near);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), edge, Some(Detail::Mid)), Detail::Mid);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), at, None), Detail::Near);
+    assert_eq!(Detail::of(IVec3::new(2, 1, 2), at + Vec3::new(300.0, 0.0, 0.0), Some(Detail::Near)), Detail::Distant);
 }
 
 // ---------- the market, from the game ----------

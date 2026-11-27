@@ -274,6 +274,9 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         // smooths the shadow filter and the haze's ray marching too
         if on("taa") {
             commands.entity(cam).insert((Msaa::Off, TemporalAntiAliasing::default(), ShadowFilteringMethod::Temporal));
+        } else {
+            // SSAO won't run with MSAA
+            commands.entity(cam).insert(Msaa::Off);
         }
         if on("ssao") {
             commands.entity(cam).insert(ScreenSpaceAmbientOcclusion {
@@ -285,14 +288,16 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
             commands.entity(cam).insert(ContactShadows::default());
         }
         if on("haze") {
-            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 128 } else { 64 } });
+            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 64 } else { 32 } });
             commands.spawn((
                 FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
                 Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
                 Haze,
             ));
         }
-        commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 2048 } else if ultra { 8192 } else { 4096 } });
+        // ground cover casts shadows only near the player (`mesh::Detail`), and
+        // the first cascade covers 10 blocks, so 3072 keeps shadows crisp
+        commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 2048 } else if ultra { 4096 } else { 3072 } });
     }
     let cascades = CascadeShadowConfigBuilder {
         num_cascades: if medium { 4 } else { 2 },
