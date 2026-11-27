@@ -4054,6 +4054,104 @@ fn a_pad_opens_the_keyboard_on_a_field_and_esc_from_a_menu_goes_back_to_playing(
 }
 
 #[test]
+fn a_picture_of_a_creation_is_kept_only_with_something_in_it() {
+    let (w, h) = (100usize, 50usize);
+    let sky: Vec<u8> = (0..w * h).flat_map(|_| [120u8, 160, 210, 255]).collect();
+    assert!(!crate::photos::worth_keeping(&sky), "a flat sky isn't worth keeping");
+    assert!(!crate::photos::worth_keeping(&[]), "nor is nothing");
+    // a creature in the middle of the sky
+    let mut shot = sky.clone();
+    for y in 10..40 {
+        for x in 30..70 {
+            shot[(y * w + x) * 4..(y * w + x) * 4 + 3].copy_from_slice(&[60, 90, 40]);
+        }
+    }
+    assert!(crate::photos::worth_keeping(&shot), "a creature against the sky is");
+}
+
+#[test]
+fn settings_come_in_pages_and_creations_on_shelves_of_cards() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::input::Controls;
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, pages, Act, Acts, Focus, Kind, Screen, WorldInfo, SETTINGS_PAGES};
+    home();
+    let lib = Library::load();
+    let scripts = Scripts::default();
+    let settings = Settings::default();
+    let info = WorldInfo { in_world: true, ..Default::default() };
+    let mut focus = Focus::default();
+    focus.go(Screen::Settings);
+    // every setting is on one page or another, and only one
+    let mut found = vec![];
+    for n in 0..SETTINGS_PAGES.len() {
+        focus.settings_page = n;
+        let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+        assert_eq!(title, "Settings");
+        assert!(items.iter().any(|i| i.kind == Kind::Button(Act::Back)), "{} goes back", SETTINGS_PAGES[n]);
+        for i in items {
+            match i.kind {
+                Kind::Slider { key, .. } | Kind::Toggle { key, .. } | Kind::Field { key, .. } => found.push(key),
+                Kind::Choice { act, .. } | Kind::Button(act) => found.push(format!("{act:?}")),
+                _ => {}
+            }
+        }
+    }
+    for k in ["name", "survival", "mouse", "stick", "invert", "fov", "fullscreen", "volume", "subtitles", "Lighting", "server", "market", "bridge", "OpenControls", "OpenDevices", "OpenParents", "Market"] {
+        assert_eq!(found.iter().filter(|f| f.as_str() == k || f.starts_with(&format!("{k}("))).count(), 1, "{k} on one page: {found:?}");
+    }
+
+    // shelves: what's in this world only in one
+    focus.go(Screen::Library);
+    let (shelves, _) = pages(&focus, &info).unwrap();
+    assert!(shelves.contains(&"In this world"));
+    assert!(!pages(&focus, &WorldInfo::default()).unwrap().0.contains(&"In this world"), "only in a world");
+    focus.shelf = shelves.iter().position(|s| *s == "Made by Potluck").unwrap();
+    let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+    let cards: Vec<String> = items.iter().filter_map(|i| if let Kind::Card(Act::Inside(id)) = &i.kind { Some(id.clone()) } else { None }).collect();
+    assert!(cards.contains(&"mossback".to_string()), "{cards:?}");
+    assert!(cards.iter().all(|id| lib.list[id].origin == Origin::Base));
+
+    // LB and RB (or Tab) turn the pages; cards go along rows and down columns
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.world_mut().resource_mut::<WorldInfo>().in_world = true;
+    app.world_mut().resource_mut::<Library>().running.clear();
+    let press = |app: &mut App, f: &dyn Fn(&mut Controls)| {
+        let mut c = Controls::default();
+        f(&mut c);
+        app.insert_resource(c);
+        app.world_mut().run_system_once(crate::ui::menu_input).unwrap();
+    };
+    app.world_mut().resource_mut::<Focus>().go(Screen::Settings);
+    press(&mut app, &|c| c.page = 1);
+    assert_eq!(app.world().resource::<Focus>().settings_page, 1);
+    press(&mut app, &|c| c.page = -1);
+    press(&mut app, &|c| c.page = -1);
+    assert_eq!(app.world().resource::<Focus>().settings_page, SETTINGS_PAGES.len() - 1, "round from the first to the last");
+    app.world_mut().resource_mut::<Focus>().go(Screen::Library);
+    app.world_mut().resource_mut::<Focus>().cols = 4;
+    press(&mut app, &|c| c.down = true);
+    press(&mut app, &|c| c.right = true);
+    let f = app.world().resource::<Focus>();
+    let (_, items) = menu_items(f, app.world().resource::<Library>(), app.world().resource::<Scripts>(), app.world().resource::<Settings>(), &info);
+    let first = items.iter().position(|i| matches!(i.kind, Kind::Card(_))).unwrap();
+    assert_eq!(f.sel, first + 5, "a row down and one along");
+    let Kind::Card(Act::Inside(id)) = items[f.sel].kind.clone() else { panic!("a card") };
+    // X brings it in; A looks inside
+    press(&mut app, &|c| c.interact = true);
+    press(&mut app, &|c| c.accept = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Run(id.clone()), Act::Inside(id)]);
+    // an empty shelf still goes back
+    app.world_mut().resource_mut::<Acts>().0.clear();
+    app.world_mut().resource_mut::<Focus>().shelf = 1;
+    press(&mut app, &|c| c.back = true);
+    assert_eq!(app.world().resource::<Acts>().0, [Act::Back]);
+}
+
+#[test]
 fn the_maps_chats_and_keyboards_systems_ask_for_what_they_can_have_together() {
     // two queries that could reach the same thing mutably stop the game at
     // its start (Bevy's B0001), so each system is put together here
@@ -4082,6 +4180,8 @@ fn the_maps_chats_and_keyboards_systems_ask_for_what_they_can_have_together() {
     check(crate::waypoints::spawn_fade);
     check(crate::ui::draw_menu);
     check(crate::ui::menu_input);
+    check(crate::photos::take);
+    check(crate::render::menu_blur);
     check(crate::ui::update_hud);
 }
 

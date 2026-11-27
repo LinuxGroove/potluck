@@ -155,6 +155,7 @@ fn main() {
     }));
     sim(&mut app, SEED);
     app.add_plugins(MaterialPlugin::<render::WaterMaterial>::default());
+    render::add_menu_blur(&mut app);
     if offscreen {
         app.insert_resource(OffscreenSize(size));
     }
@@ -200,6 +201,7 @@ fn main() {
                     map::fill,
                     chat::fill,
                     ui::draw_menu,
+                    photos::take,
                     game::title_view,
                 )
                     .chain(),
@@ -240,7 +242,7 @@ fn main() {
         let at: Option<Vec<f32>> = opt("at").map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect());
         let tod: Option<f32> = opt("time").and_then(|v| v.parse().ok());
         let screen = opt("screen");
-        let creature = opt("at").and_then(|a| a.strip_prefix("creature").map(|n| n.trim_start_matches(':').parse().unwrap_or(0)));
+        let creature = opt("at").and_then(|a| a.strip_prefix("creature").map(|n| n.trim_start_matches(':').to_string()));
         // --person[=hue] stands a player a few blocks ahead, facing you
         let person = args.iter().find(|a| a.starts_with("--person")).map(|a| a.strip_prefix("--person=").and_then(|h| h.parse().ok()).unwrap_or(30.0));
         // --lines puts a few lines of chat on the screen, as friends might say
@@ -264,8 +266,8 @@ struct Shot {
     at: Option<Vec<f32>>,
     tod: Option<f32>,
     screen: Option<String>,
-    /// Which creature to look in the face, counting by id.
-    creature: Option<usize>,
+    /// Which creature to look in the face, counting by id, or the first of a creation's.
+    creature: Option<String>,
     /// A player to stand in view, by their shirt's hue, until it's placed.
     person: Option<f32>,
     /// Lines of chat to show.
@@ -330,9 +332,10 @@ fn shot(
             me.flying = true;
         }
     }
-    if let Some(n) = s.creature {
-        let mut ids: Vec<_> = herd.bodies.keys().copied().collect();
+    if let Some(n) = s.creature.clone() {
+        let mut ids: Vec<_> = herd.bodies.iter().filter(|(_, b)| n.parse::<usize>().is_ok() || n.is_empty() || b.creation == n).map(|(id, _)| *id).collect();
         ids.sort();
+        let n = n.parse::<usize>().unwrap_or(0);
         if let Some(b) = ids.get(n).and_then(|id| herd.bodies.get(id)) {
             // creatures face -z, turned by their yaw; stand a few blocks in
             // front, a little above, looking back at it
@@ -355,16 +358,33 @@ fn shot(
     if t > 1.0 && focus.screen == ui::Screen::Title {
         if let Some(sc) = s.screen.clone() {
             info.in_world = true;
-            let id = herd.bodies.values().next().map(|b| b.creation.clone()).unwrap_or("mossback".into());
+            let id = s.creature.clone().filter(|c| !c.is_empty() && c.parse::<usize>().is_err()).or_else(|| herd.bodies.values().next().map(|b| b.creation.clone())).unwrap_or("mossback".into());
+            // a page of Settings or a shelf of Creations: settings:2
+            let (sc, page) = sc.split_once(':').map(|(a, b)| (a.to_string(), b.parse().unwrap_or(0))).unwrap_or((sc, 0));
             focus.go(match sc.as_str() {
-                "inside" => ui::Screen::Inside(id),
-                "tweak" => ui::Screen::Tweak(id),
+                "inside" => ui::Screen::Inside(id.clone()),
+                "tweak" => ui::Screen::Tweak(id.clone()),
                 "title" => ui::Screen::Title,
                 "pause" => ui::Screen::Pause,
                 "map" => ui::Screen::Map,
                 "chat" | "keyboard" => ui::Screen::Chat,
+                "settings" => ui::Screen::Settings,
+                "creations" => ui::Screen::Library,
+                "market" => ui::Screen::Link,
+                "question" => ui::Screen::Panel,
                 _ => ui::Screen::Playing,
             });
+            focus.settings_page = page;
+            focus.shelf = page;
+            if sc == "market" {
+                // what the market would send: a sign-in link for the phone
+                focus.link = Some(("https://potluck.linuxgroove.com/in/7QK2-M9XD-PL4F-W2HZ".into(), "The market".into()));
+            }
+            if sc == "question" {
+                // as a creation asks: through Me, which keeps it open
+                me.panel = Some(potluck::script::Panel { creation: id.clone(), ask: 1, title: "Ride me?".into(), text: "I'll take you up the hill, but you'll have to hold on.".into(), choices: vec!["Climb on".into(), "Not now".into()] });
+                focus.panel = me.panel.clone();
+            }
             if sc == "keyboard" {
                 // a pad typing a line
                 focus.fields.insert("say".into(), "see you at the c".into());

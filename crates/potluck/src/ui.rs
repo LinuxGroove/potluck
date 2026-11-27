@@ -16,14 +16,14 @@ use crate::script::{KnobValue, Scripts};
 use crate::settings::Settings;
 use crate::textures::BlockAtlas;
 
+pub mod draw;
+pub use draw::draw_menu;
+
 pub const INK: Color = Color::srgb(0.98, 0.96, 0.9);
 pub const DIM: Color = Color::srgba(0.98, 0.96, 0.9, 0.62);
 pub const MINT: Color = Color::srgb(0.37, 0.88, 0.78);
 pub const GOLD: Color = Color::srgb(1.0, 0.77, 0.36);
 pub const RED: Color = Color::srgb(1.0, 0.45, 0.42);
-const PANEL: Color = Color::srgba(0.07, 0.09, 0.12, 0.86);
-const CARD: Color = Color::srgba(1.0, 1.0, 1.0, 0.06);
-const PICK: Color = Color::srgba(0.37, 0.88, 0.78, 0.22);
 
 pub const SWATCHES: &[&str] = &[
     "#4f7a3a", "#6fa64a", "#2f5d50", "#3a6fb0", "#5fe0c8", "#b18cff", "#ff7fa0", "#e84a4a", "#ffc35c", "#f0e0b0", "#8a7a52", "#3b2a1c", "#f5f5f5", "#2a2a2e",
@@ -184,6 +184,11 @@ pub enum Kind {
     Chip(Act),
     /// A line of chat: the label is who said it, in their colour.
     Line { color: [u8; 3], words: String },
+    /// A creation on the Creations sheet, as a card with its picture; the
+    /// act is what A does (Look inside).
+    Card(Act),
+    /// One of a few choices, turned with left and right (the act moves it on).
+    Choice { act: Act, value: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -253,6 +258,12 @@ pub struct Focus {
     /// The title and items of the screens other modules make: the map's
     /// (`map::fill`) and chat's (`chat::fill`).
     pub made: (String, Vec<Item>),
+    /// The page of Settings open (`SETTINGS_PAGES`).
+    pub settings_page: usize,
+    /// The shelf of Creations open (`shelves`).
+    pub shelf: usize,
+    /// How many cards a row of the Creations sheet holds, as last drawn.
+    pub cols: usize,
     /// The first item drawn, when a menu is taller than the window.
     first: usize,
     qr: Option<(String, Handle<Image>)>,
@@ -283,6 +294,9 @@ impl Default for Focus {
             bridge: None,
             keyboard: None,
             made: (String::new(), vec![]),
+            settings_page: 0,
+            shelf: 0,
+            cols: 4,
             first: 0,
             qr: None,
         }
@@ -297,6 +311,38 @@ impl Focus {
         self.screen = s;
         self.sel = 0;
         self.scroll = 0;
+    }
+    /// The page open on a screen with pages, to change.
+    fn page_mut(&mut self) -> Option<&mut usize> {
+        match self.screen {
+            Screen::Settings => Some(&mut self.settings_page),
+            Screen::Library => Some(&mut self.shelf),
+            _ => None,
+        }
+    }
+}
+
+/// Settings' pages, by what they're about.
+pub const SETTINGS_PAGES: &[&str] = &["You", "Controls", "Picture and sound", "Online", "Family"];
+
+/// The shelves of the Creations sheet: what's in this world only in one.
+pub fn shelves(in_world: bool) -> &'static [&'static str] {
+    if in_world {
+        &["Everything", "In this world", "Made by me", "From friends", "Made by Potluck"]
+    } else {
+        &["Everything", "Made by me", "From friends", "Made by Potluck"]
+    }
+}
+
+/// A screen's pages (LB and RB, or Tab), and the one open.
+pub fn pages(focus: &Focus, info: &WorldInfo) -> Option<(&'static [&'static str], usize)> {
+    match focus.screen {
+        Screen::Settings => Some((SETTINGS_PAGES, focus.settings_page.min(SETTINGS_PAGES.len() - 1))),
+        Screen::Library => {
+            let list = shelves(info.in_world);
+            Some((list, focus.shelf.min(list.len() - 1)))
+        }
+        _ => None,
     }
 }
 
@@ -376,7 +422,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         Screen::Inside(id) => {
             let Some(c) = lib.list.get(id) else { return ("Gone".into(), vec![button("Back", Act::Back)]) };
             let m = &c.manifest;
-            let mut v = vec![note(format!("{} by {}", cap(&m.kind), m.by))];
+            let mut v = vec![note(format!("{} by {}", kind_name(&m.kind), m.by))];
             if !m.about.is_empty() {
                 v.push(note(m.about.clone()));
             }
@@ -659,21 +705,36 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             if let Some(j) = focus.jam.as_ref().filter(|_| !settings.young) {
                 v.push(note(format!("This week's jam is \u{201c}{}\u{201d}. Make something for it, share it to Everyone and enter it from Share.", j.theme)));
             }
-            let add = |title: &str, f: &dyn Fn(&crate::creations::Creation) -> bool, v: &mut Vec<Item>| {
-                let list: Vec<_> = lib.list.values().filter(|c| f(c)).collect();
-                if list.is_empty() {
-                    return;
-                }
-                v.push(note(title.to_string()));
-                for c in list {
-                    let running = if lib.running.contains(&c.id) { "  ·  in this world" } else { "" };
-                    v.push(button(format!("{} by {}{running}", c.manifest.name, c.manifest.by), Act::Inside(c.id.clone())));
-                }
+            let shelf = pages(focus, info).map(|(list, n)| list[n]).unwrap_or("Everything");
+            let mut list: Vec<&crate::creations::Creation> = lib
+                .list
+                .values()
+                .filter(|c| match shelf {
+                    "In this world" => lib.running.contains(&c.id),
+                    "Made by me" => c.origin == Origin::Mine,
+                    "From friends" => matches!(c.origin, Origin::Friend(_) | Origin::Code(_)),
+                    "Made by Potluck" => c.origin == Origin::Base,
+                    _ => true,
+                })
+                .collect();
+            // mine first, then friends', then Potluck's, what's here before the rest
+            let rank = |c: &crate::creations::Creation| match c.origin {
+                Origin::Mine => 0,
+                Origin::Base => 2,
+                _ => 1,
             };
-            add("Made by me", &|c| c.origin == Origin::Mine, &mut v);
-            add("From friends and codes", &|c| matches!(c.origin, Origin::Friend(_) | Origin::Code(_)), &mut v);
-            add("Made by Potluck", &|c| c.origin == Origin::Base, &mut v);
-            v.push(button("Back", Act::Back));
+            list.sort_by_key(|c| (rank(c), !lib.running.contains(&c.id), c.manifest.name.to_lowercase()));
+            for c in &list {
+                v.push(Item { label: c.manifest.name.clone(), kind: Kind::Card(Act::Inside(c.id.clone())) });
+            }
+            if list.is_empty() {
+                v.push(note(match shelf {
+                    "In this world" => "Nothing from here runs in this world yet. Choose one on another shelf and bring it in.",
+                    "Made by me" => "Nothing yet. Look inside any creation and Remix it to make one of your own.",
+                    "From friends" => "Nothing yet. When a friend gives you a code, load it from Load a creation from a code.",
+                    _ => "Nothing here yet.",
+                }));
+            }
             ("Creations".into(), v)
         }
         Screen::Controls => {
@@ -719,37 +780,70 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             (p.title.clone(), v)
         }
         Screen::Settings => {
-            let mut v = vec![
-                Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: focus.fields.get("name").cloned().unwrap_or_else(|| settings.name.clone()) } },
-                Item { label: "Mouse speed".into(), kind: Kind::Slider { key: "mouse".into(), value: settings.mouse_sensitivity as f64, min: 0.2, max: 3.0 } },
-                Item { label: "Stick speed".into(), kind: Kind::Slider { key: "stick".into(), value: settings.stick_sensitivity as f64, min: 0.2, max: 3.0 } },
-                Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
-                Item { label: "Full screen (F11)".into(), kind: Kind::Toggle { key: "fullscreen".into(), value: settings.fullscreen } },
-                Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
-                Item { label: "Survival (health; blocks run out)".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
-                Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
-                Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
-                Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
-                button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
-                button("Creations' buttons", Act::OpenControls),
-                Item { label: "Dev bridge for coding helpers on this computer".into(), kind: Kind::Toggle { key: "bridge".into(), value: settings.dev_bridge } },
-                button("Link a device", Act::OpenDevices),
-                button("Parent settings", Act::OpenParents),
-                Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
-                Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
-                button("Back", Act::Back),
-            ];
+            let field_of = |key: &str, now: &str| focus.fields.get(key).cloned().unwrap_or_else(|| now.to_string());
+            let mut v = match SETTINGS_PAGES[focus.settings_page.min(SETTINGS_PAGES.len() - 1)] {
+                "You" => vec![
+                    Item { label: "Your name".into(), kind: Kind::Field { key: "name".into(), value: field_of("name", &settings.name) } },
+                    Item { label: "Survival".into(), kind: Kind::Toggle { key: "survival".into(), value: settings.survival } },
+                    note("Health, and blocks that run out. Off, you build with everything."),
+                    button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
+                    button("Link a device", Act::OpenDevices),
+                ],
+                "Controls" => vec![
+                    Item { label: "Mouse speed".into(), kind: Kind::Slider { key: "mouse".into(), value: settings.mouse_sensitivity as f64, min: 0.2, max: 3.0 } },
+                    Item { label: "Stick speed".into(), kind: Kind::Slider { key: "stick".into(), value: settings.stick_sensitivity as f64, min: 0.2, max: 3.0 } },
+                    Item { label: "Look up and down the other way".into(), kind: Kind::Toggle { key: "invert".into(), value: settings.invert_y } },
+                    button("Creations' buttons", Act::OpenControls),
+                ],
+                "Picture and sound" => vec![
+                    Item { label: "Lighting".into(), kind: Kind::Choice { act: Act::Lighting, value: cap(&settings.lighting) } },
+                    note("Low for handhelds and laptops, High and Ultra for graphics cards. Takes effect after a restart."),
+                    Item { label: "Field of view".into(), kind: Kind::Slider { key: "fov".into(), value: settings.fov as f64, min: 70.0, max: 110.0 } },
+                    Item { label: "Full screen (F11)".into(), kind: Kind::Toggle { key: "fullscreen".into(), value: settings.fullscreen } },
+                    Item { label: "Sound volume".into(), kind: Kind::Slider { key: "volume".into(), value: settings.volume as f64, min: 0.0, max: 1.0 } },
+                    Item { label: "Subtitles for sounds".into(), kind: Kind::Toggle { key: "subtitles".into(), value: settings.subtitles } },
+                ],
+                "Online" => vec![
+                    Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: field_of("server", &settings.server) } },
+                    Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: field_of("market", &settings.market) } },
+                    Item { label: "Dev bridge for coding helpers on this computer".into(), kind: Kind::Toggle { key: "bridge".into(), value: settings.dev_bridge } },
+                ],
+                _ => {
+                    let on = |b: bool| if b { "on" } else { "off" };
+                    vec![
+                        note(format!(
+                            "{}. Sharing creations is {}, servers from the market's list are {} and chat is {}.",
+                            if settings.young { "Set for a player under 13" } else { "Set for a player 13 or older" },
+                            on(settings.sharing),
+                            on(settings.servers),
+                            on(settings.chat)
+                        )),
+                        button("Parent settings", Act::OpenParents),
+                        note(if settings.parent_pin.is_empty() { "A parent can set a PIN there, so only they can change these." } else { "Locked with a parent's PIN." }),
+                    ]
+                }
+            };
             // where a coding helper finds the bridge, under its switch
             if let Some(n) = focus.bridge.clone().filter(|_| settings.dev_bridge) {
-                let at = v.iter().position(|i| matches!(&i.kind, Kind::Toggle { key, .. } if key == "bridge")).map_or(v.len(), |i| i + 1);
-                v.insert(at, note(n));
+                if let Some(at) = v.iter().position(|i| matches!(&i.kind, Kind::Toggle { key, .. } if key == "bridge")) {
+                    v.insert(at + 1, note(n));
+                }
             }
+            v.push(button("Back", Act::Back));
             ("Settings".into(), v)
         }
     }
 }
 
-fn cap(s: &str) -> String {
+/// What a creation's kind is called on the screen.
+pub fn kind_name(kind: &str) -> String {
+    match kind {
+        "game" => "Mini game".into(),
+        k => cap(k),
+    }
+}
+
+pub(crate) fn cap(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
@@ -758,7 +852,7 @@ fn cap(s: &str) -> String {
 }
 
 /// An address without its https://, as people say it.
-fn host(url: &str) -> &str {
+pub(crate) fn host(url: &str) -> &str {
     url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/')
 }
 
@@ -808,6 +902,7 @@ pub fn menu_input(
     mut acts: ResMut<Acts>,
     mut lib_mut: ResMut<crate::KnobEdits>,
     buttons: Query<(&Interaction, &MenuButton), Changed<Interaction>>,
+    clicks: Query<(&Interaction, Option<&MenuTab>, Option<&MenuPrompt>), (Changed<Interaction>, Or<(With<MenuTab>, With<MenuPrompt>)>)>,
     time: Res<Time>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut last_cursor: Local<Option<Vec2>>,
@@ -845,9 +940,42 @@ pub fn menu_input(
         }
         return;
     }
+    // a page's tab or a prompt at the bottom, clicked
+    let mut tab = None;
+    let mut prompt = None;
+    for (int, t, p) in &clicks {
+        if *int == Interaction::Pressed {
+            tab = t.map(|t| t.0).or(tab);
+            prompt = p.copied().or(prompt);
+        }
+    }
+    // pages: RB and LB, Tab, or a click on one
+    if let Some((list, now)) = pages(&focus, &info) {
+        let step = c.page + (prompt == Some(MenuPrompt::Page)) as i32;
+        let mut to = (now as i32 + step).rem_euclid(list.len() as i32) as usize;
+        if let Some(t) = tab {
+            to = t.min(list.len() - 1);
+        }
+        if to != now {
+            heard.click();
+            if let Some(p) = focus.page_mut() {
+                *p = to;
+            }
+            focus.sel = 0;
+            focus.first = 0;
+            // the first thing you can choose on it, not a note
+            let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
+            focus.sel = items.iter().position(|i| i.selectable()).unwrap_or(0);
+            return;
+        }
+    }
     let (_, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
     let selectable: Vec<usize> = items.iter().enumerate().filter(|(_, i)| i.selectable()).map(|(n, _)| n).collect();
     if selectable.is_empty() {
+        // an empty shelf still goes back
+        if c.back || prompt == Some(MenuPrompt::Back) {
+            acts.0.push(Act::Back);
+        }
         return;
     }
     let mut pos = selectable.iter().position(|&i| i == focus.sel).unwrap_or(0);
@@ -872,11 +1000,20 @@ pub fn menu_input(
     }
     // small buttons side by side: left and right go along them too
     let chip = matches!(items.get(focus.sel).map(|i| &i.kind), Some(Kind::Chip(_)));
-    if c.down || chip && c.right {
-        pos = (pos + 1) % selectable.len();
-    }
-    if c.up || chip && c.left {
-        pos = (pos + selectable.len() - 1) % selectable.len();
+    if matches!(items.get(selectable[pos]).map(|i| &i.kind), Some(Kind::Card(_))) {
+        // cards in rows: left and right along a row, up and down a row at a time
+        let cols = focus.cols.max(1) as i32;
+        let last = selectable.len() as i32 - 1;
+        let mut p = pos as i32;
+        p += c.right as i32 - c.left as i32 + (c.down as i32 - c.up as i32) * cols;
+        pos = if c.down && p > last && (pos as i32) / cols < last / cols { last } else { p.clamp(0, last) } as usize;
+    } else {
+        if c.down || chip && c.right {
+            pos = (pos + 1) % selectable.len();
+        }
+        if c.up || chip && c.left {
+            pos = (pos + selectable.len() - 1) % selectable.len();
+        }
     }
     focus.sel = selectable[pos];
     // scrolling the code in Look inside
@@ -885,10 +1022,28 @@ pub fn menu_input(
     }
     let item = items[focus.sel].clone();
     let step = (c.right as i32 - c.left as i32) as f64;
-    let accept = c.accept || clicked;
+    let accept = c.accept || clicked || prompt == Some(MenuPrompt::Accept);
+    let interact = c.interact || prompt == Some(MenuPrompt::Interact);
     match &item.kind {
         Kind::Button(act) | Kind::Chip(act) => {
             if accept {
+                heard.click();
+                acts.0.push(act.clone());
+            }
+        }
+        Kind::Card(act) => {
+            if accept {
+                heard.click();
+                acts.0.push(act.clone());
+            }
+            // X or F brings it into this world, or takes it out
+            if let (Act::Inside(id), true, true) = (act, interact, info.in_world) {
+                heard.click();
+                acts.0.push(if lib.running.contains(id) { Act::Stop(id.clone()) } else { Act::Run(id.clone()) });
+            }
+        }
+        Kind::Choice { act, .. } => {
+            if accept || step != 0.0 {
                 heard.click();
                 acts.0.push(act.clone());
             }
@@ -950,7 +1105,7 @@ pub fn menu_input(
         }
         _ => {}
     }
-    if c.back && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
+    if (c.back || prompt == Some(MenuPrompt::Back)) && !matches!(item.kind, Kind::Field { .. } if c.backspace) {
         let back = match &focus.screen {
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
@@ -1041,305 +1196,17 @@ pub struct MenuRoot;
 #[derive(Component)]
 pub struct MenuButton(pub usize);
 
-/// Roughly how tall an item draws, for fitting a long menu in the window.
-fn item_height(item: &Item, wide: f32) -> f32 {
-    let lines = |s: &str, px_per: f32| ((s.chars().count() as f32 * px_per / wide).ceil()).max(1.0);
-    match &item.kind {
-        Kind::Note if item.label.is_empty() => 0.0,
-        Kind::Note => lines(&item.label, 8.6) * 20.0 + 10.0,
-        Kind::Line { words, .. } => lines(&format!("{}  {words}", item.label), 8.6) * 20.0 + 6.0,
-        Kind::Big => 82.0,
-        Kind::Qr => 322.0,
-        Kind::Chip(_) => 22.0,
-        _ => 59.0,
-    }
-}
+/// One of a screen's pages, to click.
+#[derive(Component)]
+pub struct MenuTab(pub usize);
 
-/// The items that fit: from `first`, moved so the selection shows.
-fn fit(items: &[Item], sel: usize, first: usize, room: f32, wide: f32) -> (usize, usize) {
-    let h: Vec<f32> = items.iter().map(|i| item_height(i, wide)).collect();
-    let total: f32 = h.iter().sum();
-    if total <= room || items.is_empty() {
-        return (0, items.len());
-    }
-    let sel = sel.min(items.len() - 1);
-    let mut first = first.min(sel);
-    // a heading just above the selection comes along
-    if first == sel && sel > 0 && matches!(items[sel - 1].kind, Kind::Note) {
-        first = sel - 1;
-    }
-    while first < sel && h[first..=sel].iter().sum::<f32>() > room {
-        first += 1;
-    }
-    let mut end = first;
-    let mut used = 0.0;
-    while end < items.len() && used + h[end] <= room {
-        used += h[end];
-        end += 1;
-    }
-    // room left at the bottom: show more above instead
-    while first > 0 && used + h[first - 1] <= room {
-        first -= 1;
-        used += h[first];
-    }
-    (first, end.max(sel + 1))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn draw_menu(
-    mut commands: Commands,
-    mut focus: ResMut<Focus>,
-    lib: Res<Library>,
-    scripts: Res<Scripts>,
-    settings: Res<Settings>,
-    info: Res<WorldInfo>,
-    fonts: Res<Fonts>,
-    roots: Query<Entity, With<MenuRoot>>,
-    mut images: ResMut<Assets<Image>>,
-    halves: Res<crate::halves::Halves>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-) {
-    let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
-    if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
-        if focus.qr.as_ref().map(|q| &q.0) != Some(&url) {
-            focus.qr = qr_image(&url).map(|img| (url, images.add(img)));
-        }
-    }
-    let qr = focus.qr.as_ref().map(|q| q.1.clone());
-    let side = match &focus.screen {
-        Screen::Inside(id) => lib.list.get(id).map(|c| {
-            let src = c.files.get(&c.manifest.main).cloned().unwrap_or_default();
-            let vm = scripts.vms.get(id);
-            let mut log: Vec<String> = vm.map(|v| v.log.clone()).unwrap_or_default();
-            let half = halves.list.get(id);
-            // what its client half printed on this game, too
-            log.extend(half.iter().flat_map(|h| h.log.iter().map(|l| format!("client: {l}"))));
-            let log: Vec<String> = log.iter().rev().take(6).rev().cloned().collect();
-            let err = vm.and_then(|v| v.error.clone()).or_else(|| half.and_then(|h| h.error.as_ref()).map(|e| format!("Its client half stopped: {e}")));
-            let ms = vm.map(|v| v.load_ms).unwrap_or(0.0);
-            let budget = vm.map(|v| v.budget());
-            (c.manifest.main.clone(), src, log, err, ms, budget)
-        }),
-        _ => None,
-    };
-    // the map's list sits on the right of the map; chat at the bottom left, over the world
-    let on_map = crate::map::on_map(&focus.screen);
-    let chat = focus.screen == Screen::Chat;
-    let width = if on_map { crate::map::PANEL - 20.0 } else if chat { crate::chat::WIDTH } else if side.is_some() { 400.0 } else { 520.0 };
-    let win_h = windows.single().map(|w| w.height()).unwrap_or(720.0);
-    let title_h = if title.is_empty() { 0.0 } else { 52.0 };
-    let room = (win_h - if on_map { 40.0 } else { 80.0 } - 52.0 - title_h - 26.0 - 60.0).max(200.0);
-    let (first, end) = fit(&items, focus.sel, focus.first, room, width - 52.0);
-    let sig = format!("{:?}|{title}|{items:?}|{}|{}|{:?}|{first}|{end}", focus.screen, focus.sel, focus.scroll, side);
-    if sig == focus.sig {
-        return;
-    }
-    focus.sig = sig;
-    focus.first = first;
-    focus.items = items.clone();
-    for e in &roots {
-        commands.entity(e).despawn();
-    }
-    if focus.playing() {
-        return;
-    }
-    let title_screen = focus.screen == Screen::Title;
-    let fonts = fonts.clone();
-    let sel = focus.sel;
-    let scroll = focus.scroll;
-    let (justify, align, dim, pad) = if on_map {
-        (JustifyContent::FlexEnd, AlignItems::Center, Color::NONE, UiRect::new(px(20), px(20), px(20), px(20)))
-    } else if chat {
-        (JustifyContent::FlexStart, AlignItems::FlexEnd, Color::srgba(0.0, 0.0, 0.0, 0.15), UiRect::all(px(18)))
-    } else if title_screen {
-        (JustifyContent::FlexStart, AlignItems::Center, Color::NONE, UiRect::all(px(40)))
-    } else {
-        (JustifyContent::Center, AlignItems::Center, Color::srgba(0.0, 0.0, 0.0, 0.35), UiRect::all(px(40)))
-    };
-    commands
-        .spawn((
-            MenuRoot,
-            Node { width: percent(100), height: percent(100), position_type: PositionType::Absolute, justify_content: justify, align_items: align, padding: pad, column_gap: px(24), ..default() },
-            BackgroundColor(dim),
-            GlobalZIndex(10),
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    width: px(width),
-                    max_height: percent(100),
-                    padding: UiRect::all(px(26)),
-                    row_gap: px(10),
-                    margin: if title_screen { UiRect::left(px(60)) } else { UiRect::ZERO },
-                    border_radius: BorderRadius::all(px(18)),
-                    overflow: Overflow::clip(),
-                    ..default()
-                },
-                BackgroundColor(PANEL),
-            ))
-            .with_children(|p| {
-                if !title.is_empty() {
-                    p.spawn((Text::new(title.clone()), TextFont { font: fonts.title.clone().into(), font_size: FontSize::Px(if title_screen { 64.0 } else { 34.0 }), weight: FontWeight(600), ..default() }, TextColor(if title_screen { GOLD } else { INK })));
-                }
-                let small = |p: &mut ChildSpawnerCommands, s: &str| {
-                    p.spawn((Text::new(s), TextFont { font: fonts.ui.clone().into(), font_size: FontSize::Px(12.0), ..default() }, TextColor(DIM)));
-                };
-                if first > 0 {
-                    small(p, "More above");
-                }
-                let mut i = first;
-                while i < end {
-                    if matches!(items[i].kind, Kind::Chip(_)) {
-                        // a run of chips wraps in rows
-                        let start = i;
-                        while i < end && matches!(items[i].kind, Kind::Chip(_)) {
-                            i += 1;
-                        }
-                        p.spawn(Node { flex_wrap: FlexWrap::Wrap, column_gap: px(8), row_gap: px(8), ..default() }).with_children(|r| {
-                            for (n, item) in items.iter().enumerate().take(i).skip(start) {
-                                spawn_item(r, n, item, n == sel, &fonts, &qr);
-                            }
-                        });
-                        continue;
-                    }
-                    spawn_item(p, i, &items[i], i == sel, &fonts, &qr);
-                    i += 1;
-                }
-                if end < items.len() {
-                    small(p, "More below");
-                }
-                if !title_screen && !on_map {
-                    small(p, "Up and down to choose · A or Enter to pick · B or Esc to go back");
-                }
-            });
-            // Look inside: the code, the log and any error
-            if let Some((file, src, log, err, ms, budget)) = side {
-                root.spawn((
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        width: px(720),
-                        max_height: percent(92),
-                        padding: UiRect::all(px(20)),
-                        row_gap: px(6),
-                        border_radius: BorderRadius::all(px(18)),
-                        overflow: Overflow::clip(),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.04, 0.05, 0.07, 0.92)),
-                ))
-                .with_children(|p| {
-                    let ui = fonts.ui.clone();
-                    p.spawn((Text::new(format!("{file}  ·  loaded in {ms:.0} ms  ·  wheel or right stick to scroll")), TextFont { font: ui.clone().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
-                    // how it's doing against its budgets, as it runs
-                    if let Some(b) = budget {
-                        p.spawn((Text::new(cap(&b)), TextFont { font: ui.clone().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
-                    }
-                    let lines: Vec<&str> = src.lines().collect();
-                    let start = (scroll as usize).min(lines.len().saturating_sub(1));
-                    let shown: String = lines.iter().enumerate().skip(start).take(30).map(|(n, l)| format!("{:>3}  {}\n", n + 1, l.replace('\t', "    "))).collect();
-                    p.spawn((Text::new(shown), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(14.0), ..default() }, TextColor(Color::srgb(0.85, 0.9, 0.86))));
-                    if let Some(e) = err {
-                        p.spawn((Text::new(format!("Problem: {e}")), TextFont { font: ui.clone().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(RED)));
-                    }
-                    if !log.is_empty() {
-                        p.spawn((Text::new(format!("Log\n{}", log.join("\n"))), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(13.0), ..default() }, TextColor(DIM)));
-                    }
-                });
-            }
-        });
-}
-
-/// One item of a menu.
-fn spawn_item(p: &mut ChildSpawnerCommands, i: usize, item: &Item, picked: bool, fonts: &Fonts, qr: &Option<Handle<Image>>) {
-    let ui = fonts.ui.clone();
-    match &item.kind {
-        Kind::Note => {
-            if !item.label.is_empty() {
-                p.spawn((Text::new(item.label.clone()), TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() }, TextColor(DIM)));
-            }
-        }
-        Kind::Line { color, words } => {
-            let font = TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() };
-            p.spawn((Text::new(format!("{}  ", item.label)), font.clone(), TextColor(Color::srgb_u8(color[0], color[1], color[2])))).with_child((TextSpan::new(words.clone()), font, TextColor(INK)));
-        }
-        Kind::Qr => {
-            if let Some(h) = qr {
-                p.spawn((ImageNode::new(h.clone()), Node { width: px(300), height: px(300), align_self: AlignSelf::Center, margin: UiRect::vertical(px(6)), border_radius: BorderRadius::all(px(10)), ..default() }));
-            }
-        }
-        Kind::Big => {
-            p.spawn((Text::new(item.label.clone()), TextFont { font: fonts.title.clone().into(), font_size: FontSize::Px(60.0), weight: FontWeight(600), ..default() }, TextColor(MINT)));
-        }
-        Kind::Chip(_) => {
-            p.spawn((
-                Interaction::default(),
-                MenuButton(i),
-                Node { padding: UiRect::axes(px(12), px(7)), border_radius: BorderRadius::all(px(16)), border: UiRect::all(px(2)), ..default() },
-                BorderColor::all(if picked { MINT } else { Color::NONE }),
-                BackgroundColor(if picked { PICK } else { CARD }),
-            ))
-            .with_child((Text::new(item.label.clone()), TextFont { font: ui.clone().into(), font_size: FontSize::Px(16.0), ..default() }, TextColor(INK)));
-        }
-        _ => {
-            // how full a slider's bar is (drawn, since the fonts have no block characters)
-            let bar = match &item.kind {
-                Kind::Slider { value, min, max, .. } => Some(((value - min) / (max - min)).clamp(0.0, 1.0) as f32),
-                _ => None,
-            };
-            let (label, right) = match &item.kind {
-                Kind::Slider { value, .. } => (item.label.clone(), trim_num(*value)),
-                Kind::Toggle { value, .. } => (item.label.clone(), if *value { "On".into() } else { "Off".into() }),
-                Kind::Swatch { value, .. } => (item.label.clone(), format!("< {value} >")),
-                // a PIN shows as dots
-                Kind::Field { key, value } if key.ends_with("pin") => (item.label.clone(), format!("{}{}", "\u{2022}".repeat(value.chars().count()), if picked { "|" } else { "" })),
-                Kind::Field { value, .. } => (item.label.clone(), format!("{value}{}", if picked { "|" } else { "" })),
-                _ => (item.label.clone(), String::new()),
-            };
-            let swatch = if let Kind::Swatch { value, .. } = &item.kind { crate::script::parse_color(value) } else { None };
-            p.spawn((
-                Interaction::default(),
-                MenuButton(i),
-                Node {
-                    padding: UiRect::axes(px(16), px(11)),
-                    justify_content: JustifyContent::SpaceBetween,
-                    align_items: AlignItems::Center,
-                    column_gap: px(12),
-                    border_radius: BorderRadius::all(px(12)),
-                    border: UiRect::all(px(2)),
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                BorderColor::all(if picked { MINT } else { Color::NONE }),
-                BackgroundColor(if picked { PICK } else { CARD }),
-            ))
-            .with_children(|b| {
-                b.spawn((Text::new(label), TextFont { font: ui.clone().into(), font_size: FontSize::Px(19.0), ..default() }, TextColor(INK)));
-                if let Some(col) = swatch {
-                    b.spawn((Node { width: px(56), height: px(22), border_radius: BorderRadius::all(px(6)), ..default() }, BackgroundColor(col)));
-                }
-                if let Some(f) = bar {
-                    b.spawn((
-                        Node { width: px(170), height: px(8), margin: UiRect::left(Val::Auto), border_radius: BorderRadius::all(px(4)), ..default() },
-                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.15)),
-                    ))
-                    .with_child((Node { width: percent(f * 100.0), height: percent(100), border_radius: BorderRadius::all(px(4)), ..default() }, BackgroundColor(MINT)));
-                }
-                if !right.is_empty() {
-                    let mut t = b.spawn((Text::new(right), TextFont { font: Handle::<Font>::default().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(MINT)));
-                    if bar.is_some() {
-                        // numbers take the same room, so the bars line up
-                        t.insert((Node { min_width: px(40), ..default() }, TextLayout::justify(Justify::Right)));
-                    }
-                }
-            });
-        }
-    }
-}
-
-fn trim_num(v: f64) -> String {
-    let s = format!("{v:.2}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
+/// A prompt at the bottom of a menu, which does what it says when clicked.
+#[derive(Component, Clone, Copy, PartialEq, Debug)]
+pub enum MenuPrompt {
+    Accept,
+    Back,
+    Page,
+    Interact,
 }
 
 // ---------- the HUD ----------
@@ -1398,12 +1265,14 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                 TextColor(DIM),
                 Node { position_type: PositionType::Absolute, left: px(18), top: px(14), ..default() },
             ));
-            // over menus too, so a share code shows while Look inside is open
+            // over menus too (shown when the rest of the HUD hides), so a
+            // share code shows while Look inside is open
             h.spawn((
                 ToastBox,
                 Node { position_type: PositionType::Absolute, top: px(40), width: percent(100), padding: UiRect::horizontal(percent(15)), justify_content: JustifyContent::Center, ..default() },
                 GlobalZIndex(30),
                 Pickable::IGNORE,
+                Visibility::Visible,
             ))
             .with_child((
                 ToastText,
@@ -1530,7 +1399,8 @@ pub fn update_hud(
     )>,
     cam: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
-    let show = focus.screen != Screen::Title && info.in_world;
+    // menus that cover the world hide the hotbar and the crosshair too
+    let show = focus.screen != Screen::Title && info.in_world && !draw::blurs(&focus.screen);
     for mut v in &mut hud {
         *v = if show { Visibility::Inherited } else { Visibility::Hidden };
     }
