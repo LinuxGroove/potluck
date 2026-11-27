@@ -1510,7 +1510,7 @@ for i = 1, 7 do ui.hide(nil, "n" .. i) end
     let log = |s: &Scripts| s.vms["test"].log.join("\n");
     assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
     assert!(log(&scripts).contains("no middle") && log(&scripts).contains("no five") && log(&scripts).contains("no nine"), "{}", log(&scripts));
-    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into() });
+    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     let shown = |ch: &[(u32, UiChange)], pid: u32, id: &str| {
         ch.iter().find_map(|(p, c)| match c {
             UiChange::Piece { id: i, piece, .. } if *p == pid && i == id => Some(piece.clone()),
@@ -1872,7 +1872,7 @@ for i = 1, 15 do net.send("spam") end
     halves[0].frame(0.1, &ada, for_ada);
     halves[0].frame(0.45, &ada, vec![]);
     let out = halves[0].take();
-    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into() });
+    let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     assert!(out.pieces.contains(&("test".into(), "hi".into(), piece("hi 2 b 2", "bottom"))), "{:?}", out.pieces);
     assert!(out.pieces.contains(&("test".into(), "got".into(), piece("got 30 at 0.55", "right"))), "its own clock: {:?}", out.pieces);
     assert_eq!(out.sounds.len(), 1);
@@ -2628,4 +2628,157 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     assert!(crops.as_object().is_some_and(|c| c.keys().all(|k| k != &format!("{},{},{}", at(3).x, at(3).y + 1, at(3).z))), "{crops}");
     assert_eq!(again.vms["farming"].error, None, "{:?}", again.vms["farming"].log);
     assert_eq!(scripts.vms["farming"].error, None, "{:?}", scripts.vms["farming"].log);
+}
+
+/// world 0.6 and ui 0.2: creations set how fast players heal by
+/// themselves, and show meters beside the health bar.
+#[test]
+fn creations_slow_healing_and_show_meters() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::{Me, MAX_HEALTH};
+    use crate::script::{Piece, UiChange};
+    use bevy::ecs::system::RunSystemOnce;
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    let code = |rate: f32| {
+        format!(
+            r##"
+local world = require("@potluck/world@0.6")
+local ui = require("@potluck/ui@0.2")
+print("ada " .. tostring(world.healing(7, {rate})) .. " bo " .. tostring(world.healing(8, 1)) .. " stranger " .. tostring(world.healing(9, 0)))
+print(pcall(world.healing, 7, 5) and "fast ok" or "no fast")
+print(pcall(world.healing, 7, -1) and "less ok" or "no less")
+ui.meter(7, "food", 0.75, {{ color = "#20a040" }})
+ui.meter(nil, "air", 3)
+print(pcall(ui.meter, 7, "x", 0/0) and "nan ok" or "no nan")
+print(pcall(ui.meter, 7, "x", 0.5, {{ color = "green" }}) and "name ok" or "no name")
+print(pcall(ui.meter, 7, "", 0.5) and "blank ok" or "no blank")
+"##
+        )
+    };
+    let mut a = creation(&code(0.0));
+    scripts.start(&a, &mut herd).unwrap();
+    a.id = "other".into();
+    a.files.insert("main.luau".into(), code(2.5));
+    scripts.start(&a, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let l = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{l}");
+    for want in ["ada true bo true stranger false", "no fast", "no less", "no nan", "no name", "no blank"] {
+        assert!(l.contains(want), "{want}: {l}");
+    }
+    // two creations' rates multiply: none at all wins
+    let mut changes = scripts.healing_changes();
+    changes.sort_by_key(|c| c.0);
+    assert_eq!(changes, vec![(7, 0.0)]);
+    assert!(scripts.healing_changes().is_empty(), "told once");
+    // meters: a colour of its own or the usual amber, filled 0 to 1
+    let ch = scripts.ui_changes(&[7, 8]);
+    let meter = |pid: u32, id: &str| ch.iter().find_map(|(p, c)| match c {
+        UiChange::Piece { id: i, piece, creation } if *p == pid && i == id && creation == "test" => piece.clone(),
+        _ => None,
+    });
+    assert_eq!(meter(7, "food"), Some(Piece { text: String::new(), at: "meter".into(), meter: Some((0.75, [32, 160, 64])) }));
+    assert_eq!(meter(8, "air").and_then(|p| p.meter), Some((1.0, [224, 160, 64])));
+    // stopping one takes its rate away
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.healing_changes(), vec![(7, 2.5)]);
+    scripts.stop("other", &mut herd);
+    assert_eq!(scripts.healing_changes(), vec![(7, 1.0)]);
+
+    // the host's own player heals at the rate creations ask for, in survival
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { survival: true, ..default() }).insert_resource(Me::default());
+    app.init_resource::<crate::input::Controls>().init_resource::<crate::ui::Focus>().init_resource::<crate::ui::Toasts>();
+    app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+    let starve = creation("local world = require(\"@potluck/world@0.6\")\nworld.every(0.1, function() for _, p in world.players() do world.healing(p, 0) end end)");
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        let mut herd = w.resource_mut::<Herd>();
+        s.start(&starve, &mut herd).unwrap();
+    });
+    app.world_mut().run_system_once(crate::player::report_pockets).unwrap();
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    app.world_mut().resource_scope(|w, mut s: Mut<Scripts>| {
+        w.resource_scope(|w, mut v: Mut<Voxels>| {
+            let mut h = w.resource_mut::<Herd>();
+            s.tick(&mut v, &mut h, 0.2);
+        })
+    });
+    app.world_mut().run_system_once(crate::game::host_step).unwrap();
+    assert_eq!(app.world().resource::<Me>().healing, 0.0);
+    app.world_mut().resource_mut::<Me>().health = 10.0;
+    for _ in 0..3 {
+        app.update();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let me = app.world().resource::<Me>();
+    assert!(me.health <= 10.0 && me.health > 0.0, "no healing by themselves: {}", me.health);
+    assert!(MAX_HEALTH > 10.0);
+
+    // what goes between devices
+    for m in [Msg::Healing(0.5), Msg::Piece { creation: "c".into(), id: "food".into(), piece: Some(Piece { text: String::new(), at: "meter".into(), meter: Some((0.5, [1, 2, 3])) }) }] {
+        let Some(Event::Msg(_, back)) = decode(transport::Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+}
+
+/// Hunger: the food bar goes down, the food you carry is eaten when you're
+/// hungry, an empty belly stops healing and a full one speeds it up.
+#[test]
+fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
+    use crate::blocks::by_name;
+    home();
+    let mut hunger = Library::load().list.remove("hunger").expect("the base game has hunger");
+    hunger.knobs.insert("minutes".into(), KnobValue::Number(5.0));
+    let (carrots, wheat) = (by_name("Carrots").unwrap(), by_name("Wheat").unwrap());
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(carrots, 1), (wheat, 1)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&hunger, &mut herd).unwrap();
+    let bar = |scripts: &Scripts, pid: u32| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(pid), "hunger".into(), "food".into())).and_then(|p| p.meter).map(|m| m.0);
+    let carried = |scripts: &Scripts, b| scripts.shared.lock().unwrap().pockets[&7].items.get(&b).copied().unwrap_or(0);
+    let shown = |scripts: &Scripts, id: &str| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(7), "hunger".into(), id.into())).map(|p| p.text.clone());
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(bar(&scripts, 7), Some(1.0), "a full bar to start");
+    assert_eq!(bar(&scripts, 8), None, "no hunger in creative");
+    assert_eq!(scripts.healing_changes(), vec![(7, 2.0)], "well fed heals faster");
+    // 5 minutes from full to empty: down to 12 of 20 in two, then a carrot
+    run(&mut scripts, &mut voxels, &mut herd, 118.0);
+    assert_eq!(carried(&scripts, carrots), 1);
+    run(&mut scripts, &mut voxels, &mut herd, 4.0);
+    assert_eq!(carried(&scripts, carrots), 0, "ate the carrot");
+    assert_eq!(shown(&scripts, "ate").as_deref(), Some("You ate some carrots."));
+    assert!(bar(&scripts, 7).is_some_and(|b| b >= 0.85), "{:?}", bar(&scripts, 7));
+    // then the wheat, then nothing left: an empty belly stops healing
+    run(&mut scripts, &mut voxels, &mut herd, 100.0);
+    assert_eq!(carried(&scripts, wheat), 0, "chewed the wheat");
+    scripts.healing_changes();
+    run(&mut scripts, &mut voxels, &mut herd, 202.0);
+    assert_eq!(bar(&scripts, 7), Some(0.0));
+    assert_eq!(scripts.healing_changes(), vec![(7, 0.0)]);
+    assert!(shown(&scripts, "hungry").is_some_and(|t| t.contains("won't heal")), "{:?}", shown(&scripts, "hungry"));
+    run(&mut scripts, &mut voxels, &mut herd, 10.0);
+    assert!(shown(&scripts, "hungry").is_none(), "said for a few seconds");
+    // a carrot again: eaten at once, and healing as usual
+    scripts.pocket_changes();
+    scripts.set_pockets(7, true, &[(carrots, 1)], 1000);
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(carried(&scripts, carrots), 0);
+    assert_eq!(scripts.healing_changes(), vec![(7, 1.0)]);
+    // into creative: the bar goes and so does the slowing
+    scripts.pocket_changes();
+    scripts.set_pockets(7, false, &[], 1000);
+    run(&mut scripts, &mut voxels, &mut herd, 1.5);
+    assert_eq!(bar(&scripts, 7), None);
+    assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
 }

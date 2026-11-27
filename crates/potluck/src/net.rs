@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 10;
+pub const PROTOCOL: u32 = 11;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -116,6 +116,8 @@ pub enum Msg {
     Pockets { seq: u32, changes: Vec<(crate::blocks::BlockId, i32)> },
     /// A creation hurt (less than 0) or healed (more) you.
     Health(f32),
+    /// How fast you heal by yourself now (1 as usual, 0 not at all).
+    Healing(f32),
 }
 
 pub enum Event {
@@ -699,6 +701,14 @@ impl Net {
         }
     }
 
+    pub fn send_healing(&self, pid: u32, rate: f32) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&Msg::Healing(rate)));
+            }
+        }
+    }
+
     pub fn send_note(&self, pid: u32, note: crate::script::Note) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
@@ -1012,6 +1022,7 @@ pub fn client_net(
                     me.pockets_seen = seq;
                 }
                 Msg::Health(change) if change.is_finite() => me.health_due += change.clamp(-MAX_HEALTH, MAX_HEALTH),
+                Msg::Healing(rate) if rate.is_finite() => me.healing = rate.clamp(0.0, crate::script::MAX_HEALING as f32),
                 _ => {}
             },
         }

@@ -1,0 +1,13 @@
+name = "Hunger"
+by = "Potluck"
+kind = "mod"
+about = "A food bar beside your health in survival. You eat the carrots and wheat you carry when you get hungry, and on an empty belly you stop healing, but hunger never hurts you."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.6"
+tweak = "0.1"
+ui = "0.2"
+sound = "0.1"

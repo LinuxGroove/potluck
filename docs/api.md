@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.5")
+local world = require("@potluck/world@0.6")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,18 +17,18 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.5"
+world = "0.6"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.5 | Blocks and lights, creatures, players, their health and the blocks they carry, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.6 | Blocks and lights, creatures, players, their health (and how fast it comes back) and the blocks they carry, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
-| `@potluck/ui` | 0.1 | Lines on players' screens, and questions with choices |
+| `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.1 | The game's sounds by name, somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.1 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see |
 
@@ -75,7 +75,8 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Shortest timer | 0.1 s, the length of a tick |
 | World event, input and message handlers (`world.on`, `input.on`, `net.on`) | 32 |
 | Actions | 8, each on a pad button (A, X, Y, LB, RB, LT, RT or the d-pad) and a key (Space or a letter but W, A, S and D) |
-| Lines on screens (`ui.show`) | 8 at once (different ids), each up to 60 letters |
+| Lines on screens (`ui.show`) | 8 at once (different ids, meters among them), each up to 60 letters |
+| Meters (`ui.meter`) | 3 on a screen, from every creation together |
 | Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 4 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds, until they use one of its creatures or a block it hears `block_used` for |
 | Sounds | 10 a second; heard within 40 blocks |
 | Blocks given or taken (`world.give`, `world.take`) | 64 at a time |
@@ -96,6 +97,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.6**: `world.healing`, how fast a player heals by themselves (0 to 4, 1 as usual; creations' rates multiply).
 - **0.5**: `world.on` for `"block_placed"`, `"block_broken"` and `"block_used"`: a player put down, broke or used (Interact on) a block, with the player, the middle of the block and its name.
 - **0.4**: `world.daytime` and `world.daylight` (the time of day), `world.find_light` (the nearest lantern, brazier, candle or other block that gives light), and `world.hurt` and `world.heal` for survival players' health. A client half has `daytime` and `daylight` too.
 - **0.3**: `world.pockets`, `world.has`, `world.take` and `world.give`, for the blocks players carry in survival.
@@ -116,6 +118,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/ui`
 
+- **0.2**: `ui.meter`, a bar beside the health bar (0 to 1, in a colour of the creation's own). A client half has it too.
 - **0.1**: the first version: `ui.show`, `ui.hide`, `ui.ask` and `ui.close`.
 
 ### `@potluck/store`

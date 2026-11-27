@@ -26,7 +26,7 @@ const LOAD_BUDGET: Duration = Duration::from_millis(300);
 /// What `@potluck/world` does only on the host, where the world is.
 const HOST_ONLY: &[&str] = &[
     "creature", "block", "set_block", "top", "find_block", "find_light", "players", "nearest_player", "spawn", "creatures", "say", "on", "pockets", "has", "take",
-    "give", "hurt", "heal",
+    "give", "hurt", "heal", "healing",
 ];
 
 /// What a half asked for since it was last looked at.
@@ -211,6 +211,24 @@ impl Running {
                     let mut o = o.lock().unwrap();
                     o.shown.remove(&id);
                     o.pieces.push((id, None));
+                    Ok(())
+                })?,
+            )?;
+            let (o, m) = (out.clone(), me.clone());
+            ui.set(
+                "meter",
+                lua.create_function(move |_, (player, id, value, opts): (Value, String, Option<f64>, Option<Table>)| {
+                    mine(&m, &player)?;
+                    let piece = script::meter_of(&id, value, opts)?;
+                    let mut o = o.lock().unwrap();
+                    if piece.is_some() && !o.shown.contains(&id) && o.shown.len() >= MAX_PIECES {
+                        return Err(bad(format!("a client half can show at most {MAX_PIECES} pieces at once: ui.hide the ones it's done with")));
+                    }
+                    match piece.is_some() {
+                        true => o.shown.insert(id.clone()),
+                        false => o.shown.remove(&id),
+                    };
+                    o.pieces.push((id, piece));
                     Ok(())
                 })?,
             )?;

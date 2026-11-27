@@ -307,6 +307,14 @@ pub fn host_step(
             net.send_health(pid, change);
         }
     }
+    // how fast creations let players heal by themselves
+    for (pid, rate) in scripts.healing_changes() {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().healing = rate;
+        } else {
+            net.send_healing(pid, rate);
+        }
+    }
     // messages creations sent their client halves
     for (pid, note) in scripts.net_changes(&here) {
         if pid == my_id && me.is_some() {
