@@ -41,6 +41,8 @@ pub struct Settings {
     pub volume: f32,
     /// Words on the screen for sounds, and which side they're on.
     pub subtitles: bool,
+    /// Fill the screen, or play in a window (F11 switches).
+    pub fullscreen: bool,
 }
 
 /// A creation's action on buttons the player chose.
@@ -72,6 +74,7 @@ impl Default for Settings {
             bindings: Default::default(),
             volume: 0.8,
             subtitles: false,
+            fullscreen: true,
         }
     }
 }
