@@ -592,12 +592,14 @@ pub fn restore(entries: &[Entry]) -> Option<[BlockId; 256]> {
     moved.then_some(to)
 }
 
-/// A saved world: `POTLUCKW2`, the seed, the blocks creations made there
-/// (`made::Entry`s as JSON, after its length) and the blocks. Worlds saved
-/// before creations made blocks start `POTLUCKW1` and have no list.
+/// A saved world: `POTLUCKW3`, the seed, the blocks creations made there
+/// (`made::Entry`s as JSON, after its length) and the columns anyone
+/// changed (`Voxels::encode`; the rest come from the seed). Worlds saved
+/// before the world went on past the island start `POTLUCKW2` and hold the
+/// whole island; before creations made blocks, `POTLUCKW1` with no list.
 pub fn world_bytes(voxels: &crate::world::Voxels) -> Vec<u8> {
     let made = serde_json::to_vec(&table()).unwrap_or_else(|_| b"[]".to_vec());
-    let mut bytes = b"POTLUCKW2".to_vec();
+    let mut bytes = b"POTLUCKW3".to_vec();
     bytes.extend_from_slice(&voxels.seed.to_le_bytes());
     bytes.extend_from_slice(&(made.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&made);
@@ -613,11 +615,12 @@ pub fn read_world(bytes: &[u8]) -> Option<crate::world::Voxels> {
     }
     let seed = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]);
     match bytes[8] {
-        b'1' => crate::world::Voxels::decode(seed, &bytes[13..]),
-        b'2' => {
+        b'1' => crate::world::Voxels::decode_island(seed, &bytes[13..]),
+        b'2' | b'3' => {
             let n = u32::from_le_bytes(bytes.get(13..17)?.try_into().ok()?) as usize;
             let made: Vec<Entry> = serde_json::from_slice(bytes.get(17..17 + n)?).ok()?;
-            let mut v = crate::world::Voxels::decode(seed, bytes.get(17 + n..)?)?;
+            let rest = bytes.get(17 + n..)?;
+            let mut v = if bytes[8] == b'2' { crate::world::Voxels::decode_island(seed, rest)? } else { crate::world::Voxels::decode(seed, rest)? };
             if let Some(to) = restore(&made) {
                 v.renumber(&to);
             }
@@ -808,14 +811,13 @@ pub fn draw(
     let mut columns = std::collections::HashSet::new();
     let mut lights = vec![];
     let size = IVec3::splat(crate::world::CHUNK);
-    let top = IVec3::new(crate::world::CX, crate::world::CY, crate::world::CZ);
     voxels.each_from(FIRST_MADE, |p, id| {
         let c = p.div_euclid(size);
         chunks.insert(c);
         // and the chunk next door, for its faces against this block
         for d in blocks::SIDES {
             let n = (p + IVec3::from_array(d)).div_euclid(size);
-            if n != c && n.cmpge(IVec3::ZERO).all() && n.cmplt(top).all() {
+            if n != c && (crate::world::CY0..crate::world::CY1).contains(&n.y) {
                 chunks.insert(n);
             }
         }

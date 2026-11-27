@@ -23,7 +23,7 @@ use crate::player::Me;
 use crate::settings::Settings;
 use crate::ui::{Act, Acts, Fonts, Focus, Screen, Toasts, WorldInfo, DIM, INK};
 use crate::waypoints::{self, Goal, Kind, Travel, Waypoints};
-use crate::world::{Voxels, WX, WY, WZ};
+use crate::world::{Voxels, CHUNK, MIN_Y, SEA, WX, WY, WZ};
 
 /// The sea past the island's edge.
 pub const SEA_COLOR: [u8; 4] = [26, 58, 98, 255];
@@ -135,7 +135,7 @@ impl Column {
 pub fn surface(v: &Voxels, x: i32, z: i32, from: i32) -> Column {
     let mut water = 0;
     let mut y = from.min(WY - 1);
-    while y >= 0 {
+    while y >= MIN_Y {
         let b = v.get(x, y, z);
         match blocks::shape(b) {
             Shape::Air | Shape::Cross => {}
@@ -144,7 +144,7 @@ pub fn surface(v: &Voxels, x: i32, z: i32, from: i32) -> Column {
         }
         y -= 1;
     }
-    Column { block: blocks::BEDROCK, y: 0, water }
+    Column { block: blocks::BEDROCK, y: MIN_Y, water }
 }
 
 fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -172,132 +172,332 @@ pub fn shade(p: &Palette, c: Column, north: i32) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], 255]
 }
 
-/// The map of one world: a colour for every column, from above or at one
-/// level, and the picture of it the screen draws.
+/// The map's window onto the world, in blocks each way: what the picture
+/// holds, which the full map shows and the minimap draws from. It moves
+/// with the player (or the full map's middle), and every column ever drawn
+/// is kept, so coming back shows it again.
+pub const SIZE: i32 = 768;
+/// Land nobody has seen yet.
+pub const UNSEEN: [u8; 4] = [20, 24, 32, 255];
+/// The most columns kept (about 6 KB each); the furthest from the player
+/// go past it.
+const MAX_TILES: usize = 12_000;
+/// How far round the player the level under a roof is drawn (in blocks);
+/// further out it's the map from above, darkened.
+const LEVEL_REACH: i32 = 192;
+
+/// One column of the map, as it was last seen.
+struct Tile {
+    colors: Vec<[u8; 4]>,
+    heights: Vec<i16>,
+}
+
+/// The map of one world: a colour for every column seen, from above or at
+/// one level, and the picture of the part round the player the screen
+/// draws.
 #[derive(Resource)]
 pub struct MapImage {
     pub palette: Palette,
-    /// Every column seen from above, row by row from the north-west corner.
+    tiles: std::collections::HashMap<IVec2, Tile>,
+    /// The window's north-west corner, in blocks (a column's corner).
+    pub origin: IVec2,
+    /// The window from above, row by row from its north-west corner.
     pub colors: Vec<[u8; 4]>,
     /// Each column's height from above, for slopes and the cursor.
     pub heights: Vec<i16>,
     /// The level the map shows instead, under a roof or underground: its
-    /// height and the columns there.
-    pub level: Option<(i32, Vec<[u8; 4]>)>,
+    /// height, where it was drawn round, and the window's colours there.
+    pub level: Option<(i32, IVec2, Vec<[u8; 4]>)>,
     /// The picture the screen draws, when there's a screen.
     pub image: Option<Handle<Image>>,
     /// Which world it's of (`Voxels::id`).
     world: u64,
+    /// The columns drawn so far (`Voxels::serial`), and those that came
+    /// in and wait to be (a few each time, so streaming land never stalls).
+    drawn: u64,
+    todo: Vec<IVec2>,
     /// Changed since the picture was last written.
     pub rev: u32,
     written: u32,
-    /// The colour past the world's edge: the edge's own sea, so the map
-    /// runs on into open water instead of stopping at a line.
+    /// The colour past what's drawn.
     pub sea: [u8; 4],
 }
 
 impl Default for MapImage {
     fn default() -> Self {
-        MapImage { palette: Palette::default(), colors: vec![SEA_COLOR; (WX * WZ) as usize], heights: vec![0; (WX * WZ) as usize], level: None, image: None, world: 0, rev: 0, written: u32::MAX, sea: SEA_COLOR }
+        let n = (SIZE * SIZE) as usize;
+        MapImage {
+            palette: Palette::default(),
+            tiles: Default::default(),
+            origin: window_round(Vec2::new(WX as f32 / 2.0, WZ as f32 / 2.0)),
+            colors: vec![UNSEEN; n],
+            heights: vec![SEA as i16; n],
+            level: None,
+            image: None,
+            world: 0,
+            drawn: 0,
+            todo: vec![],
+            rev: 0,
+            written: u32::MAX,
+            sea: UNSEEN,
+        }
     }
 }
 
-fn idx(x: i32, z: i32) -> usize {
-    (z * WX + x) as usize
+/// The window's corner for a window round `at`.
+fn window_round(at: Vec2) -> IVec2 {
+    let c = (at / CHUNK as f32).floor().as_ivec2() * CHUNK;
+    c - IVec2::splat(SIZE / 2)
 }
 
 impl MapImage {
-    /// Draws the whole world again.
+    /// Where (x, z) is in the window, if it's in it.
+    #[inline]
+    fn idx(&self, x: i32, z: i32) -> Option<usize> {
+        let (lx, lz) = (x - self.origin.x, z - self.origin.y);
+        (lx >= 0 && lz >= 0 && lx < SIZE && lz < SIZE).then(|| (lz * SIZE + lx) as usize)
+    }
+
+    /// Draws everything loaded again.
     pub fn draw_all(&mut self, v: &Voxels) {
         self.world = v.id;
-        let cols: Vec<Column> = (0..WZ).flat_map(|z| (0..WX).map(move |x| (x, z))).map(|(x, z)| surface(v, x, z, WY - 1)).collect();
+        self.tiles.clear();
+        self.todo.clear();
+        let mut keys: Vec<IVec2> = v.keys().collect();
+        keys.sort_by_key(|k| (k.y, k.x));
+        for k in keys {
+            self.draw_tile(v, k);
+        }
+        self.drawn = v.serial;
+        self.compose(v);
+    }
+
+    /// Draws one column from what's there, and the row just south of it,
+    /// whose slopes it lights.
+    fn draw_tile(&mut self, v: &Voxels, key: IVec2) {
+        let (x0, z0) = (key.x * CHUNK, key.y * CHUNK);
+        let n = (CHUNK * CHUNK) as usize;
+        let mut tile = Tile { colors: vec![UNSEEN; n], heights: vec![0; n] };
+        // looking down from the highest part with anything in it
+        let from = v.column(key).map_or(WY - 1, |c| (0..crate::world::SECTIONS).rev().find(|&i| c.uniform(i) != Some(blocks::AIR)).map_or(MIN_Y, |i| MIN_Y + (i as i32 + 1) * CHUNK - 1));
+        let cols: Vec<Column> = (0..CHUNK).flat_map(|z| (0..CHUNK).map(move |x| (x, z))).map(|(x, z)| surface(v, x0 + x, z0 + z, from)).collect();
         for (i, c) in cols.iter().enumerate() {
-            self.heights[i] = c.top() as i16;
+            tile.heights[i] = c.top() as i16;
         }
-        for z in 0..WZ {
-            for x in 0..WX {
-                let north = if z > 0 { self.heights[idx(x, z - 1)] as i32 } else { cols[idx(x, z)].top() };
-                self.colors[idx(x, z)] = shade(&self.palette, cols[idx(x, z)], north);
+        for z in 0..CHUNK {
+            for x in 0..CHUNK {
+                let i = (z * CHUNK + x) as usize;
+                let north = if z > 0 { tile.heights[i - CHUNK as usize] as i32 } else { self.height_of(x0 + x, z0 - 1).unwrap_or(cols[i].top()) };
+                tile.colors[i] = shade(&self.palette, cols[i], north);
             }
         }
-        if let Some((y, _)) = self.level {
-            self.level = Some((y, level_colors(&self.palette, v, y)));
-        }
-        let edge: Vec<[u8; 4]> = (0..WX).flat_map(|x| [(x, 0), (x, WZ - 1)]).chain((0..WZ).flat_map(|z| [(0, z), (WX - 1, z)])).map(|(x, z)| self.colors[idx(x, z)]).collect();
-        let mut sum = [0u32; 3];
-        for c in &edge {
-            for i in 0..3 {
-                sum[i] += c[i] as u32;
+        self.tiles.insert(key, tile);
+        self.blit(key);
+        // the row south of it, lit by it
+        let south = key + IVec2::Y;
+        if self.tiles.contains_key(&south) && v.has(south) {
+            for x in x0..x0 + CHUNK {
+                self.draw_point(v, x, z0 + CHUNK);
             }
         }
-        let n = edge.len().max(1) as u32;
-        self.sea = [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8, 255];
+    }
+
+    /// The height kept for a spot, if it's been drawn.
+    fn height_of(&self, x: i32, z: i32) -> Option<i32> {
+        let k = IVec2::new(x.div_euclid(CHUNK), z.div_euclid(CHUNK));
+        self.tiles.get(&k).map(|t| t.heights[(z.rem_euclid(CHUNK) * CHUNK + x.rem_euclid(CHUNK)) as usize] as i32)
+    }
+
+    /// Draws one spot again (its blocks changed).
+    fn draw_point(&mut self, v: &Voxels, x: i32, z: i32) {
+        let k = IVec2::new(x.div_euclid(CHUNK), z.div_euclid(CHUNK));
+        if !v.has(k) || !self.tiles.contains_key(&k) {
+            return;
+        }
+        let col = surface(v, x, z, WY - 1);
+        let north = self.height_of(x, z - 1).unwrap_or(col.top());
+        let color = shade(&self.palette, col, north);
+        let i = (z.rem_euclid(CHUNK) * CHUNK + x.rem_euclid(CHUNK)) as usize;
+        if let Some(t) = self.tiles.get_mut(&k) {
+            t.heights[i] = col.top() as i16;
+            t.colors[i] = color;
+        }
+        if let Some(w) = self.idx(x, z) {
+            self.heights[w] = col.top() as i16;
+            self.colors[w] = color;
+        }
+    }
+
+    /// Copies a kept column into the window, if it's in it.
+    fn blit(&mut self, key: IVec2) {
+        let Some(t) = self.tiles.get(&key) else { return };
+        let (x0, z0) = (key.x * CHUNK, key.y * CHUNK);
+        for z in 0..CHUNK {
+            let Some(w) = self.idx(x0, z0 + z) else { continue };
+            if self.idx(x0 + CHUNK - 1, z0 + z).is_none() {
+                continue;
+            }
+            let i = (z * CHUNK) as usize;
+            self.colors[w..w + CHUNK as usize].copy_from_slice(&t.colors[i..i + CHUNK as usize]);
+            self.heights[w..w + CHUNK as usize].copy_from_slice(&t.heights[i..i + CHUNK as usize]);
+        }
+    }
+
+    /// Fills the window from the columns kept, and the level if one's shown.
+    fn compose(&mut self, v: &Voxels) {
+        self.colors.fill(UNSEEN);
+        self.heights.fill(SEA as i16);
+        let lo = self.origin.div_euclid(IVec2::splat(CHUNK));
+        let n = SIZE / CHUNK;
+        for kz in lo.y..lo.y + n {
+            for kx in lo.x..lo.x + n {
+                self.blit(IVec2::new(kx, kz));
+            }
+        }
+        if let Some((y, at, _)) = self.level {
+            self.level = Some((y, at, self.level_colors(v, y, at)));
+        }
         self.rev += 1;
     }
 
-    /// Draws the columns whose blocks changed, and those just south of them
-    /// (whose slope they light).
-    pub fn draw_changes(&mut self, v: &mut Voxels) {
+    /// Moves the window to keep `at` well inside it.
+    pub fn follow(&mut self, v: &Voxels, at: Vec2) {
+        let want = window_round(at);
+        if (want - self.origin).abs().max_element() >= SIZE / 6 {
+            self.origin = want;
+            self.compose(v);
+        }
+    }
+
+    /// Lets go of the columns furthest from `at` when too many are kept.
+    fn forget(&mut self, at: Vec2) {
+        if self.tiles.len() <= MAX_TILES {
+            return;
+        }
+        let c = (at / CHUNK as f32).floor().as_ivec2();
+        let mut keys: Vec<IVec2> = self.tiles.keys().copied().collect();
+        keys.sort_by_key(|k| -(*k - c).length_squared());
+        for k in keys.into_iter().take(self.tiles.len() - MAX_TILES * 9 / 10) {
+            self.tiles.remove(&k);
+        }
+    }
+
+    /// Draws the columns that came in, and the spots whose blocks changed
+    /// and those just south of them (whose slope they light).
+    pub fn draw_changes(&mut self, v: &mut Voxels, at: Vec2) {
         // a new world, or more changes than are worth going through one by one
         if v.id != self.world || v.map_dirty.len() >= 65536 {
             v.map_dirty.clear();
             self.draw_all(v);
             return;
         }
-        if v.map_dirty.is_empty() {
+        let new: Vec<IVec2> = v.since(self.drawn).collect();
+        self.drawn = v.serial;
+        self.todo.extend(new);
+        if self.todo.is_empty() && v.map_dirty.is_empty() {
             return;
         }
-        let mut cols: Vec<IVec2> = v.map_dirty.drain().collect();
-        cols.extend(cols.clone().into_iter().map(|c| c + IVec2::Y));
-        cols.sort_by_key(|c| (c.y, c.x));
-        cols.dedup();
-        for c in cols.iter().filter(|c| c.x >= 0 && c.y >= 0 && c.x < WX && c.y < WZ) {
-            let col = surface(v, c.x, c.y, WY - 1);
-            self.heights[idx(c.x, c.y)] = col.top() as i16;
-            let north = if c.y > 0 { self.heights[idx(c.x, c.y - 1)] as i32 } else { col.top() };
-            self.colors[idx(c.x, c.y)] = shade(&self.palette, col, north);
+        // nearest first, north before south among those drawn together
+        let c = (at / CHUNK as f32).floor().as_ivec2();
+        self.todo.sort_by_key(|k| std::cmp::Reverse((*k - c).length_squared()));
+        let mut now: Vec<IVec2> = (0..32).map_while(|_| self.todo.pop()).collect();
+        now.sort_by_key(|k| (k.y, k.x));
+        for k in now {
+            if v.has(k) {
+                self.draw_tile(v, k);
+            }
         }
-        if let Some((y, level)) = &mut self.level {
-            for c in cols.iter().filter(|c| c.x >= 0 && c.y >= 0 && c.x < WX && c.y < WZ) {
-                level[idx(c.x, c.y)] = level_color(&self.palette, v, c.x, c.y, *y);
+        self.forget(at);
+        let mut spots: Vec<IVec2> = v.map_dirty.drain().collect();
+        spots.extend(spots.clone().into_iter().map(|c| c + IVec2::Y));
+        spots.sort_by_key(|c| (c.y, c.x));
+        spots.dedup();
+        for c in &spots {
+            self.draw_point(v, c.x, c.y);
+        }
+        if let Some((y, round, _)) = &self.level {
+            let (y, round) = (*y, *round);
+            for c in &spots {
+                if let Some(i) = self.idx(c.x, c.y) {
+                    let color = self.level_color(v, c.x, c.y, y, round);
+                    if let Some((_, _, level)) = &mut self.level {
+                        level[i] = color;
+                    }
+                }
             }
         }
         self.rev += 1;
     }
 
-    /// Shows the level at height `y` (under a roof), or the world from
-    /// above (None).
-    pub fn show_level(&mut self, v: &Voxels, y: Option<i32>) {
-        if self.level.as_ref().map(|l| l.0) == y {
+    /// Shows the level at height `y` (under a roof) round `at`, or the world
+    /// from above (None).
+    pub fn show_level(&mut self, v: &Voxels, y: Option<i32>, at: Vec2) {
+        let round = (at / CHUNK as f32).floor().as_ivec2() * CHUNK;
+        let now = self.level.as_ref().map(|l| (l.0, l.1));
+        // the level follows the player a column at a time
+        if now == y.map(|y| (y, round)) {
             return;
         }
-        self.level = y.map(|y| (y, level_colors(&self.palette, v, y)));
+        self.level = y.map(|y| (y, round, self.level_colors(v, y, round)));
         self.rev += 1;
+    }
+
+    /// The window's colours at level `y`, drawn round `round`.
+    fn level_colors(&self, v: &Voxels, y: i32, round: IVec2) -> Vec<[u8; 4]> {
+        let mut out = Vec::with_capacity((SIZE * SIZE) as usize);
+        for z in self.origin.y..self.origin.y + SIZE {
+            for x in self.origin.x..self.origin.x + SIZE {
+                out.push(self.level_color(v, x, z, y, round));
+            }
+        }
+        out
+    }
+
+    fn level_color(&self, v: &Voxels, x: i32, z: i32, y: i32, round: IVec2) -> [u8; 4] {
+        let near = (x - round.x).abs().max((z - round.y).abs()) <= LEVEL_REACH;
+        if near && v.loaded(x, z) {
+            return level_color(&self.palette, v, x, z, y);
+        }
+        let c = self.idx(x, z).map_or(UNSEEN, |i| self.colors[i]);
+        let rgb = mix(ROCK, [c[0], c[1], c[2]], 0.35);
+        [rgb[0], rgb[1], rgb[2], 255]
     }
 
     /// The colours being shown.
     pub fn shown(&self) -> &[[u8; 4]] {
         match &self.level {
-            Some((_, l)) => l,
+            Some((_, _, l)) => l,
             None => &self.colors,
         }
     }
 
-    /// The colour at a spot in the world, the sea past its edge.
+    /// The colour at a spot in the world: unseen where nothing's drawn.
     pub fn at(&self, x: f32, z: f32) -> [u8; 4] {
         let (x, z) = (x.floor() as i32, z.floor() as i32);
-        if x < 0 || z < 0 || x >= WX || z >= WZ {
-            return self.sea;
+        if let Some(i) = self.idx(x, z) {
+            return self.shown()[i];
         }
-        self.shown()[idx(x, z)]
+        let k = IVec2::new(x.div_euclid(CHUNK), z.div_euclid(CHUNK));
+        self.tiles.get(&k).map_or(UNSEEN, |t| t.colors[(z.rem_euclid(CHUNK) * CHUNK + x.rem_euclid(CHUNK)) as usize])
     }
 
     pub fn height(&self, x: f32, z: f32) -> i32 {
         let (x, z) = (x.floor() as i32, z.floor() as i32);
-        if x < 0 || z < 0 || x >= WX || z >= WZ {
-            return crate::world::SEA;
+        if let Some(i) = self.idx(x, z) {
+            return self.heights[i] as i32;
         }
-        self.heights[idx(x, z)] as i32
+        self.height_of(x, z).unwrap_or(SEA)
+    }
+
+    /// The part of the world drawn so far: (north-west, south-east corner).
+    pub fn bounds(&self) -> (Vec2, Vec2) {
+        let mut lo = IVec2::new(0, 0);
+        let mut hi = IVec2::new(crate::world::CX, crate::world::CZ);
+        for k in self.tiles.keys() {
+            lo = lo.min(*k);
+            hi = hi.max(*k + IVec2::ONE);
+        }
+        ((lo * CHUNK).as_vec2(), (hi * CHUNK).as_vec2())
     }
 }
 
@@ -315,10 +515,6 @@ fn level_color(p: &Palette, v: &Voxels, x: i32, z: i32, y: i32) -> [u8; 4] {
     let rgb = shade(p, c, c.top());
     let rgb = mix(ROCK, [rgb[0], rgb[1], rgb[2]], lit);
     [rgb[0], rgb[1], rgb[2], 255]
-}
-
-fn level_colors(p: &Palette, v: &Voxels, y: i32) -> Vec<[u8; 4]> {
-    (0..WZ).flat_map(|z| (0..WX).map(move |x| (x, z))).map(|(x, z)| level_color(p, v, x, z, y)).collect()
 }
 
 /// The level the map should show for someone with their eyes at `eye`:
@@ -572,16 +768,34 @@ pub fn palette(mut map: ResMut<MapImage>, atlas: Option<Res<crate::textures::Blo
 
 /// Keeps the map up to date: blocks that changed, and the level shown
 /// under a roof (switching only after a moment, so a doorway doesn't flicker).
-pub fn refresh(time: Res<Time>, mut map: ResMut<MapImage>, mut voxels: ResMut<Voxels>, me: Res<Me>, info: Res<WorldInfo>, mut images: ResMut<Assets<Image>>, mut layer: Query<&mut BackgroundColor, With<MapLayer>>, mut roof: Local<(Option<i32>, f32)>, mut since: Local<f32>) {
+#[allow(clippy::too_many_arguments)]
+pub fn refresh(
+    time: Res<Time>,
+    mut map: ResMut<MapImage>,
+    mut voxels: ResMut<Voxels>,
+    me: Res<Me>,
+    info: Res<WorldInfo>,
+    focus: Res<Focus>,
+    mut view: ResMut<MapView>,
+    mut images: ResMut<Assets<Image>>,
+    mut layer: Query<&mut BackgroundColor, With<MapLayer>>,
+    mut roof: Local<(Option<i32>, f32)>,
+    mut since: Local<f32>,
+) {
     if !info.in_world && map.world != 0 {
         return;
     }
+    let mine = Vec2::new(me.pos.x, me.pos.z);
     *since += time.delta_secs();
     // a new world is drawn at once; changes a few times a second
     if voxels.id != map.world || *since > 0.25 {
         *since = 0.0;
-        map.draw_changes(&mut voxels);
+        map.draw_changes(&mut voxels, mine);
     }
+    // the picture holds the part round the player, or round where the full
+    // map looks
+    map.follow(&voxels, if on_map(&focus.screen) { view.centre } else { mine });
+    view.bounds = map.bounds();
     let want = roof_level(&voxels, me.eye());
     if want.is_some() != roof.0.is_some() {
         roof.1 += time.delta_secs();
@@ -594,7 +808,7 @@ pub fn refresh(time: Res<Time>, mut map: ResMut<MapImage>, mut voxels: ResMut<Vo
         roof.1 = 0.0;
     }
     // a level shown follows the player up and down
-    map.show_level(&voxels, roof.0);
+    map.show_level(&voxels, roof.0, mine);
     if map.written != map.rev {
         map.written = map.rev;
         for mut bg in &mut layer {
@@ -758,11 +972,14 @@ pub struct MapView {
     dragged: f32,
     /// The page of the waypoint list showing.
     pub page: usize,
+    /// The part of the world drawn so far, which the middle stays in.
+    pub bounds: (Vec2, Vec2),
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { centre: Vec2::new(WX as f32 / 2.0, WZ as f32 / 2.0), zoom: 3.0, cursor: Vec2::ZERO, shown_sel: None, drag: None, dragged: 0.0, page: 0 }
+        let island = (Vec2::ZERO, Vec2::new(WX as f32, WZ as f32));
+        MapView { centre: island.1 / 2.0, zoom: 3.0, cursor: Vec2::ZERO, shown_sel: None, drag: None, dragged: 0.0, page: 0, bounds: island }
     }
 }
 
@@ -795,7 +1012,7 @@ impl MapView {
     }
 
     fn keep_in(&mut self) {
-        self.centre = self.centre.clamp(Vec2::ZERO, Vec2::new(WX as f32, WZ as f32));
+        self.centre = self.centre.clamp(self.bounds.0, self.bounds.1);
     }
 }
 
@@ -849,13 +1066,13 @@ pub fn spawn_map(mut commands: Commands, fonts: Res<Fonts>, mut map: ResMut<MapI
     let ui = fonts.ui.clone();
     let font = |s: f32| TextFont { font: ui.clone().into(), font_size: FontSize::Px(s), ..default() };
     let arrow = images.add(arrow_image());
-    let picture = images.add(image(WX as u32, SEA_COLOR));
+    let picture = images.add(image(SIZE as u32, UNSEEN));
     map.image = Some(picture.clone());
     commands
         .spawn((
             MapLayer,
             Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), overflow: Overflow::clip(), ..default() },
-            BackgroundColor(Color::srgb_u8(SEA_COLOR[0], SEA_COLOR[1], SEA_COLOR[2])),
+            BackgroundColor(Color::srgb_u8(UNSEEN[0], UNSEEN[1], UNSEEN[2])),
             GlobalZIndex(9),
             Visibility::Hidden,
         ))
@@ -940,14 +1157,15 @@ pub fn draw_map(
     }
     let Ok(window) = windows.single() else { return };
     let win = Vec2::new(window.width(), window.height());
-    // the island's picture, cut to what's on the screen
+    // the picture of the part round the middle, cut to what's on the screen
     if let Ok((mut node, mut img)) = picture.single_mut() {
-        let lo = view.to_screen(win, Vec2::ZERO);
-        let hi = view.to_screen(win, Vec2::new(WX as f32, WZ as f32));
+        let o = map.origin.as_vec2();
+        let lo = view.to_screen(win, o);
+        let hi = view.to_screen(win, o + Vec2::splat(SIZE as f32));
         let (slo, shi) = (lo.max(Vec2::ZERO), hi.min(win));
         if shi.x > slo.x && shi.y > slo.y {
-            let tlo = view.to_world(win, slo);
-            let thi = view.to_world(win, shi);
+            let tlo = view.to_world(win, slo) - o;
+            let thi = view.to_world(win, shi) - o;
             node.left = px(slo.x);
             node.top = px(slo.y);
             node.width = px(shi.x - slo.x);

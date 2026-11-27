@@ -268,7 +268,7 @@ impl Chat {
         let mut text = tidy(&say.text);
         let place = match say.place {
             Some(p) => {
-                let inside = crate::world::Voxels::inside(p.at[0], p.at[1].clamp(0, crate::world::WY - 1), p.at[2]);
+                let inside = crate::world::Voxels::inside(p.at[0], p.at[1].clamp(crate::world::MIN_Y, crate::world::WY - 1), p.at[2]);
                 if !inside {
                     return Err("That place isn't in this world.".into());
                 }

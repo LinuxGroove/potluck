@@ -227,24 +227,83 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
     BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], canopy, water: own }
 }
 
-/// The open sea round the island, out past the far end of the view: a ring of
-/// deep water at the sea's surface from the world's edge outward.
+/// The open sea past the columns that are drawn, out to the far end of the
+/// view: a sheet at the water's height round the player, with a hole where
+/// columns are drawn (their own water shows there), made again as the
+/// player goes and columns come in (`follow_sea`).
+#[derive(Component)]
+pub struct Sea {
+    looked: (u64, IVec2),
+}
+
+/// How far the sheet reaches from the player's column, in blocks: inside
+/// the camera's far end and Low's sky dome.
+const SEA_FAR: f32 = 830.0;
+
 pub fn spawn_sea(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>) {
-    use crate::world::{SEA, WX, WZ};
     let [r, g, b, _] = crate::mesh::water_tint(8.0);
     let sea = mats.add(StandardMaterial { base_color: LinearRgba::rgb(r, g, b).into(), perceptual_roughness: 0.07, reflectance: 0.35, ..default() });
-    let (w, d, far) = (WX as f32, WZ as f32, 1200.0);
-    let y = SEA as f32 + 0.88;
-    // north, south, west and east of the world, as (x0, z0, x1, z1)
-    for (x0, z0, x1, z1) in [(-far, -far, w + far, 0.0), (-far, d, w + far, d + far), (-far, 0.0, 0.0, d), (w, 0.0, w + far, d)] {
-        commands.spawn((
-            Mesh3d(meshes.add(Plane3d::default().mesh().size(x1 - x0, z1 - z0))),
-            MeshMaterial3d(sea.clone()),
-            Transform::from_xyz((x0 + x1) / 2.0, y, (z0 + z1) / 2.0),
-            bevy::light::NotShadowCaster,
-            NotRaytraced,
-        ));
+    commands.spawn((
+        Mesh3d(meshes.add(sea_mesh(&Default::default(), IVec2::ZERO))),
+        MeshMaterial3d(sea),
+        Transform::IDENTITY,
+        bevy::light::NotShadowCaster,
+        bevy::camera::visibility::NoFrustumCulling,
+        NotRaytraced,
+        Sea { looked: (u64::MAX, IVec2::MAX) },
+    ));
+}
+
+/// Makes the sea again when the drawn columns change or the player moves
+/// into another column.
+pub fn follow_sea(chunks: Res<crate::mesh::ChunkEntities>, focus: Res<crate::mesh::MeshFocus>, mut seas: Query<(&Mesh3d, &mut Sea)>, mut meshes: ResMut<Assets<Mesh>>) {
+    let at = crate::world::stream::column_of(focus.0);
+    let now = (chunks.shown_rev, at);
+    for (m, mut sea) in &mut seas {
+        if sea.looked == now {
+            continue;
+        }
+        sea.looked = now;
+        if let Some(mut mesh) = meshes.get_mut(&m.0) {
+            *mesh = sea_mesh(&chunks.shown, at);
+        }
     }
+}
+
+/// The sheet of sea round column `at`, leaving out the `shown` columns: a
+/// quad for each run of columns along a row.
+pub fn sea_mesh(shown: &std::collections::HashSet<IVec2>, at: IVec2) -> Mesh {
+    use crate::world::{CHUNK, SEA};
+    let c = CHUNK as f32;
+    let r = (SEA_FAR / c).ceil() as i32;
+    let y = SEA as f32 + 0.88;
+    let reach = |dx: i32, dz: i32| ((dx.abs() as f32 * c + c / 2.0).powi(2) + (dz.abs() as f32 * c + c / 2.0).powi(2)).sqrt() <= SEA_FAR;
+    let (mut pos, mut uv, mut idx): (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>) = (vec![], vec![], vec![]);
+    for dz in -r..=r {
+        let mut dx = -r;
+        while dx <= r {
+            if !reach(dx, dz) || shown.contains(&(at + IVec2::new(dx, dz))) {
+                dx += 1;
+                continue;
+            }
+            let from = dx;
+            while dx <= r && reach(dx, dz) && !shown.contains(&(at + IVec2::new(dx, dz))) {
+                dx += 1;
+            }
+            let (x0, x1) = ((at.x + from) as f32 * c, (at.x + dx) as f32 * c);
+            let (z0, z1) = ((at.y + dz) as f32 * c, (at.y + dz + 1) as f32 * c);
+            let n = pos.len() as u32;
+            pos.extend([[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]]);
+            uv.extend([[x0 / c, z0 / c], [x1 / c, z0 / c], [x1 / c, z1 / c], [x0 / c, z1 / c]]);
+            idx.extend([n, n + 2, n + 1, n, n + 3, n + 2]);
+        }
+    }
+    let normals = vec![[0.0, 1.0, 0.0]; pos.len()];
+    Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+        .with_inserted_indices(bevy::mesh::Indices::U32(idx))
 }
 
 /// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked

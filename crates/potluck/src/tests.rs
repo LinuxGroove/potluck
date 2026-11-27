@@ -4088,13 +4088,29 @@ fn the_map_shows_the_world_from_above_and_keeps_up_with_changes() {
         v.set(IVec3::new(x, y, z), crate::blocks::PLANKS);
     }
     let rev = m.rev;
-    m.draw_changes(&mut v);
+    let here = Vec2::new(sx, sz);
+    m.draw_changes(&mut v, here);
     assert_eq!(m.height(x as f32, z as f32), top + 8);
     assert!(m.rev > rev && v.map_dirty.is_empty());
+    // land past the island is drawn as it comes in, and kept when the map
+    // moves away from it and back
+    let far = IVec2::new(world::CX + 4, 3);
+    let (fx, fz) = ((far.x * world::CHUNK + 9) as f32, (far.y * world::CHUNK + 9) as f32);
+    assert_eq!(m.at(fx, fz), map::UNSEEN, "nobody's been there");
+    v.ensure(far);
+    m.draw_changes(&mut v, here);
+    assert_ne!(m.at(fx, fz), map::UNSEEN, "drawn once it's made");
+    assert_eq!(m.height(fx, fz), map::surface(&v, fx as i32, fz as i32, world::WY - 1).top());
+    let seen = m.at(fx, fz);
+    m.follow(&v, Vec2::new(5000.0, 5000.0));
+    assert!(m.origin.x > 4000, "the picture follows the player");
+    v.unload(far);
+    m.follow(&v, here);
+    assert_eq!(m.at(fx, fz), seen, "and what was seen is kept");
     // a different world is drawn whole
     let other = world::generate(7);
     let mut other = other;
-    m.draw_changes(&mut other);
+    m.draw_changes(&mut other, here);
     assert_eq!(m.height(sx, sz), other.top(sx as i32, sz as i32));
 }
 
@@ -4115,7 +4131,7 @@ fn under_a_roof_the_map_shows_the_level_youre_on() {
     let mut m = map::MapImage::default();
     m.draw_all(&v);
     let from_above = m.at(x as f32, z as f32);
-    m.show_level(&v, map::roof_level(&v, eye));
+    m.show_level(&v, map::roof_level(&v, eye), Vec2::new(eye.x, eye.z));
     assert_ne!(m.at(x as f32, z as f32), from_above, "the floor, not the roof");
 }
 
@@ -4271,7 +4287,7 @@ fn chat_hides_listed_words_keeps_younger_players_to_quick_lines_and_slows_floods
     assert_eq!(l.place.as_ref().unwrap().name, "the mill");
     assert!(l.may_leave());
     chat.keep(l, 50.0);
-    assert!(chat.hear(Speaker { ..drew }, Say { text: String::new(), place: Some(crate::chat::Place { name: "x".into(), at: [-5, 30, 10] }) }, true, 60.0).is_err(), "places in the world only");
+    assert!(chat.hear(Speaker { ..drew }, Say { text: String::new(), place: Some(crate::chat::Place { name: "x".into(), at: [crate::world::BORDER + 5, 30, 10] }) }, true, 60.0).is_err(), "places in the world only");
     assert_eq!(chat.places(99).len(), 1);
     assert_eq!(chat.outbox.len(), 1, "only Drew's line may go to a bridge");
 }
@@ -4842,14 +4858,23 @@ fn creations_make_blocks_of_their_own() {
     // the world saves its made blocks with it, and takes them back
     voxels.set(IVec3::new(4, 90, 3), lantern);
     let saved = made::world_bytes(&voxels);
-    assert!(saved.starts_with(b"POTLUCKW2"));
+    assert!(saved.starts_with(b"POTLUCKW3"));
     let back = made::read_world(&saved).unwrap();
     assert_eq!((back.at(IVec3::new(3, 90, 3)), back.at(IVec3::new(4, 90, 3))), (marble, lantern));
     assert!(back.lanterns.contains(&IVec3::new(4, 90, 3)), "a made light is a light");
     let mut old = b"POTLUCKW1".to_vec();
     old.extend_from_slice(&voxels.seed.to_le_bytes());
-    old.extend_from_slice(&world().encode());
+    old.extend_from_slice(&world().encode_island());
     assert!(made::read_world(&old).is_some(), "worlds saved before still load");
+    // and those saved before the world went on past the island, with the
+    // made blocks in them
+    let mut island = b"POTLUCKW2".to_vec();
+    island.extend_from_slice(&saved[9..13]);
+    let n = u32::from_le_bytes(saved[13..17].try_into().unwrap()) as usize;
+    island.extend_from_slice(&saved[13..17 + n]);
+    island.extend_from_slice(&voxels.encode_island());
+    let back = made::read_world(&island).expect("an island world");
+    assert_eq!((back.at(IVec3::new(3, 90, 3)), back.at(IVec3::new(4, 90, 3))), (marble, lantern));
     assert!(made::read_world(&saved[..40]).is_none(), "a damaged world is refused");
 
     // a saved block whose id something else has here moves
@@ -5401,6 +5426,245 @@ fn the_type_checker_says_only_what_its_sure_of() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(app.world().resource::<Hints>().of(&fixed).map(|h| h.len()), Some(1), "the client half's still wrong");
+}
+
+
+/// A number for the island's blocks above y = 0, so a change to how it's
+/// made shows here (galleries and saved worlds compare against it).
+fn island_print(v: &Voxels) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for y in 1..world::WY {
+        for z in 0..world::WZ {
+            for x in 0..world::WX {
+                h = (h ^ v.get(x, y, z) as u64).wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    h
+}
+
+#[test]
+fn the_island_is_made_as_it_always_was() {
+    // checked block for block against the island maker before the world
+    // went on past it
+    assert_eq!(island_print(&world::generate(26)), 0x8a20f6f4779acd69);
+    assert_eq!(island_print(&world::generate(7)), 0x794aaccb72e4082d);
+}
+
+#[test]
+fn the_world_goes_on_past_the_island_in_lands_of_many_kinds() {
+    use crate::world::{wild, Biome};
+    let seed = crate::SEED;
+    // open sea right round the island, then land
+    for (x, z) in [(-60.0, 190.0), (450.0, 190.0), (190.0, -60.0), (190.0, 450.0)] {
+        assert!(world::ground_height(seed, x as i32, z as i32) < world::SEA, "sea just off the island at {x}, {z}");
+    }
+    // far out, every kind of land turns up somewhere
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..160 {
+        for j in 0..160 {
+            let (x, z) = (-12000.0 + i as f32 * 150.0, -12000.0 + j as f32 * 150.0);
+            seen.insert(wild::biome(seed, x, z));
+        }
+    }
+    for b in [Biome::Sea, Biome::Meadow, Biome::Forest, Biome::Birchwood, Biome::Pinewood, Biome::Snowfield, Biome::Desert, Biome::Savanna, Biome::Marsh, Biome::Mountain] {
+        assert!(seen.contains(&b), "no {} anywhere", b.name());
+    }
+    // what crosses a column's edge joins up: columns made one at a time
+    // are the same as made together, trees and all
+    let mut trees = 0;
+    for k0 in [IVec2::new(30, 4), IVec2::new(-40, 70), IVec2::new(100, -100), IVec2::new(-200, -3)] {
+        for (k, together) in wild::columns(seed, k0, IVec2::new(2, 2)) {
+            let alone = world::column(seed, k);
+            for y in world::MIN_Y..world::WY {
+                for z in 0..world::CHUNK {
+                    for x in 0..world::CHUNK {
+                        let b = alone.get(x, y, z);
+                        assert_eq!(b, together.get(x, y, z), "column {k} at {x}, {y}, {z}");
+                        trees += (b == crate::blocks::LOG || b == crate::blocks::BIRCH) as u32;
+                    }
+                }
+            }
+        }
+    }
+    assert!(trees > 0, "some trees to check");
+    // a column is the same whenever it's made
+    let k = IVec2::new(-17, 23);
+    let (a, b) = (world::column(seed, k), world::column(seed, k));
+    assert!((world::MIN_Y..world::WY).all(|y| (0..32).all(|z| (0..32).all(|x| a.get(x, y, z) == b.get(x, y, z)))));
+}
+
+#[test]
+fn the_ground_goes_down_to_bedrock_far_below_the_sea() {
+    use crate::blocks::{BEDROCK, SLATE, STONE};
+    let mut v = world();
+    // under the island, and under the lands past it
+    for (x, z) in [(world::START.x as i32, world::START.z as i32), (190, 190), (-700, 1200)] {
+        v.ensure(world::key_of(x, z));
+        assert_eq!(v.get(x, world::MIN_Y, z), BEDROCK, "bedrock at the bottom");
+        assert_eq!(v.get(x, -100, z), SLATE, "slate deep down");
+        assert!(v.top(x, z) > -40);
+    }
+    assert_eq!(v.get(world::START.x as i32, -10, world::START.z as i32), STONE, "stone under the island");
+    // nobody digs through the bottom
+    assert!(!v.set(IVec3::new(5, world::MIN_Y, 5), crate::blocks::AIR));
+    assert!(v.set(IVec3::new(5, world::MIN_Y + 6, 5), crate::blocks::AIR), "but anywhere above it");
+    assert!(crate::player::blocked(&v, Vec3::new(5.2, world::MIN_Y as f32 - 0.5, 5.2), Vec3::splat(0.6)));
+}
+
+#[test]
+fn columns_come_and_go_and_keep_what_players_changed() {
+    let mut v = world();
+    let k = IVec2::new(world::CX + 6, -3);
+    let p = IVec3::new(k.x * world::CHUNK + 5, 40, k.y * world::CHUNK + 7);
+    assert!(!v.has(k), "not made until someone's near");
+    assert_eq!(v.at(p), crate::blocks::AIR);
+    assert!(v.set(p, crate::blocks::PLANKS), "building there makes it");
+    assert!(v.has(k));
+    v.unload(k);
+    assert!(!v.has(k), "let go");
+    v.ensure(k);
+    assert_eq!(v.at(p), crate::blocks::PLANKS, "and back as it was left");
+    // the island stays
+    v.unload(IVec2::new(2, 2));
+    assert!(v.has(IVec2::new(2, 2)));
+    // saved and sent: only what changed, the rest from the seed
+    let bytes = v.encode();
+    assert!(bytes.len() < 200_000, "{} bytes", bytes.len());
+    let mut back = Voxels::decode(v.seed, &bytes).unwrap();
+    back.ensure(k);
+    assert_eq!(back.at(p), crate::blocks::PLANKS);
+    let island = IVec3::new(world::START.x as i32, 30, world::START.z as i32);
+    assert_eq!(back.at(island), v.at(island));
+    assert!(Voxels::decode(v.seed, &bytes[..bytes.len() - 3]).is_none(), "damaged bytes are refused");
+    // a change from the host to land this game hasn't made waits for it
+    let mut guest = world();
+    guest.apply(p, crate::blocks::GLASS);
+    assert!(!guest.has(k));
+    guest.ensure(k);
+    assert_eq!(guest.at(p), crate::blocks::GLASS);
+    // what's wanted round players: this game's own player further than friends
+    let w = world::stream::wanted(Some(Vec3::new(10.0, 0.0, 10.0)), &[Vec3::new(1000.0, 0.0, 0.0)], 8);
+    assert_eq!(w, vec![(IVec2::ZERO, 8), (IVec2::new(31, 0), world::stream::AROUND_FRIENDS)]);
+    let mut round = world();
+    world::stream::make_round(&mut round, Vec3::new(-300.0, 0.0, 50.0), 1);
+    assert!(round.has(world::key_of(-300, 50)) && round.has(world::key_of(-332, 82)));
+}
+
+/// A pool for swimming tests: water from y 10 to 17 (its top at 17.88)
+/// over sand, with a bank on the east at the water's height.
+fn pool() -> App {
+    use crate::blocks::{SAND, WATER};
+    let mut v = Voxels::empty(1);
+    for x in -4..60 {
+        for z in -4..24 {
+            v.set(IVec3::new(x, 9, z), SAND);
+            for y in 10..=17 {
+                v.set(IVec3::new(x, y, z), if x < 16 { WATER } else { SAND });
+            }
+        }
+    }
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let mut focus = crate::ui::Focus::default();
+    focus.go(crate::ui::Screen::Playing);
+    app.insert_resource(v)
+        .insert_resource(focus)
+        .insert_resource(crate::settings::Settings { survival: true, ..Default::default() })
+        .init_resource::<crate::input::Controls>()
+        .init_resource::<crate::ui::Toasts>()
+        .init_resource::<crate::sound::Heard>()
+        .insert_resource(crate::player::Me::default());
+    app
+}
+
+/// Moves the player for `secs` at 60 frames a second, returning the
+/// highest they were.
+fn swim_for(app: &mut App, secs: f32) -> f32 {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut top = f32::MIN;
+    for _ in 0..(secs * 60.0) as i32 {
+        app.world_mut().resource_mut::<Time>().advance_by(std::time::Duration::from_micros(16_667));
+        app.world_mut().run_system_once(crate::player::walk).unwrap();
+        top = top.max(app.world().resource::<crate::player::Me>().pos.y);
+    }
+    top
+}
+
+#[test]
+fn players_float_swim_up_and_down_and_climb_out() {
+    use crate::input::Controls;
+    use crate::player::Me;
+    let mut app = pool();
+    let me = |app: &App| (app.world().resource::<Me>().pos, app.world().resource::<Me>().vel, app.world().resource::<Me>().under_water);
+    app.world_mut().resource_mut::<Me>().pos = Vec3::new(6.5, 11.0, 6.5);
+    // let go under water, they come up and float with their eyes out
+    swim_for(&mut app, 4.0);
+    let (pos, vel, under) = me(&app);
+    let rest = 17.88 - 1.35;
+    assert!((pos.y - rest).abs() < 0.05 && vel.y.abs() < 0.05 && !under, "floating at {pos} {vel}");
+    // and stay there without bobbing
+    let top = swim_for(&mut app, 2.0);
+    assert!(top - rest < 0.03, "no bob: up to {top}");
+    // crouch dives, letting go comes back up
+    app.world_mut().resource_mut::<Controls>().crouch = true;
+    swim_for(&mut app, 1.0);
+    let (pos, _, under) = me(&app);
+    assert!(pos.y < rest - 2.5 && under, "dived to {pos}");
+    app.world_mut().resource_mut::<Controls>().crouch = false;
+    swim_for(&mut app, 4.0);
+    assert!((me(&app).0.y - rest).abs() < 0.05, "back up");
+    // jump swims up out of the water a little and falls back to floating
+    app.world_mut().resource_mut::<Controls>().jump = true;
+    let top = swim_for(&mut app, 1.0);
+    assert!(top > rest + 0.2, "up to {top}");
+    app.world_mut().resource_mut::<Controls>().jump = false;
+    swim_for(&mut app, 3.0);
+    // swimming east to the bank, they climb out onto it
+    {
+        let mut m = app.world_mut().resource_mut::<Me>();
+        m.yaw = -std::f32::consts::FRAC_PI_2;
+        m.pitch = 0.0;
+    }
+    app.world_mut().resource_mut::<Controls>().mv = Vec2::new(0.0, 1.0);
+    swim_for(&mut app, 6.0);
+    let (pos, _, _) = me(&app);
+    let m = app.world().resource::<Me>();
+    assert!(pos.x > 16.3 && pos.y > 17.99 && m.on_ground && !m.in_water, "out on the bank at {pos}");
+    // and water breaks a fall in survival
+    app.world_mut().resource_mut::<Controls>().mv = Vec2::ZERO;
+    {
+        let mut m = app.world_mut().resource_mut::<Me>();
+        m.pos = Vec3::new(6.5, 40.0, 6.5);
+        m.vel = Vec3::ZERO;
+    }
+    swim_for(&mut app, 4.0);
+    assert_eq!(app.world().resource::<Me>().health, crate::player::MAX_HEALTH);
+}
+
+/// Where each kind of land is nearest the island, for looking at
+/// (`cargo test -- --ignored lands_to_look_at --nocapture`).
+#[test]
+#[ignore]
+fn lands_to_look_at() {
+    use crate::world::{wild, Biome};
+    let seed = crate::SEED;
+    for b in [Biome::Meadow, Biome::Forest, Biome::Birchwood, Biome::Pinewood, Biome::Snowfield, Biome::Desert, Biome::Savanna, Biome::Marsh, Biome::Mountain] {
+        let mut found = None;
+        'out: for r in (8..400).map(|r| r * 24) {
+            for i in 0..(r / 6) {
+                let a = i as f32 / (r / 6) as f32 * std::f32::consts::TAU;
+                let (x, z) = (192.0 + a.cos() * r as f32, 192.0 + a.sin() * r as f32);
+                // a patch of it, not a corner
+                let all = (-2..=2).all(|dx| (-2..=2).all(|dz| wild::biome(seed, x + dx as f32 * 20.0, z + dz as f32 * 20.0) == b));
+                if all {
+                    found = Some((x as i32, z as i32, world::ground_height(seed, x as i32, z as i32)));
+                    break 'out;
+                }
+            }
+        }
+        println!("LAND {:?} {:?}", b, found);
+    }
 }
 
 #[test]

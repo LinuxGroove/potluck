@@ -59,6 +59,11 @@ pub const SANDSTONE_BRICKS: BlockId = 43;
 pub const COLUMN: BlockId = 44;
 pub const BRAZIER: BlockId = 45;
 pub const FENCE: BlockId = 46;
+pub const SLATE: BlockId = 47;
+pub const ICE: BlockId = 48;
+pub const CACTUS: BlockId = 49;
+pub const REEDS: BlockId = 50;
+pub const DRY_BUSH: BlockId = 51;
 // 47 to 63 are kept for the looks; 64 and up are for the creations' work.
 // 64 to 71 were tools before items had ids of their own (`items`); no
 // world had them, so they're ores and what's found underground now.
@@ -337,12 +342,13 @@ pub static BLOCKS: &[Block] = &[
     m("Column", ["column_top", "column", "column_top"], COLUMN_BOXES, true, 1.3),
     lit(m("Brazier", ["brazier_top", "brazier", "brazier_top"], BRAZIER_BOXES, true, 0.8)),
     m("Fence", ["planks", "fence", "planks"], FENCE_BOXES, true, 0.6),
-    // 47 to 63: kept for the looks
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
-    b("Air", ["", "", ""], Shape::Air, 0.0),
+    // 47 to 51: the lands past the island (`world::wild`)
+    b("Slate", ["slate", "slate", "slate"], Shape::Solid, 1.8),
+    b("Ice", ["ice", "ice", "ice"], Shape::Solid, 0.5),
+    b("Cactus", ["cactus_top", "cactus_side", "cactus_top"], Shape::Solid, 0.4),
+    b("Reeds", ["reeds", "reeds", "reeds"], Shape::Cross, 0.0),
+    b("Dry bush", ["dry_bush", "dry_bush", "dry_bush"], Shape::Cross, 0.0),
+    // 52 to 63: kept for the looks
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
     b("Air", ["", "", ""], Shape::Air, 0.0),
