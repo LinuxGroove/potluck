@@ -79,7 +79,9 @@ The rest of its settings are in `server.toml` in its data folder (`/var/snap/pot
 
 Outside the snap: `potluck-server --help`, and `potluck-server --check` to read the settings and say what's wrong. Every command line option can also come from the environment (`POTLUCK_CONFIG`, `POTLUCK_NAME`, `POTLUCK_PORT`, `POTLUCK_TLS_PORT`, `POTLUCK_CERT`, `POTLUCK_KEY`, `POTLUCK_SEED`, `POTLUCK_MAX_PLAYERS`, `POTLUCK_HOME`), and wins over `server.toml`.
 
-The status page's `/status.json` has what a soak test needs: players, creatures, the average and slowest tick of the last ten seconds, bytes sent a second and time up. `potluck-bots --address=ws://HOST:47126 --bots=50 --minutes=600 --build --report=soak.jsonl --pid=SERVER_PID` joins that many bot players, who walk about, build, and pat, bop and ride creatures, and writes a line of numbers a minute.
+The status page's `/status.json` has what a soak test needs: players, creatures, the average and slowest tick of the last ten seconds, bytes sent a second and time up. `potluck-bots --address=ws://HOST:47126 --bots=50 --minutes=600 --build --report=soak.jsonl --pid=SERVER_PID` joins that many bot players, who walk about, build, and pat, bop and ride creatures, and writes a line of numbers a minute: with `--pid`, the server's memory, CPU and threads too, and what the bots received by message.
+
+[docs/hosting.md](docs/hosting.md) is the guide to running Potluck for more people: what a world, a player and a creation cost (measured), the minimum machines, a cheap start, deploying worlds and the market, hosted worlds that scale, and the code changes on the way to hundreds of thousands of players.
 
 ## Making creations
 
