@@ -386,7 +386,7 @@ impl Rules {
 
     /// The level a block needs before it breaks.
     pub fn needs(&self, b: BlockId) -> u8 {
-        self.drops.get(&b).map(|d| d.level).unwrap_or(0)
+        self.drops.get(&crate::blocks::base(b)).map(|d| d.level).unwrap_or(0)
     }
 
     pub fn can_break(&self, held: Thing, b: BlockId) -> bool {
@@ -406,6 +406,8 @@ impl Rules {
     /// (0 to 1) picks between least and most, or the block itself; None
     /// for nothing.
     pub fn gives(&self, b: BlockId, roll: f32) -> Option<(Thing, u32)> {
+        // a block that turns is carried facing north
+        let b = crate::blocks::base(b);
         match self.drops.get(&b) {
             None => Some((of_block(b), 1)),
             Some(d) if d.gives == 0 => None,

@@ -24,7 +24,7 @@ type Recipe = { want: { [string]: number }, give: string, n: number }
 -- eight choices at most). Tools and swords do their work through the Tools
 -- creation, and a basket fills up into a balloon through the Hot air
 -- balloon creation.
-local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel" }
+local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel", "Circuits" }
 local RECIPES: { [string]: { Recipe } } = {
 	Building = {
 		{ want = { ["Oak log"] = 1 }, give = "Planks", n = 4 },
@@ -35,6 +35,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Cobblestone = 8 }, give = "Kiln", n = 1 },
 		-- the furnace creation's
 		{ want = { Cobblestone = 8 }, give = "Furnace", n = 1 },
+		-- the circuits creation's: it opens when powered
+		{ want = { ["Copper ingot"] = 2 }, give = "Copper gate", n = 1 },
 	},
 	Furniture = {
 		{ want = { Planks = 6 }, give = "Table", n = 1 },
@@ -74,6 +76,17 @@ local RECIPES: { [string]: { Recipe } } = {
 	-- put down, a basket fills up into a hot air balloon (the balloon creation)
 	Travel = {
 		{ want = { ["Cream wool"] = 6, Planks = 4, Lantern = 1 }, give = "Balloon basket", n = 1 },
+	},
+	-- the circuits creation's parts
+	Circuits = {
+		{ want = { ["Copper ingot"] = 1 }, give = "Copper wire", n = 8 },
+		{ want = { Cobblestone = 1, Planks = 1 }, give = "Lever", n = 1 },
+		{ want = { Stone = 1 }, give = "Button", n = 1 },
+		{ want = { Planks = 2 }, give = "Pressure plate", n = 1 },
+		{ want = { Glass = 1, Crystal = 1, Planks = 2 }, give = "Daylight sensor", n = 1 },
+		{ want = { ["Copper wire"] = 1, Torch = 1, Stone = 1 }, give = "Inverter", n = 1 },
+		{ want = { ["Copper wire"] = 1, Torch = 2, Stone = 2 }, give = "Delay", n = 1 },
+		{ want = { ["Copper ingot"] = 1, Glass = 1, Coal = 1 }, give = "Copper lamp", n = 1 },
 	},
 }
 
@@ -173,8 +186,18 @@ function choose(player, at: vector)
 		}, function() end)
 		return
 	end
-	ui.ask(player, { title = "Workbench", text = "What would you like to make?", choices = KINDS }, function(who, choice)
-		local kind = choice and KINDS[choice]
+	-- only kinds with something to make here (circuits need their creation)
+	local kinds = {}
+	for _, kind in KINDS do
+		for _, r in RECIPES[kind] do
+			if exists(r.give) then
+				table.insert(kinds, kind)
+				break
+			end
+		end
+	end
+	ui.ask(player, { title = "Workbench", text = "What would you like to make?", choices = kinds }, function(who, choice)
+		local kind = choice and kinds[choice]
 		if kind then
 			recipes(who, at, kind)
 		end

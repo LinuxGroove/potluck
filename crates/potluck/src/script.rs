@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 14), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 4)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 15), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 5)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -951,7 +951,7 @@ pub(crate) fn find_block(voxels: &Voxels, p: &Value, radius: f32, name: &str) ->
         for z in -r..=r {
             for x in -r..=r {
                 let q = p + IVec3::new(x, y, z);
-                if voxels.at(q) == id {
+                if blocks::base(voxels.at(q)) == id {
                     let d = x * x + y * y + z * z;
                     if best.is_none_or(|(b, _)| d < b) {
                         best = Some((d, q));
@@ -1956,13 +1956,24 @@ impl Vm {
                 let p = vec_of(&p).ok_or_else(|| bad("world.block needs a position"))?;
                 Ok(blocks::block(c.borrow().voxels.at(p.floor().as_ivec3())).name)
             })?)?;
-            world.set("set_block", s.create_function(move |_, (p, name): (Value, String)| {
-                let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?;
+            world.set("set_block", s.create_function(move |_, (p, name, facing): (Value, String, Option<String>)| {
+                let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?.floor().as_ivec3();
                 if items::by_name(&name).is_some_and(items::is_item) {
                     return Err(bad(format!("{name} is something to hold, not a block to put down")));
                 }
                 let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
+                let mut ctx = c.borrow_mut();
+                // a block that turns faces the way it's told, or the way
+                // the one it takes the place of faced (world 0.15)
+                let q = match facing {
+                    Some(f) => blocks::QUARTERS.iter().position(|q| *q == f.as_str()).ok_or_else(|| bad(format!("world.set_block's facing is one of {}", blocks::QUARTERS.join(", "))))? as u8,
+                    None => blocks::facing(ctx.voxels.at(p)).unwrap_or(0),
+                };
+                Ok(ctx.voxels.set(p, blocks::turned(id, q)))
+            })?)?;
+            world.set("facing", s.create_function(move |_, p: Value| {
+                let p = vec_of(&p).ok_or_else(|| bad("world.facing needs a position"))?;
+                Ok(blocks::facing(c.borrow().voxels.at(p.floor().as_ivec3())).map(|q| blocks::QUARTERS[q as usize]))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
             world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| find_block(&*c.borrow().voxels, &p, radius, &name))?)?;

@@ -2929,7 +2929,11 @@ fn creations_hear_players_place_break_and_use_blocks() {
 fn a_table_is_a_workbench_for_survival_players() {
     use crate::blocks::{by_name, PLANKS, STONE};
     home();
-    let bench = Library::load().list.remove("workbench").expect("the base game has the workbench");
+    let mut lib = Library::load().list;
+    let bench = lib.remove("workbench").expect("the base game has the workbench");
+    // the circuit parts are there when the Circuits creation's blocks are
+    let circuits = lib.remove("circuits").expect("the base game has circuits");
+    crate::made::register(&circuits.id, &circuits.manifest.blocks).unwrap();
     let b = |n: &str| by_name(n).unwrap();
     let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
     let mut voxels = world();
@@ -2954,7 +2958,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     scripts.use_block(7, at, table);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let panel = asked(&scripts, 7).expect("the table asks what to make");
-    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel"]);
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel", "Circuits"]);
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
     assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
     // it asks again with how it went, so making several is quick
@@ -2988,13 +2992,14 @@ fn a_table_is_a_workbench_for_survival_players() {
     // every recipe makes what it says, with enough to hand
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
-        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone"],
+        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot"],
         vec!["Planks"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat"],
         vec!["Planks", "Cobblestone", "Flint", "Iron ingot"],
         vec!["Planks", "Cobblestone"],
         vec!["Cream wool", "Planks", "Lantern"],
+        vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
@@ -4904,6 +4909,90 @@ fn made_blocks_are_drawn_into_the_atlas() {
     assert!(n > 40, "room for plenty of made blocks: {n}");
 }
 
+/// world 0.15: a made block that turns is four blocks, one for each way it
+/// can face, carried and named as the one facing north; boxes can reach
+/// toward their creation's other blocks.
+#[test]
+fn made_blocks_turn_and_join() {
+    use crate::blocks::{self, When};
+    use crate::made;
+    let spec = |t: &str| -> serde_json::Value { serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()).unwrap() };
+    // a slab with a knob at the front (north), and an arrow on top
+    let mut rows = vec!["aaaaaaaa".to_string(); 8];
+    rows[0] = "aaaabaaa".into();
+    let top = format!("[{}]", rows.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(", "));
+    let side = format!("[{}]", vec!["\"cccccccc\""; 8].join(", "));
+    let gadget = format!("turns = true\nboxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4]]\ncolors = {{ a = \"#888\", b = \"#f00\", c = \"#444\" }}\ntop = {top}\nside = {side}\nbottom = {side}\n");
+    let plug = format!("boxes = [[6, 0, 6, 10, 1, 10], {{ box = [10, 0, 7, 16, 1, 9], joins = \"east\" }}]\ncolors = {{ c = \"#444\" }}\npicture = {side}\n");
+    // what's wrong is said plainly
+    for (bad, says) in [
+        (gadget.replace("turns = true", "turns = 1"), "turns is true or false"),
+        (plug.replace("\"east\"", "\"sideways\""), "joins is one of"),
+        (plug.replace("joins =", "reaches ="), "has no reaches"),
+        (plug.replace("box = [10", "box = [16"), "box 2"),
+    ] {
+        let e = made::read("gadget", &spec(&bad)).err().unwrap_or_else(|| panic!("{bad} should be refused"));
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    assert!(made::read("plug>1", &spec(&plug)).is_err(), "a block that doesn't turn has no other ways");
+    let def = made::read("gadget", &spec(&gadget)).unwrap();
+    assert!(def.turns && def.quarter == 0);
+    let east = made::read("gadget>1", &spec(&gadget)).unwrap();
+    assert_eq!(east.quarter, 1);
+    assert_eq!((east.boxes[1].0, east.boxes[1].1), ([12, 2, 7], [14, 7, 9]), "the knob goes round to the east");
+    assert_eq!((east.boxes[0].0, east.boxes[0].1), ([0, 0, 0], [16, 2, 16]), "the slab stays");
+    assert_eq!(east.faces[0].rgba[4 * 8 + 7], [255, 0, 0, 255], "the arrow's tip at the east edge");
+    assert_eq!(def.faces[0].rgba[4], [255, 0, 0, 255], "facing north it's on the top row");
+    assert_eq!(east.faces[1], def.faces[1], "the sides don't change");
+    let west = made::read("gadget>3", &spec(&gadget)).unwrap();
+    assert_eq!((west.boxes[1].0, west.boxes[1].1), ([2, 2, 7], [4, 7, 9]));
+
+    // a world gives it four ids, and names and carries the one facing north
+    let mut blocks_of = BTreeMap::new();
+    blocks_of.insert("gadget".to_string(), spec(&gadget));
+    blocks_of.insert("plug".to_string(), spec(&plug));
+    let ids = made::register("turn-test", &blocks_of).unwrap();
+    assert_eq!(ids.len(), 2, "one id for each block it makes");
+    let (north, plug_id) = (ids[0], ids[1]);
+    assert_eq!(made::table().iter().filter(|e| e.creation == "turn-test").count(), 5, "and three more for the ways a gadget faces");
+    assert_eq!(blocks::by_name("gadget"), Some(north));
+    let turned: Vec<_> = (0..4).map(|q| blocks::turned(north, q)).collect();
+    assert_eq!(turned[0], north);
+    assert_eq!(turned.iter().collect::<std::collections::BTreeSet<_>>().len(), 4, "{turned:?}");
+    for (q, &id) in turned.iter().enumerate() {
+        assert_eq!((blocks::base(id), blocks::facing(id)), (north, Some(q as u8)));
+        assert_eq!(blocks::block(id).name, "Gadget");
+        assert_eq!(blocks::turned(id, 2), turned[2], "from any way round");
+    }
+    assert_eq!((blocks::facing(plug_id), blocks::turned(plug_id, 1), blocks::base(plug_id)), (None, plug_id, plug_id), "a plug doesn't turn");
+    let (b0, b1) = (blocks::block(north), blocks::block(turned[1]));
+    assert_ne!(b0.faces[0], b1.faces[0], "a top of its own");
+    assert_eq!(b0.faces[1..], b1.faces[1..], "the same sides and bottom");
+    assert_eq!((b1.model[1].from, b1.model[1].to), ([12, 2, 7], [14, 7, 9]));
+    let rules = crate::items::Rules::default();
+    assert_eq!(rules.gives(turned[3], 0.5), Some((crate::items::of_block(north), 1)), "it breaks into the one facing north");
+
+    // a plug's arm reaches only toward its creation's own blocks
+    let arm = blocks::block(plug_id).model[1].when;
+    assert!(arm == When::Kin(0));
+    assert!(arm.holds(plug_id, |d| if d == 0 { turned[2] } else { blocks::AIR }), "a gadget to the east");
+    assert!(arm.holds(plug_id, |d| if d == 0 { plug_id } else { blocks::AIR }), "another plug");
+    assert!(!arm.holds(plug_id, |d| if d == 0 { blocks::STONE } else { blocks::AIR }), "not stone");
+    assert!(!arm.holds(plug_id, |_| blocks::AIR));
+    assert_eq!(When::Kin(5).turned(1), When::Kin(0), "north goes to east");
+    assert_eq!(When::Same(2).turned(3), When::Same(2), "up stays up");
+
+    // a player looking one way puts it down facing that way
+    assert_eq!([(0.0, -1.0), (1.0, 0.1), (0.2, 1.0), (-1.0, 0.0)].map(|(x, z)| blocks::quarter_looking(x, z)), [0, 1, 2, 3]);
+    assert_eq!((0..4).map(|q| blocks::turn_side(5, q)).collect::<Vec<_>>(), [5, 0, 4, 1], "north, east, south, west");
+
+    // a guest's world takes the host's ids, turned ones and all
+    let entries: Vec<_> = made::table().into_iter().filter(|e| e.creation == "turn-test").collect();
+    made::adopt(&entries);
+    assert_eq!(blocks::turned(north, 1), turned[1]);
+    assert_eq!(blocks::base(turned[1]), north);
+}
+
 /// world 0.14: a made block's frames, read and checked like its picture,
 /// and drawn once each so the game only sends the frame it shows.
 #[test]
@@ -5283,7 +5372,7 @@ fn the_type_checker_says_only_what_its_sure_of() {
             "main.luau line 11: math has no flor (did you mean math.floor?)",
             "main.luau line 12: this should be one of \"bottom\", \"left\" or \"right\", not \"middle\"",
             "main.luau line 13: this call takes 1 to 2 values, and it's given none",
-            "main.luau line 14: this call takes 2 values, and it's given 1",
+            "main.luau line 14: this call takes 2 to 3 values, and it's given 1",
             "main.luau line 16: this should be a number, not some text",
         ]
     );

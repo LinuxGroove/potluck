@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.14")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.14. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.15")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.15. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.14
+### `@potluck/world` 0.15
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -27,7 +27,7 @@ Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` work
   - `size = { w, h, d }`: the box it bumps into things with (worked out from the body if left out)
   - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
 - `world.model(file, scale?)` (new in 0.11) reads a Blockbench model (a `.bbmodel` file in the creation's folder, saved from Blockbench) into the list of boxes a `body` is, so code can change it first (`part.color = knobs.fur`). Each cube is a part: 16 pixels to a block (`scale` 0.1 to 4 changes that), drawn with its faces' pictures from the model's texture, as Blockbench shows them. Its `color` is the colour most of its faces show (or its marker colour if it has no texture): change it and the picture takes on the new colour, keeping its detail. Its `texture` says where its picture is in the model; set it to nil to paint the part in its colour instead, like a part you write yourself. `head = true` if its name or a group it's in says "head", `leg = true` for "leg" and `glow = true` for "glow". The front is Blockbench's north (negative z). Bodies are upright boxes, so a turned cube is drawn upright and meshes are left out; the log says so. 64 cubes at most.
-- `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name)` changes it.
+- `world.block(pos)` is the name of the block there (`"Grass"`, `"Air"`, ...). `world.set_block(pos, name, facing?)` changes it; a block that turns (0.15) faces `facing` (`"north"`, `"east"`, `"south"` or `"west"`), or the way the block it replaces faced, or north. `world.facing(pos)` is the way a block that turns faces, or nil for one that doesn't (0.15).
 - `world.top(x, z)` is the height of the highest solid block. `world.find_block(pos, radius, name)` is the nearest block of that name within `radius` (up to 16), or nil.
 - `world.players()` is a list of players; `world.nearest_player(pos, radius?)` is the nearest one, or nil. A player is `{ id, name, position }`.
 - `world.spawn(kind, pos)` adds a creature; `world.creatures(kind?)` lists this creation's creatures by id.
@@ -266,6 +266,28 @@ picture = """
 - The block's own picture is the first frame, and what players with Reduce flashing on (in Settings, Picture and sound) always see, so draw it as a still picture that stands for the rest.
 - Every world shares about 32 MB for moving pictures; past that, new ones stay still. Fire, the lit furnace and the campfire in the base game are examples.
 
+#### Blocks that turn, and boxes that join (0.15)
+
+A block with `turns = true` faces the way the player looked when they put it down: north, east, south or west. Draw its pictures facing north, with the top picture's first row at the front; the game turns the top picture and the boxes for the other three ways, and keeps the side and bottom pictures as they are. A block of boxes can also reach out toward its neighbours: a box written as a table with `joins` shows only when the block on that side (`"east"`, `"west"`, `"up"`, `"down"`, `"south"` or `"north"`) is one of this creation's own blocks. Require `@potluck/world@0.15` for both.
+
+```toml
+[blocks.wire]
+solid = false
+boxes = [
+	[6, 0, 6, 10, 1, 10],                              # always there
+	{ box = [10, 0, 7, 16, 1, 9], joins = "east" },    # only toward another of this creation's blocks
+	{ box = [0, 0, 7, 6, 1, 9], joins = "west" },
+]
+
+[blocks.arrow]
+turns = true
+boxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4]]  # the post at the front, which is north as drawn
+```
+
+- `world.facing(pos)` says which way one faces, and `world.set_block(pos, name, facing)` puts one down facing that way. Changing a block that turns into another that turns (an off look to an on look) keeps the way it faces.
+- `joins` names the side as the block is drawn, so on a block that turns, `"north"` is its front whichever way it faces.
+- Each of the four ways takes an id of its own in the world (which holds 128 blocks from creations), though it's one block of the 16 in `potluck.toml`: players carry, find and break all four as the one they put down, and `world.block` names them alike. Circuits in the base game is the example: wire that joins up, and inverters and delays that face the way they're put down.
+
 ### `@potluck/tweak` 0.1
 
 ```luau
@@ -473,12 +495,12 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.3
+### `@potluck/test` 0.5
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
 ```luau
-local test = require("@potluck/test@0.3")
+local test = require("@potluck/test@0.5")
 local world = require("@potluck/world@0.12")
 
 test.case("a basket put down fills up into a balloon", function()
@@ -501,7 +523,7 @@ end)
 - `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
-- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- What players do: `test.place(player, pos, block, facing?)` (`facing` for a block that turns, 0.5; north if left out) and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
 - Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
