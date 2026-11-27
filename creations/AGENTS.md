@@ -147,7 +147,7 @@ world.drops("Iron ore", nil)                                    -- gives itself 
 
 - `world.drops(block, rule)` says what a survival player gets for breaking `block`: `gives` (a block or item's name, false for nothing, or left out for the block itself), `count` (a number from 0 to 64, or `{ least, most }` for somewhere between, 1 if left out) and `level`, the level of tool it needs (0 to 9, 0 if left out). nil puts it back to giving itself. When several creations say what a block gives, the one that said it last counts; a creation's rules go when it stops.
 - `level` in `world.digging` is how hard a block a thing reaches, 0 to 9, among the kinds it digs faster than a hand (speed above 1). A block whose drop has a level doesn't break at all until the player holds something of that level or more, and the game tells them which tool would. Empty hands are level 0. When several creations give the same thing a level, the highest counts.
-- The base game's levels: wooden tools 1, stone 2, and the mining creation's ores need from 1 (coal) to 4 (moonsilver).
+- The base game's levels: wooden tools 1 and stone 2. The mining creation's coal ore needs level 1 and its other ores 2, for now.
 
 A creature's handlers, written as `function Kind:handler(...)`:
 
