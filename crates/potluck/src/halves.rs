@@ -8,14 +8,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy::prelude::*;
 use mlua::{Function, Lua, Table, Value, VmState};
 
 use crate::creations::{Creation, Library};
 use crate::noise::Rng;
-use crate::script::{self, bad, Note, Piece, PlayerInfo, Waiting, MAX_HANDLERS, MAX_PIECES, NOTES_UP_A_SECOND, SOUNDS_A_SECOND};
+use crate::script::{self, bad, Note, Piece, PlayerInfo, Slice, Waiting, MAX_HANDLERS, MAX_PIECES, NOTES_UP_A_SECOND, SOUNDS_A_SECOND};
 use crate::sound::Play;
 use crate::world::Voxels;
 
@@ -83,7 +83,7 @@ struct Running {
     clock: Arc<Mutex<f64>>,
     /// The time of day on this game (`render::Clock::time`).
     day: Arc<Mutex<f32>>,
-    deadline: Arc<Mutex<Instant>>,
+    deadline: Arc<Mutex<Slice>>,
 }
 
 /// What every half did since it was last asked, for the game to show,
@@ -116,10 +116,10 @@ impl Running {
         let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let lua = Lua::new();
         lua.set_memory_limit(MEMORY_LIMIT).map_err(|e| e.to_string())?;
-        let deadline = Arc::new(Mutex::new(Instant::now() + LOAD_BUDGET));
+        let deadline = Arc::new(Mutex::new(Slice::new(LOAD_BUDGET)));
         let d = deadline.clone();
         lua.set_interrupt(move |_| {
-            if Instant::now() > *d.lock().unwrap() {
+            if d.lock().unwrap().over() {
                 return Err(bad("this client half took too long (is there a loop that never ends?)"));
             }
             Ok(VmState::Continue)
@@ -383,7 +383,7 @@ impl Running {
             o.sound_budget = (o.sound_budget + dt * SOUNDS_A_SECOND).min(SOUNDS_A_SECOND);
             o.note_budget = (o.note_budget + dt * NOTES_UP_A_SECOND).min(NOTES_UP_A_SECOND);
         }
-        *self.deadline.lock().unwrap() = Instant::now() + FRAME_BUDGET;
+        *self.deadline.lock().unwrap() = Slice::new(FRAME_BUDGET);
         let r = self.seeing(seen, || -> mlua::Result<()> {
             if !notes.is_empty() {
                 let on = self.on.lock().unwrap().clone();

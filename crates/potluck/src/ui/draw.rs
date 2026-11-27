@@ -219,6 +219,7 @@ pub fn draw_menu(
     controls: Res<Controls>,
     photos: Res<crate::photos::Photos>,
     atlas: Option<Res<BlockAtlas>>,
+    hints: Res<crate::check::Hints>,
 ) {
     let (title, items) = menu_items(&focus, &lib, &scripts, &settings, &info);
     if let Some(url) = items.iter().find(|i| i.kind == Kind::Qr).map(|i| i.label.clone()) {
@@ -238,7 +239,9 @@ pub fn draw_menu(
             let err = vm.and_then(|v| v.error.clone()).or_else(|| half.and_then(|h| h.error.as_ref()).map(|e| format!("Its client half stopped: {e}")));
             let ms = vm.map(|v| v.load_ms).unwrap_or(0.0);
             let budget = vm.map(|v| v.budget());
-            Side { file: c.manifest.main.clone(), src, log, err, ms, budget }
+            // what the type checker is sure of, in the player's own creations
+            let hints = hints.of(c).map(|h| h.iter().map(|h| h.to_string()).collect()).unwrap_or_default();
+            Side { file: c.manifest.main.clone(), src, log, err, ms, budget, hints }
         }),
         _ => None,
     };
@@ -335,11 +338,12 @@ struct Side {
     err: Option<String>,
     ms: f32,
     budget: Option<String>,
+    hints: Vec<String>,
 }
 
 impl std::fmt::Debug for Side {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}|{}|{:?}|{:?}|{:.0}|{:?}", self.file, self.src.len(), self.log, self.err, self.ms, self.budget)
+        write!(f, "{}|{}|{:?}|{:?}|{:.0}|{:?}|{:?}", self.file, self.src.len(), self.log, self.err, self.ms, self.budget, self.hints)
     }
 }
 
@@ -817,6 +821,9 @@ fn clone_menu<'a>(m: &Menu<'a>) -> Menu<'a> {
     Menu { title: m.title.clone(), items: m.items, skip: m.skip, first: m.first, end: m.end, sel: m.sel, kicker: m.kicker.clone(), sub: m.sub.clone(), rows: m.rows, width: m.width, pages: m.pages, prompts: m.prompts.clone() }
 }
 
+/// How many of the type checker's hints Look inside shows.
+const HINTS_SHOWN: usize = 5;
+
 /// Look inside: what it is and what you can do on the left, its code on the right.
 fn inside(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, side: Side, scroll: i32) {
     sh.spawn(Node { column_gap: ctx.u(28.0), flex_grow: 1.0, min_height: px(0), ..default() }).with_children(|body| {
@@ -839,6 +846,14 @@ fn inside(sh: &mut ChildSpawnerCommands, ctx: &Ctx, m: &Menu, side: Side, scroll
             p.spawn((Text::new(shown), ctx.mono(15.0), TextColor(Color::srgb(0.85, 0.9, 0.86)), TextLayout::no_wrap(), Node { flex_shrink: 1.0, overflow: Overflow::clip(), ..default() }));
             if let Some(e) = side.err {
                 p.spawn((Text::new(format!("Problem: {e}")), ctx.plain(15.0), TextColor(RED)));
+            }
+            if !side.hints.is_empty() {
+                let more = side.hints.len().saturating_sub(HINTS_SHOWN);
+                let mut text = format!("The type checker spotted\n{}", side.hints.iter().take(HINTS_SHOWN).cloned().collect::<Vec<_>>().join("\n"));
+                if more > 0 {
+                    text += &format!("\nand {more} more");
+                }
+                p.spawn((Text::new(text), ctx.plain(14.0), TextColor(GOLD)));
             }
             if !side.log.is_empty() {
                 p.spawn((Text::new(format!("Log\n{}", side.log.join("\n"))), ctx.mono(13.0), TextColor(SOFT)));
