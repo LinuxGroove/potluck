@@ -14,6 +14,7 @@ use bevy::math::Vec2;
 use super::{hex, Tex, ART};
 
 mod props;
+mod tools;
 use crate::noise::{seed_of, Rng};
 
 const N: i32 = ART as i32;
@@ -724,5 +725,6 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     ]
     .into_iter()
     .chain(props::tiles())
+    .chain(tools::tiles())
     .collect()
 }

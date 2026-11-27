@@ -2,11 +2,11 @@
 -- Gloomlings: little shadows that come out after dark and follow anyone
 -- out in survival, nipping at their heels. They can't bear light: they
 -- keep away from lanterns, braziers and candles (world.find_light), lurk
--- at the edge of a lit place, and fade away in the morning. Bop one and
--- it pops. Players in creative have nothing to fear, and nothing comes
--- near the Green.
+-- at the edge of a lit place, and fade away in the morning. Bop one twice
+-- and it pops, or once with a sword (world.held). Players in creative have
+-- nothing to fear, and nothing comes near the Green.
 
-local world = require("@potluck/world@0.4")
+local world = require("@potluck/world@0.8")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -17,6 +17,13 @@ local knobs = tweak {
 	how_many = { 4, min = 0, max = 8, label = "How many follow you at night", order = 3 },
 	bite = { 1, min = 0, max = 4, label = "How hard they nip", order = 4 },
 	shy = { 6, min = 2, max = 12, label = "How far they keep from a light", order = 5 },
+	bops = { 2, min = 1, max = 5, label = "Bops to pop one by hand", order = 6 },
+}
+
+-- How hard each sword bops (a hand bops 1): a remix can add its own.
+local SWORDS: { [string]: number } = {
+	["Wooden sword"] = 2,
+	["Stone sword"] = 3,
 }
 
 local Gloomling = world.creature {
@@ -100,6 +107,11 @@ function Gloomling:tick(dt: number)
 		end
 		return
 	end
+	-- just bopped: keep running off a moment
+	if (self.back_off or 0) > 0 then
+		self.back_off -= dt
+		return
+	end
 	-- once a second: who to follow, and whether a light is near
 	self.look_in -= dt
 	if self.look_in <= 0 then
@@ -160,6 +172,18 @@ function Gloomling:tick(dt: number)
 end
 
 function Gloomling:hit(player)
+	local held = world.held(player)
+	self.bopped = (self.bopped or 0) + (held and SWORDS[held] or 1)
+	if self.bopped < knobs.bops then
+		-- knocked back: it hops off and keeps away a moment
+		local away = self.position + (self.position - player.position) * 2
+		self:walk_to(away, 4)
+		self:hop(0.6)
+		self.back_off = 1.5
+		self.nip_in = 2
+		sound.play("grumble", { at = self, volume = 0.6, pitch = 2.3, caption = "A gloomling squeaks" })
+		return
+	end
 	sound.play("pop", { at = self, pitch = 0.7, caption = "A gloomling pops" })
 	where[self.id] = nil
 	self:remove()

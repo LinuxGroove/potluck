@@ -1496,7 +1496,7 @@ world.after(1, function()
 	end
 end)
 print(pcall(ui.show, nil, "x", "y", { at = "middle" }) and "middle ok" or "no middle")
-print(pcall(ui.ask, 1, { choices = { "a", "b", "c", "d", "e" } }, function() end) and "five ok" or "no five")
+print(pcall(ui.ask, 1, { choices = { "a", "b", "c", "d", "e", "f", "g", "h", "i" } }, function() end) and "choice nine ok" or "no choice nine")
 for i = 1, 7 do ui.show(nil, "n" .. i, "line " .. i) end
 print(pcall(ui.show, nil, "one too many", "line") and "nine ok" or "no nine")
 ui.show(nil, "n1", "line 1 again")
@@ -1509,7 +1509,7 @@ for i = 1, 7 do ui.hide(nil, "n" .. i) end
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let log = |s: &Scripts| s.vms["test"].log.join("\n");
     assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
-    assert!(log(&scripts).contains("no middle") && log(&scripts).contains("no five") && log(&scripts).contains("no nine"), "{}", log(&scripts));
+    assert!(log(&scripts).contains("no middle") && log(&scripts).contains("no choice nine") && log(&scripts).contains("no nine"), "{}", log(&scripts));
     let piece = |text: &str, at: &str| Some(Piece { text: text.into(), at: at.into(), meter: None });
     let shown = |ch: &[(u32, UiChange)], pid: u32, id: &str| {
         ch.iter().find_map(|(p, c)| match c {
@@ -2304,10 +2304,21 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
         let d = Vec2::new(b.pos.x - (cx as f32 + 1.5), b.pos.z - (cz as f32 + 0.5)).length();
         assert!(d > 4.0, "one's {d} from the lantern");
     }
-    // bop one and it pops
-    let id = *herd.bodies.keys().next().expect("they wait at the edge of the light");
-    scripts.event(&mut voxels, &mut herd, id, "hit", &scripts.players[0].clone());
+    // bop one twice and it pops, the first bop knocking it back
+    let ids: Vec<_> = herd.bodies.keys().copied().collect();
+    let id = ids[0];
+    let ada = scripts.players[0].clone();
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
+    assert!(herd.bodies.contains_key(&id), "one bop by hand only knocks it back");
+    scripts.event(&mut voxels, &mut herd, id, "hit", &ada);
     assert!(!herd.bodies.contains_key(&id));
+    // a sword pops one at once (world.held)
+    if let Some(&other) = ids.get(1) {
+        scripts.set_held(7, crate::blocks::by_name("Wooden sword").unwrap());
+        scripts.event(&mut voxels, &mut herd, other, "hit", &ada);
+        assert!(!herd.bodies.contains_key(&other), "a sword pops it");
+        scripts.set_held(7, crate::blocks::AIR);
+    }
     // in the morning they fade away
     scripts.set_day(0.4);
     run(&mut scripts, &mut voxels, &mut herd, 15.0);
@@ -2481,7 +2492,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     scripts.use_block(7, at, table);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let panel = asked(&scripts, 7).expect("the table asks what to make");
-    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm"]);
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons"]);
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
     assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
     // it asks again with how it went, so making several is quick
@@ -2519,6 +2530,8 @@ fn a_table_is_a_workbench_for_survival_players() {
         vec!["Planks"],
         vec!["Hay", "Glass", "Cobblestone", "Oak log"],
         vec!["Planks", "Dirt", "Wheat"],
+        vec!["Planks", "Cobblestone"],
+        vec!["Planks", "Cobblestone"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
@@ -2788,6 +2801,120 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     run(&mut scripts, &mut voxels, &mut herd, 1.5);
     assert_eq!(bar(&scripts, 7), None);
     assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
+}
+
+/// world 0.8 and the Tools creation: a tool in hand digs its kind of block
+/// faster on the player's own game, wears with every block it breaks, and
+/// breaks when it's worn out; items can't be put down.
+#[test]
+fn tools_dig_faster_wear_out_and_break() {
+    use crate::blocks::{by_name, AIR, STONE};
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::player::Me;
+    home();
+    let tools = Library::load().list.remove("tools").expect("the base game has tools");
+    let (pick, axe, sword) = (by_name("Wooden pickaxe").unwrap(), by_name("Stone axe").unwrap(), by_name("Wooden sword").unwrap());
+    assert!(crate::blocks::is_item(pick) && !crate::blocks::is_solid(pick) && !crate::blocks::is_item(STONE));
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[(pick, 1), (axe, 1)], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    scripts.start(&tools, &mut herd).unwrap();
+    let digging = scripts.digging_changes().expect("the tools say how they dig");
+    assert_eq!(digging.len(), 6, "{digging:?}");
+    let speeds = |b| digging.iter().find(|d| d.0 == b).map(|d| d.1).unwrap();
+    assert_eq!(speeds(pick), [1.0, 2.5, 1.0, 1.0, 1.0], "a wooden pickaxe digs stone faster");
+    assert_eq!(speeds(axe)[2], 4.0, "a stone axe chops faster");
+    assert!(scripts.digging_changes().is_none(), "only told again when it changes");
+
+    // on the player's game: faster with the right tool, as usual by hand or with the wrong one
+    let mut me = Me::default();
+    me.digging = digging.iter().copied().collect();
+    me.hotbar[0] = pick;
+    me.counts[0] = 1;
+    let (oak, dirt) = (by_name("Oak log").unwrap(), by_name("Dirt").unwrap());
+    assert_eq!((me.dig_speed(STONE), me.dig_speed(oak), me.dig_speed(dirt)), (2.5, 1.0, 1.0));
+    me.counts[0] = 0;
+    assert_eq!(me.dig_speed(STONE), 1.0, "an empty slot in survival is an empty hand");
+    me.hotbar[0] = axe;
+    me.counts[0] = 1;
+    assert_eq!(me.dig_speed(oak), 4.0);
+
+    // the wear bar shows while a tool is in hand, with a line saying what it is
+    let piece = |scripts: &Scripts, pid: u32, id: &str| scripts.shared.lock().unwrap().ui.pieces.get(&(Some(pid), "tools".into(), id.into())).cloned();
+    let carried = |scripts: &Scripts, b| scripts.shared.lock().unwrap().pockets[&7].items.get(&b).copied().unwrap_or(0);
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert!(piece(&scripts, 7, "wear").is_none(), "nothing in hand, no bar");
+    scripts.set_held(7, pick);
+    scripts.set_held(8, pick);
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert_eq!(piece(&scripts, 7, "wear").and_then(|p| p.meter).map(|m| m.0), Some(1.0));
+    assert!(piece(&scripts, 7, "wear_says").is_some_and(|p| p.text.contains("wear") && p.text.chars().count() <= 60));
+    assert!(piece(&scripts, 8, "wear").is_none(), "tools don't wear in creative");
+    // every block it breaks wears it, and the 60th breaks it
+    let at = IVec3::new(10, 50, 12);
+    for _ in 0..30 {
+        scripts.player_block(7, at, STONE, AIR);
+        scripts.player_block(8, at, STONE, AIR);
+    }
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert_eq!(piece(&scripts, 7, "wear").and_then(|p| p.meter).map(|m| m.0), Some(0.5));
+    for _ in 0..29 {
+        scripts.player_block(7, at, STONE, AIR);
+    }
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert_eq!(carried(&scripts, pick), 1, "still going after 59");
+    scripts.player_block(7, at, STONE, AIR);
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert_eq!(carried(&scripts, pick), 0, "worn out after 60");
+    assert_eq!(piece(&scripts, 7, "broke").map(|p| p.text).as_deref(), Some("Your wooden pickaxe broke."));
+    assert_eq!(carried(&scripts, axe), 1, "only the one in hand wears");
+    // a sword isn't a tool: no bar
+    scripts.set_held(7, sword);
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert!(piece(&scripts, 7, "wear").is_none());
+    assert_eq!(scripts.vms["tools"].error, None, "{:?}", scripts.vms["tools"].log);
+    // stopping takes its speeds away
+    scripts.stop("tools", &mut herd);
+    assert_eq!(scripts.digging_changes(), Some(vec![]));
+
+    // the API's edges
+    let code = r#"
+local world = require("@potluck/world@0.8")
+print("kinds " .. world.kind("Stone") .. " " .. world.kind("Oak log") .. " " .. world.kind("Dirt") .. " " .. world.kind("Oak leaves") .. " " .. world.kind("Glass") .. " " .. world.kind("Water") .. " " .. world.kind("Air"))
+print("held " .. tostring(world.held(7)))
+print(pcall(world.kind, "Mud") and "mud ok" or "no mud")
+print(pcall(world.digging, "Air", { hard = 2 }) and "air ok" or "no air")
+print(pcall(world.digging, "Wooden pickaxe", { mud = 2 }) and "kind ok" or "no kind")
+print(pcall(world.digging, "Wooden pickaxe", { hard = 11 }) and "fast ok" or "no fast")
+print(pcall(world.digging, "Wooden pickaxe", { hard = -1 }) and "slow ok" or "no slow")
+world.digging("Stone", { hard = 3 })
+world.digging("Stone", { hard = 3, soft = 1 })
+world.after(0.1, function()
+	print("held now " .. tostring(world.held(7)))
+	print(pcall(world.set_block, vector.create(10, 50, 12), "Wooden pickaxe") and "set ok" or "no set")
+	world.digging("Stone", nil)
+end)
+"#;
+    scripts.set_held(7, AIR);
+    scripts.start(&creation(code), &mut herd).unwrap();
+    let log = scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{log}");
+    for want in ["kinds hard wood soft plant glass water air", "held nil", "no mud", "no air", "no kind", "no fast", "no slow"] {
+        assert!(log.contains(want), "{want}: {log}");
+    }
+    assert_eq!(scripts.digging_changes(), Some(vec![(STONE, [1.0, 3.0, 1.0, 1.0, 1.0])]), "said twice the same, told once");
+    scripts.set_held(7, sword);
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    let log = scripts.vms["test"].log.join("\n");
+    assert!(log.contains("held now Wooden sword") && log.contains("no set"), "{log}");
+    assert_eq!(scripts.digging_changes(), Some(vec![]), "nil takes it away");
+    // what goes between devices
+    let m = Msg::Digging(vec![(pick, [1.0, 2.5, 1.0, 1.0, 1.0])]);
+    let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+    assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
 }
 
 /// world 0.7: a creation can hurt a player only down to some health, which

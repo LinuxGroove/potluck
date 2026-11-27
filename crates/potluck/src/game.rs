@@ -35,6 +35,8 @@ pub enum Action {
     Pockets { survival: bool, items: Vec<(crate::blocks::BlockId, u32)>, seen: u32 },
     /// Interact on a block, for creations' `block_used`.
     UseBlock([i32; 3]),
+    /// What this player has in hand now (`world.held`); air for nothing.
+    Held(crate::blocks::BlockId),
 }
 
 /// How far from a player a block they use can be.
@@ -256,6 +258,7 @@ pub fn host_step(
             Action::Answer { ask, choice } => scripts.answer(pid, ask, choice),
             Action::Net(note) => scripts.hear(pid, note),
             Action::Pockets { survival, items, seen } => scripts.set_pockets(pid, survival, &items, seen),
+            Action::Held(b) => scripts.set_held(pid, b),
             Action::UseBlock(at) => {
                 let at = IVec3::from_array(at);
                 if (at.as_vec3() + Vec3::splat(0.5)).distance(player.pos) <= USE_REACH {
@@ -319,6 +322,13 @@ pub fn host_step(
         } else {
             net.send_healing(pid, rate);
         }
+    }
+    // what tools dig faster, for every game here
+    if let Some(digging) = scripts.digging_changes() {
+        if let Some(me) = me.as_mut() {
+            me.digging = digging.iter().copied().collect();
+        }
+        net.broadcast_digging(digging);
     }
     // messages creations sent their client halves
     for (pid, note) in scripts.net_changes(&here) {
