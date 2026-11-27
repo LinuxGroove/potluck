@@ -187,6 +187,7 @@ fn main() {
         .init_resource::<mesh::ChunkEntities>()
         .init_resource::<mesh::MeshFocus>()
         .init_resource::<mesh::Cover>()
+        .init_resource::<mesh::View>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<ui::Labels>()
         .insert_resource(waypoints::Waypoints::load())
@@ -223,7 +224,7 @@ fn main() {
             Update,
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
-                (focus_mesh, mesh::remesh, mesh::wind).chain(),
+                (focus_mesh, view_distance, mesh::show, mesh::remesh, render::follow_sea, mesh::wind).chain(),
                 (render::sky, render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
                 (map::refresh, map::draw_hud, map::make_room, map::draw_map, chat::draw_feed, keyboard::draw),
             )
@@ -492,4 +493,17 @@ fn setup(
 
 fn focus_mesh(me: Res<player::Me>, mut focus: ResMut<mesh::MeshFocus>) {
     focus.0 = me.eye();
+}
+
+/// How far the world is drawn, and made round the player (a column more,
+/// so the edges of what's drawn have their neighbours), from the lighting
+/// tier.
+fn view_distance(settings: Res<settings::Settings>, mut view: ResMut<mesh::View>, mut stream: ResMut<world::stream::Stream>) {
+    if settings.is_changed() {
+        let v = mesh::View::of(render::Tier::of(&settings.lighting));
+        if *view != v {
+            *view = v;
+        }
+        stream.around_me = v.0 + 1;
+    }
 }

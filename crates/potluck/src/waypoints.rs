@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::blocks::{self, WATER};
 use crate::player::Me;
-use crate::world::{Voxels, WX, WY, WZ};
+use crate::world::{Voxels, BORDER, MIN_Y, WY};
 
 /// Waypoint colours, by name, as the map and the world show them.
 pub const COLORS: &[(&str, [u8; 3])] = &[
@@ -270,8 +270,8 @@ pub fn may_go(goal: &Goal, survival: bool, world_allows: bool, riding: bool, res
 /// (`exact`, for waypoints, which may be in a house or a cave), otherwise
 /// on the ground under the open sky, or on a tree that covers it.
 pub fn landing(v: &Voxels, to: Vec3, exact: bool) -> Vec3 {
-    let x = (to.x.floor() as i32).clamp(1, WX - 2);
-    let z = (to.z.floor() as i32).clamp(1, WZ - 2);
+    let x = (to.x.floor() as i32).clamp(2 - BORDER, BORDER - 2);
+    let z = (to.z.floor() as i32).clamp(2 - BORDER, BORDER - 2);
     let open = |y: i32| !blocks::is_solid(v.get(x, y, z)) && !blocks::is_solid(v.get(x, y + 1, z));
     let floor = |y: i32| (1..=3).any(|d| blocks::is_solid(v.get(x, y - d, z)) || v.get(x, y - d, z) == WATER);
     let at = |y: i32| Vec3::new(x as f32 + 0.5, y as f32 + 0.01, z as f32 + 0.5);
@@ -279,7 +279,7 @@ pub fn landing(v: &Voxels, to: Vec3, exact: bool) -> Vec3 {
         let y = to.y.floor() as i32;
         for dy in [0, 1, -1, 2, -2] {
             let y = y + dy;
-            if (1..WY - 2).contains(&y) && open(y) && floor(y) {
+            if (MIN_Y + 1..WY - 2).contains(&y) && open(y) && floor(y) {
                 return at(y);
             }
         }
@@ -289,7 +289,7 @@ pub fn landing(v: &Voxels, to: Vec3, exact: bool) -> Vec3 {
         return at(ground);
     }
     // under leaves: stand on the canopy
-    let top = (0..WY - 2).rev().find(|&y| blocks::is_solid(v.get(x, y, z))).unwrap_or(0);
+    let top = (MIN_Y..WY - 2).rev().find(|&y| blocks::is_solid(v.get(x, y, z))).unwrap_or(MIN_Y);
     at(top + 1)
 }
 
@@ -421,7 +421,7 @@ pub fn travel(
     time: Res<Time>,
     mut travel: ResMut<Travel>,
     mut me: ResMut<Me>,
-    voxels: Res<Voxels>,
+    mut voxels: ResMut<Voxels>,
     settings: Res<crate::settings::Settings>,
     mut waypoints: ResMut<Waypoints>,
     mut toasts: ResMut<crate::ui::Toasts>,
@@ -432,6 +432,10 @@ pub fn travel(
 ) {
     let dt = time.delta_secs().min(0.05);
     let was_dark = travel.dark >= 1.0;
+    // the land at the far end, made while the screen is dark
+    if let Some(t) = travel.trip.as_ref().filter(|t| t.stage == Stage::Leaving) {
+        voxels.ensure(crate::world::key_of(t.to.x.floor() as i32, t.to.z.floor() as i32));
+    }
     if let Some(said) = travel.step(dt, &mut me, &voxels, settings.survival) {
         toasts.push(said);
     }

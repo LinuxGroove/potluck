@@ -103,6 +103,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **Every version**, from 27 November 2026: the world goes on past the island in every direction (to 30,000 blocks out) and down to bedrock at y = -128, where it stopped at the island's edge and y = 0. Land is made as players come near it, so far from everyone `world.block` says `"Air"` and `world.top` says where the ground will be; `world.set_block` there makes the land first. The island, 0 to 384 each way, is always there.
 - **0.12**: blocks of a creation's own, `[blocks.name]` in `potluck.toml`: pictures drawn in letters with a colour for each, a shape (solid, see-through, a plant, or boxes in sixteenths), how hard it is to break, its kind, and light and glow. Every block function takes their names; a world keeps their ids for as long as it lasts, and sends them to everyone who joins.
 - **0.11**: `world.model`, a Blockbench model (a `.bbmodel` in the creation's folder) as the list of boxes a body is, 16 pixels to a block, drawn with the model's texture (a part's `texture`; its `color` tints it), with `head`, `leg` and `glow` from its cubes' and groups' names; and `body = "file.bbmodel"` for `world.creature` as short for it. Creations may carry `.bbmodel` files.
 - **0.10**: `behaviours` for `world.creature`, what a creature does with no code: `wander`, `follow_food`, `follow_when_used`, `flee_when_hit`, `hop_when_hit`, `chatter` and `sound`. They act before its own handlers, which have the last word.

@@ -28,7 +28,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;

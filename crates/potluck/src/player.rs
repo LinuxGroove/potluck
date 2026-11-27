@@ -6,7 +6,7 @@ use crate::blocks::{self, BlockId, Shape, AIR, STARTER_HOTBAR, WATER};
 use crate::input::Controls;
 use crate::settings::Settings;
 use crate::ui::Focus;
-use crate::world::{Voxels, START, WY};
+use crate::world::{Voxels, MIN_Y, START, WY};
 
 pub const HALF_W: f32 = 0.3;
 pub const HEIGHT: f32 = 1.8;
@@ -18,6 +18,15 @@ const SPRINT: f32 = 5.8;
 const SNEAK: f32 = 1.6;
 const FLY: f32 = 11.0;
 const REACH: f32 = 6.0;
+/// Swimming: how fast up and down, along, and how quickly the water takes
+/// the player to where they're going (no bobbing: it eases there).
+const SWIM_UP: f32 = 3.6;
+const SWIM: f32 = 3.0;
+const SWIM_FAST: f32 = 4.6;
+const WATER_GRIP: f32 = 5.0;
+/// Where a floating player's feet rest under the surface, so the eyes are
+/// just above it.
+const FLOAT: f32 = 1.35;
 pub const MAX_HEALTH: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +47,8 @@ pub struct Me {
     pub flying: bool,
     pub sprint: bool,
     pub in_water: bool,
+    /// The eye is under water (for how the world looks from there).
+    pub under_water: bool,
     pub slot: usize,
     pub hotbar: [BlockId; 9],
     /// How many of each hotbar block (survival only).
@@ -109,6 +120,7 @@ impl Default for Me {
             flying: false,
             sprint: false,
             in_water: false,
+            under_water: false,
             slot: 0,
             hotbar: STARTER_HOTBAR,
             counts: [0; 9],
@@ -253,6 +265,70 @@ impl Me {
     }
 }
 
+/// Whether the body standing at `pos` is in water (feet or middle).
+pub fn wet(w: &Voxels, pos: Vec3) -> bool {
+    w.at(pos.floor().as_ivec3()) == WATER || w.at((pos + Vec3::Y * 0.9).floor().as_ivec3()) == WATER
+}
+
+/// Whether an eye at `eye` is under the water's surface.
+pub fn under_water(w: &Voxels, eye: Vec3) -> bool {
+    let p = eye.floor().as_ivec3();
+    w.at(p) == WATER && (w.at(p + IVec3::Y) == WATER || eye.y.fract() < 0.88)
+}
+
+/// Where the water's surface is above a spot that's in water: the top of
+/// the water there (as drawn, a little under the block's top).
+pub fn surface(w: &Voxels, at: Vec3) -> f32 {
+    let mut p = at.floor().as_ivec3();
+    let mut n = 0;
+    while w.at(p + IVec3::Y) == WATER && n < 256 {
+        p.y += 1;
+        n += 1;
+    }
+    p.y as f32 + 0.88
+}
+
+/// One frame of swimming: jump swims up, crouch down, and with neither the
+/// player floats up to rest with their eyes just over the surface. Under
+/// water, swimming forward goes the way they look. Every speed eases to
+/// where it's going, so the view never bobs.
+fn swim(vel: &mut Vec3, me: &Me, w: &Voxels, wish: Vec3, up: bool, down: bool, dt: f32) {
+    let speed = if me.sprint { SWIM_FAST } else { SWIM };
+    let grip = (dt * WATER_GRIP).min(1.0);
+    let mut target = wish * speed;
+    let along = wish.length();
+    let rise = if up {
+        SWIM_UP
+    } else if down {
+        -SWIM_UP
+    } else if me.under_water && along > 0.1 && me.pitch.abs() > 0.2 {
+        // diving or coming up the way they look
+        let look = me.forward();
+        target = (Vec3::new(look.x, 0.0, look.z).normalize_or_zero() * me.pitch.cos() * along) * speed;
+        me.pitch.sin() * along * speed
+    } else {
+        // float: up to the surface, easing in (critically damped with the
+        // grip below) so there's no bounce
+        let rest = surface(w, me.pos) - FLOAT;
+        ((rest - me.pos.y) * WATER_GRIP / 4.0).clamp(-1.5, 3.0)
+    };
+    vel.x += (target.x - vel.x) * grip;
+    vel.z += (target.z - vel.z) * grip;
+    vel.y += (rise - vel.y) * grip;
+}
+
+/// Whether a swimmer at `pos` pushing `wish` is against a bank they can
+/// climb out onto: a block at the water's height with room above it.
+fn can_climb_out(w: &Voxels, pos: Vec3, wish: Vec3) -> bool {
+    let ahead = pos + wish.normalize_or_zero() * (HALF_W + 0.4);
+    let foot = ahead.floor().as_ivec3();
+    // the bank's top is within reach of the surface
+    (0..=1).any(|dy| {
+        let bank = foot + IVec3::Y * dy;
+        blocks::is_solid(w.at(bank)) && !blocks::is_solid(w.at(bank + IVec3::Y)) && !blocks::is_solid(w.at(bank + IVec3::Y * 2)) && (bank.y + 1) as f32 - pos.y < 1.7
+    })
+}
+
 /// Whether a box (min corner, size) overlaps anything solid.
 pub fn blocked(w: &Voxels, min: Vec3, size: Vec3) -> bool {
     let a = min.floor().as_ivec3();
@@ -260,7 +336,8 @@ pub fn blocked(w: &Voxels, min: Vec3, size: Vec3) -> bool {
     for y in a.y..=b.y {
         for z in a.z..=b.z {
             for x in a.x..=b.x {
-                if y < 0 {
+                // bedrock's floor, and land that isn't made yet
+                if y < MIN_Y || !w.loaded(x, z) {
                     return true;
                 }
                 if blocks::is_solid(w.get(x, y, z)) {
@@ -415,10 +492,23 @@ pub fn walk(
             me.last_jump = now;
         }
     }
-    let feet = me.pos.floor().as_ivec3();
-    let mid = (me.pos + Vec3::Y * 0.9).floor().as_ivec3();
+    // somewhere made since the player got there (a trip or a respawn out
+    // past the island): up out of whatever's grown there
+    let body = |p: Vec3| (Vec3::new(p.x - HALF_W, p.y, p.z - HALF_W), Vec3::new(HALF_W * 2.0, HEIGHT, HALF_W * 2.0));
+    if voxels.loaded(me.pos.x.floor() as i32, me.pos.z.floor() as i32) {
+        let mut p = me.pos;
+        while p.y < WY as f32 && { let (a, b) = body(p); blocked(&voxels, a, b) } {
+            p.y = p.y.floor() + 1.0;
+        }
+        if p.y != me.pos.y {
+            me.pos = p;
+            me.fall_from = p.y;
+        }
+    }
     let was_wet = me.in_water;
-    me.in_water = voxels.at(feet) == WATER || voxels.at(mid) == WATER;
+    me.in_water = wet(&voxels, me.pos);
+    me.under_water = under_water(&voxels, me.eye());
+    let deep = voxels.at((me.pos + Vec3::Y * 0.9).floor().as_ivec3()) == WATER;
     if me.in_water && !was_wet && me.vel.y < -3.0 {
         heard.game("splash", me.pos, 0.5, 1.0);
     }
@@ -431,6 +521,8 @@ pub fn walk(
         vel.z += (target.z - vel.z) * (dt * 10.0).min(1.0);
         let up = if playing && c.jump { 1.0 } else { 0.0 } - if playing && c.crouch { 1.0 } else { 0.0 };
         vel.y += (up * speed * 0.8 - vel.y) * (dt * 10.0).min(1.0);
+    } else if me.in_water && (!me.on_ground || me.under_water || deep && playing && (c.jump || c.crouch)) {
+        swim(&mut vel, &me, &voxels, wish, playing && c.jump, playing && c.crouch, dt);
     } else {
         let speed = if playing && c.crouch { SNEAK } else if me.sprint { SPRINT } else { WALK };
         let speed = if me.in_water { speed * 0.6 } else { speed };
@@ -438,13 +530,7 @@ pub fn walk(
         let grip = if me.on_ground { 14.0 } else { 3.0 };
         vel.x += (target.x - vel.x) * (dt * grip).min(1.0);
         vel.z += (target.z - vel.z) * (dt * grip).min(1.0);
-        if me.in_water {
-            vel.y -= GRAVITY * 0.25 * dt;
-            vel.y = vel.y.max(-3.0);
-            if playing && c.jump {
-                vel.y = (vel.y + 18.0 * dt).min(3.2);
-            }
-        } else {
+        {
             vel.y -= GRAVITY * dt;
             vel.y = vel.y.max(-60.0);
             if playing && c.jump && me.on_ground {
@@ -455,21 +541,27 @@ pub fn walk(
     let mut pos = me.pos;
     let hit = move_body(&voxels, &mut pos, vel * dt, HALF_W, HEIGHT);
     let landed = hit.y && vel.y < 0.0;
+    // swimming into a bank one block high: up and out over it
+    if me.in_water && !me.flying && (hit.x || hit.z) && wish.length() > 0.3 && can_climb_out(&voxels, pos, wish) {
+        vel.y = vel.y.max(4.4);
+    }
     if hit.x { vel.x = 0.0 }
     if hit.z { vel.z = 0.0 }
     if hit.y { vel.y = 0.0 }
+    // water breaks a fall even when it's the frame it lands in
+    let wet_now = me.in_water || wet(&voxels, pos);
     // a little variety in each step
     let wobble = 0.92 + (now * 7.3).fract() as f32 * 0.16;
     let under = crate::sound::material(voxels.at((pos - Vec3::Y * 0.1).floor().as_ivec3()));
     // fall damage, in survival
     if landed {
         let fell = me.fall_from - pos.y;
-        if fell > 1.2 && !me.in_water {
+        if fell > 1.2 && !wet_now {
             if let Some(n) = under.step() {
                 heard.game(n, pos, 0.55, wobble * 0.85);
             }
         }
-        if settings.survival && !me.in_water && fell > 3.5 {
+        if settings.survival && !wet_now && fell > 3.5 {
             me.hurt((fell - 3.0).floor());
         }
     }
@@ -477,7 +569,7 @@ pub fn walk(
     if landed && me.flying && !playing {
         me.flying = false;
     }
-    if me.on_ground || me.in_water || me.flying || vel.y > 0.0 {
+    if me.on_ground || wet_now || me.flying || vel.y > 0.0 {
         me.fall_from = pos.y;
     }
     me.pos = pos;
@@ -500,7 +592,7 @@ pub fn walk(
             me.health = (me.health + 1.0).min(MAX_HEALTH);
         }
     }
-    if me.pos.y < -20.0 || me.health <= 0.0 {
+    if me.pos.y < MIN_Y as f32 - 20.0 || me.health <= 0.0 {
         let msg = if me.health <= 0.0 { "You were hurt too badly. Back to the hill." } else { "You fell out of the world. Back to the hill." };
         if me.health <= 0.0 && settings.survival {
             me.fell_at = Some(me.pos);
