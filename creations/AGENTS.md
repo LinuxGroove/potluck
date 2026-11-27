@@ -374,9 +374,9 @@ sound.play_for(player, "tada")
 - Every sound is made as loud as the game's own, so set how loud it plays with `volume`. A sound is made once on each game and again only when its table changes, so tweak it, save, and play it again to hear the difference.
 - A table that can't be read (`piitch`, a wave that isn't one) stops the creation loading, and Look inside says which and why. The market checks them too.
 
-### `@potluck/net` 0.1
+### `@potluck/net` 0.2
 
-A creation can have a **client half**: a second file, named by `client` in potluck.toml, that runs on each player's own game while the main file runs on the world's host. Use it for what only that player sees and that would otherwise mean a message ten times a second: a clock ticking down, a line that follows what they do, a sound only for them. The half never sees or changes the world; it gets only what its creation sends it, and answers the same way.
+A creation can have a **client half**: a second file, named by `client` in potluck.toml, that runs on each player's own game while the main file runs on the world's host. Use it for what only that player sees and that would otherwise mean a message ten times a second: a clock ticking down, a line that follows what they do, a sound only for them. The half never changes the world. It hears what its creation sends it and answers the same way, and from net 0.2 it reads that player's game's copy of the world: the blocks, the ground and the players near enough to see. The balloon's half shows its rider how high they are.
 
 ```luau
 -- main.luau, on the host
@@ -401,10 +401,11 @@ net.send("ready", { name = net.me().name })
 ```
 
 - In the main file: `net.send(player, topic, value?)` sends a message to that player's half, and `net.send(nil, topic, value?)` to every player in the world now (not to those who come later). `net.on(topic, fn(player, value))` is called on the next tick for each message a player's half sends.
-- In the client half: `net.send(topic, value?)` sends a message to the main file, `net.on(topic, fn(value))` is called for each message the main file sends this player, and `net.me()` is this player (`id`, `name` and where they stand).
+- In the client half: `net.send(topic, value?)` sends a message to the main file, `net.on(topic, fn(value))` is called for each message the main file sends this player, and `net.me()` is this player (`id`, `name` and where they stand, and from 0.2 `look`, which way they look, and `aim`, the middle of the block they aim at, or nil).
 - A topic is 1 to 32 letters. A value is what the store keeps (numbers, strings, true or false, vectors, and tables of those), at most 4 KB as JSON.
 - The main file sends at most 30 messages a second, and each player's half 10; past that, `send` returns false and the message isn't sent. The host drops what a half sends beyond that too.
 - What a client half has: `@potluck/net`; `@potluck/ui`'s `show` and `hide`, for this player only (`player` is nil, or `net.me()`), at most 8 lines; `@potluck/sound`'s `play`, heard only by this player; and from `@potluck/world` its timers (`after`, `every`, `cancel`), `time` (seconds since this half started, so send it lengths of time rather than the host's times), `random`, `spot`, `daytime` and `daylight` (this game's clock). The rest of the API is the main file's, and says so if a half calls it.
+- From net 0.2 a client half reads too: `world.block`, `world.top`, `world.find_block` and `world.kind` from this game's copy of the world, and `world.players` and `world.nearest_player` for the players it knows of (this player first, then those near enough to see). A guest's copy is the host's as it last heard, so it can be a moment behind; anything that matters (who won, what's in a chest) stays the main file's to decide and send.
 - A half starts when its player arrives or the creation loads, and starts again, fresh, whenever any of the creation's files change. If it needs to know what's going on, have it say hello (`net.send("hello")`) and answer that from the main file.
 - Its lines share ids with the main file's lines for that player, so the last to show one wins. Its lines go when it stops.
 - A half has 16 MB and 4 ms of each frame. One that fails or runs too long stops, and Look inside shows why (its prints show there too, marked `client:`).
@@ -428,12 +429,12 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.2
+### `@potluck/test` 0.3
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
 ```luau
-local test = require("@potluck/test@0.2")
+local test = require("@potluck/test@0.3")
 local world = require("@potluck/world@0.12")
 
 test.case("a basket put down fills up into a balloon", function()
@@ -456,8 +457,8 @@ end)
 - `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
-- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), and `test.hold(player, block)` for what's in their hand (nil for nothing). Placing, digging, using a block, pressing and answering pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
-- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2).
+- What players do: `test.place(player, pos, block)` and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
 

@@ -19,7 +19,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 1), ("test", 0, 2)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 12), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 3)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -815,6 +815,35 @@ pub(crate) fn spot(name: &str) -> Option<Vec3> {
     }
 }
 
+/// `world.kind`: what a block is made of. Client halves share it.
+pub(crate) fn kind_of(name: &str) -> mlua::Result<&'static str> {
+    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+    Ok(crate::sound::material(id).name())
+}
+
+/// `world.find_block`: the middle of the nearest block of that name within
+/// `radius` (up to 16) of `p`, or nil. Client halves share it.
+pub(crate) fn find_block(voxels: &Voxels, p: &Value, radius: f32, name: &str) -> mlua::Result<Option<Value>> {
+    let p = vec_of(p).ok_or_else(|| bad("world.find_block needs a position"))?.floor().as_ivec3();
+    let id = blocks::by_name(name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+    let r = radius.clamp(0.0, 16.0) as i32;
+    let mut best: Option<(i32, IVec3)> = None;
+    for y in -r..=r {
+        for z in -r..=r {
+            for x in -r..=r {
+                let q = p + IVec3::new(x, y, z);
+                if voxels.at(q) == id {
+                    let d = x * x + y * y + z * z;
+                    if best.is_none_or(|(b, _)| d < b) {
+                        best = Some((d, q));
+                    }
+                }
+            }
+        }
+    }
+    Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
+}
+
 pub(crate) fn player_table(lua: &Lua, p: &PlayerInfo) -> mlua::Result<Table> {
     let t = lua.create_table()?;
     t.set("id", p.id)?;
@@ -1321,13 +1350,7 @@ impl Vm {
                         Ok((b != blocks::AIR).then(|| blocks::block(b).name))
                     })?,
                 )?;
-                world.set(
-                    "kind",
-                    lua.create_function(move |_, name: String| {
-                        let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                        Ok(crate::sound::material(id).name())
-                    })?,
-                )?;
+                world.set("kind", lua.create_function(move |_, name: String| kind_of(&name))?)?;
                 let (sh, me) = (shared.clone(), creation.id.clone());
                 world.set(
                     "digging",
@@ -1785,27 +1808,7 @@ impl Vm {
                 Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
-            world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| {
-                let p = vec_of(&p).ok_or_else(|| bad("world.find_block needs a position"))?.floor().as_ivec3();
-                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                let r = radius.clamp(0.0, 16.0) as i32;
-                let ctx = c.borrow();
-                let mut best: Option<(i32, IVec3)> = None;
-                for y in -r..=r {
-                    for z in -r..=r {
-                        for x in -r..=r {
-                            let q = p + IVec3::new(x, y, z);
-                            if ctx.voxels.at(q) == id {
-                                let d = x * x + y * y + z * z;
-                                if best.is_none_or(|(b, _)| d < b) {
-                                    best = Some((d, q));
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(best.map(|(_, q)| vector(q.as_vec3() + Vec3::splat(0.5))))
-            })?)?;
+            world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| find_block(&*c.borrow().voxels, &p, radius, &name))?)?;
             world.set("find_light", s.create_function(move |_, (p, radius): (Value, f32)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.find_light needs a position"))?.floor().as_ivec3();
                 let r = radius.clamp(0.0, 16.0) as i32;

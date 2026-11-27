@@ -3,6 +3,7 @@ by = "Potluck"
 kind = "creature"
 about = "Put a balloon basket down and it fills up. Climb in, hold Burner to rise and let go to sink slowly, and steer as you walk. It climbs and turns gently and never tips. Bop it once it's landed to pack it back into a basket. Make the basket at a workbench."
 main = "main.luau"
+client = "client.luau"
 version = 1
 licence = "CC-BY-4.0"
 
@@ -13,6 +14,7 @@ input = "0.1"
 ui = "0.1"
 sound = "0.2"
 store = "0.1"
+net = "0.2"
 
 [actions.burner]
 name = "Burner"

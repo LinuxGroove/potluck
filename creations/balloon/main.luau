@@ -5,7 +5,8 @@
 -- gravity, and `self:climb` sets how fast it rises or sinks, which it eases
 -- into, so the ride is smooth. It never tips or rolls. Bop it once it's
 -- landed and empty to pack it back into a basket. Balloons are kept with the
--- world (store), so a server's are still there after a restart.
+-- world (store), so a server's are still there after a restart. Its client
+-- half (client.luau) shows riders how high they are and what's below.
 
 local world = require("@potluck/world@0.9")
 local tweak = require("@potluck/tweak")
@@ -13,6 +14,7 @@ local input = require("@potluck/input@0.1")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.2")
 local store = require("@potluck/store")
+local net = require("@potluck/net@0.2")
 
 local knobs = tweak {
 	color = { "#c24b41", label = "Envelope", order = 1 },
@@ -188,8 +190,37 @@ Filling.used = not_yet
 
 -- ---- flying ----
 
+-- each balloon's rider, as its client half was last told: it shows the
+-- height only while it's been told they're aboard
+local told: { [number]: number } = {}
+
+local function tell_rider(self)
+	local now = if self.rider then self.rider.id else nil
+	local was = told[self.id]
+	if was == now then
+		return
+	end
+	if was then
+		net.send(was, "aboard", false)
+	end
+	if now then
+		net.send(now, "aboard", true)
+	end
+	told[self.id] = now
+end
+
+-- a client half that's just started (after a change to the files) asks
+net.on("hello", function(player)
+	for _, id in told do
+		if id == player.id then
+			net.send(player, "aboard", true)
+		end
+	end
+end)
+
 local function fly(self, dt: number)
 	where[self.id] = self.position
+	tell_rider(self)
 	local r = self.rider
 	local burning = r ~= nil and input.held("burner", r)
 	if burning then

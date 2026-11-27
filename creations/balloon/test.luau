@@ -3,7 +3,7 @@
 -- this creation in it; nothing here reaches the world anyone plays in. Run
 -- them with the dev bridge's test tool, or `potluck-server --test=balloon`.
 
-local test = require("@potluck/test@0.2")
+local test = require("@potluck/test@0.3")
 local world = require("@potluck/world@0.9")
 
 local BASKET = "Balloon basket"
@@ -81,4 +81,22 @@ test.case("nobody packs it up while someone's aboard", function()
 	test.ride(p, b)
 	test.hit(friend, b)
 	only("Hot air balloon")
+end)
+
+test.case("a rider's client half is told when they're aboard", function()
+	local p, at = setup()
+	local b = filled(p, at)
+	test.same(test.sent(p, "aboard"), nil, "told before they climb in")
+	test.ride(p, b)
+	test.wait(0.2)
+	test.same(test.sent(p, "aboard"), true, "told once they're in")
+	local _, times = test.sent(p, "aboard")
+	test.same(times, 1, "times told while they ride")
+	test.from_half(p, "hello")
+	local again, more = test.sent(p, "aboard")
+	test.same(again, true, "what the half's told when it asks")
+	test.same(more, 2, "times told after it asks")
+	test.get_off(p)
+	test.wait(0.2)
+	test.same(test.sent(p, "aboard"), false, "told once they're out")
 end)
