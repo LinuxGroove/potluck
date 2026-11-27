@@ -38,6 +38,9 @@ pub struct Mem {
     pub stuck: f32,
     pub placed: u32,
     pub from: f32,
+    /// Where to build from, and frames spent building.
+    pub spot: Vec2,
+    pub built: u32,
 }
 
 pub struct Ctx<'a> {
@@ -529,11 +532,28 @@ fn script() -> Vec<Step> {
             }
             thrown && x.me.on_ground && x.t - x.mem.from > 2.0
         }),
-        step("Build: every block is yours to place", 9.0, |x| {
+        step("Build: every block is yours to place", 11.0, |x| {
             x.me.third_person = false;
             if x.frame == 0 {
                 x.mem.placed = 0;
+                x.mem.built = 0;
+                x.mem.from = -1.0;
+                // a few steps away from the nearest creature, so the blocks go on open ground
+                let me = Vec2::new(x.me.pos.x, x.me.pos.z);
+                let ahead = Vec2::new(-x.me.yaw.sin(), -x.me.yaw.cos());
+                let away = x.herd.bodies.values().map(|b| me - Vec2::new(b.pos.x, b.pos.z)).min_by(|a, b| a.length().total_cmp(&b.length()));
+                let away = away.filter(|d| d.length() < 8.0).map(|d| d.normalize_or(ahead)).unwrap_or(ahead);
+                x.mem.spot = me + away * 4.0;
             }
+            if x.mem.from < 0.0 {
+                let spot = x.mem.spot;
+                if walk_to(x, spot, -0.5, false) || x.t > 3.0 {
+                    x.mem.from = x.t;
+                }
+                return false;
+            }
+            x.mem.built += 1;
+            let f = x.mem.built;
             let k = (x.dt * 5.0).min(1.0);
             x.c.look.y = -((-0.75 + x.mem.placed as f32 * 0.09) - x.me.pitch) * k;
             x.c.hotbar_slot = Some(match x.mem.placed {
@@ -541,14 +561,14 @@ fn script() -> Vec<Step> {
                 4 => 4,
                 _ => 3,
             });
-            if x.frame > 20 && x.frame % 14 == 0 && x.mem.placed < 7 {
+            if f > 20 && f % 14 == 0 && x.mem.placed < 7 {
                 x.c.place_pressed = true;
                 x.mem.placed += 1;
             }
-            if x.frame > 20 {
+            if f > 20 {
                 x.c.look.x = 0.35 * x.dt * if x.mem.placed > 4 { -1.0 } else { 1.0 };
             }
-            if x.frame == 240 {
+            if f == 200 {
                 x.still = Some("building".into());
             }
             false
