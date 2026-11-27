@@ -36,6 +36,7 @@ pub fn routes() -> Router<Shared> {
         .route("/c/{code}/v/{n}", get(version))
         .route("/c/{code}/s/{id}", get(suggestion))
         .route("/c/{code}/star", post(star))
+        .route("/c/{code}/all-ages", post(all_ages))
         .route("/c/{code}/remix", post(remix))
         .route("/c/{code}/report", post(report))
         .route("/c/{code}/s/{id}/merge", post(merge))
@@ -171,6 +172,7 @@ fn card(c: &Creation) -> Markup {
     html! {
         a.card href={ "/c/" (c.code) } {
             span.kind { (c.kind) } " " span.codechip { (pretty(&c.code)) }
+            @if c.all_ages { " " span.tag.ok { "all ages" } }
             h3 { (c.name) }
             div.by { (head(&c.handle, 18)) "by " (c.maker) }
             @if !c.about.is_empty() { p { (c.about) } }
@@ -217,6 +219,9 @@ struct ExploreQ {
     kind: String,
     #[serde(default)]
     q: String,
+    /// "all": only creations checked for all ages
+    #[serde(default)]
+    ages: String,
 }
 
 async fn explore(State(app): State<Shared>, h: HeaderMap, Query(q): Query<ExploreQ>) -> Response {
@@ -230,10 +235,11 @@ async fn explore(State(app): State<Shared>, h: HeaderMap, Query(q): Query<Explor
         };
         let kind = if crate::checks::KINDS.contains(&q.kind.as_str()) { q.kind.clone() } else { String::new() };
         let fts = db::search_query(&q.q);
+        let ages = if q.ages == "all" { "AND EXISTS (SELECT 1 FROM versions v WHERE v.creation = c.id AND v.n = c.latest AND v.all_ages = 1)" } else { "" };
         let r = if !fts.is_empty() {
-            db::creations_where(&db, &format!("JOIN search s ON s.code = c.code WHERE c.listing = 'listed' AND search MATCH ?1 AND (?2 = '' OR c.kind = ?2) ORDER BY rank LIMIT 60"), &[&fts, &kind])
+            db::creations_where(&db, &format!("JOIN search s ON s.code = c.code WHERE c.listing = 'listed' AND search MATCH ?1 AND (?2 = '' OR c.kind = ?2) {ages} ORDER BY rank LIMIT 60"), &[&fts, &kind])
         } else {
-            db::creations_where(&db, &format!("WHERE c.listing = 'listed' AND (?1 = '' OR c.kind = ?1) ORDER BY {order} LIMIT 60"), &[&kind])
+            db::creations_where(&db, &format!("WHERE c.listing = 'listed' AND (?1 = '' OR c.kind = ?1) {ages} ORDER BY {order} LIMIT 60"), &[&kind])
         };
         match r {
             Ok(l) => l,
@@ -241,13 +247,18 @@ async fn explore(State(app): State<Shared>, h: HeaderMap, Query(q): Query<Explor
         }
     };
     let sort = if q.sort.is_empty() { "trending" } else { q.sort.as_str() };
-    let href = |s: &str, k: &str| {
+    let all_ages = q.ages == "all";
+    let href_ages = |s: &str, k: &str, all: bool| {
         let mut u = format!("/?sort={s}");
         if !k.is_empty() {
             u.push_str(&format!("&kind={k}"));
         }
+        if all {
+            u.push_str("&ages=all");
+        }
         u
     };
+    let href = |s: &str, k: &str| href_ages(s, k, all_ages);
     let body = html! {
         @if !q.q.is_empty() {
             h1 { "Creations matching \u{201c}" (q.q) "\u{201d}" }
@@ -264,6 +275,8 @@ async fn explore(State(app): State<Shared>, h: HeaderMap, Query(q): Query<Explor
             @for k in crate::checks::KINDS {
                 a.chip.on[q.kind == *k] href=(href(sort, k)) { (k) "s" }
             }
+            span { " " }
+            a.chip.on[all_ages] href=(href_ages(sort, &q.kind, !all_ages)) title="Creations a moderator looked at and found fine for players of every age" { "Checked for all ages" }
         }
         @if list.is_empty() {
             div.empty { "Nothing here yet. Share something from the game and it can be the first." }
@@ -356,6 +369,14 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
                         " · a remix of " a href={ "/c/" (pa.code) } { (pa.name) } " by " (pa.maker)
                     }
                     " · version " (shown.n) @if shown.n != c.latest { " of " (c.latest) }
+                    @if c.all_ages { " · " span.tag.ok { "Checked for all ages" } }
+                }
+                @if p.me.as_ref().is_some_and(|m| m.moderator) && c.latest > 0 {
+                    form.inline method="post" action={ "/c/" (c.code) "/all-ages" } {
+                        button.btn type="submit" name="on" value=(if c.all_ages { "0" } else { "1" }) {
+                            @if c.all_ages { "Not for all ages" } @else { "Checked for all ages" }
+                        }
+                    }
                 }
             }
             div.acts {
@@ -667,6 +688,22 @@ async fn star(State(app): State<Shared>, h: HeaderMap, Path(code): Path<String>,
     }
 }
 
+/// A moderator marks a creation's newest version checked for all ages, or not.
+async fn all_ages(State(app): State<Shared>, h: HeaderMap, Path(code): Path<String>, Form(f): Form<StarForm>) -> Response {
+    let p = page(&app, &h);
+    if let Err(r) = same_site(&app, &h) {
+        return r;
+    }
+    let me = match need_me(&app, &p) {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    match app.set_all_ages(&me, &code, f.on == "1") {
+        Ok(()) => Redirect::to(&format!("/c/{}", codes::clean(&code))).into_response(),
+        Err(e) => fail_page(&app, &p, e),
+    }
+}
+
 async fn remix(State(app): State<Shared>, h: HeaderMap, Path(code): Path<String>) -> Response {
     let p = page(&app, &h);
     if let Err(r) = same_site(&app, &h) {
@@ -896,7 +933,9 @@ async fn profile(State(app): State<Shared>, h: HeaderMap) -> Response {
                     div.box {
                         label.field { span { "Name" } input name="name" value=(me.name) required maxlength="32" autocomplete="nickname"; }
                         p.sub.hint { "Everyone sees this beside what you share. Your handle stays @" (me.handle) "." }
-                        label.field { span { "About you" } textarea name="about" maxlength="280" rows="3" placeholder="What do you like making?" { (me.about) } }
+                        @if !me.young {
+                            label.field { span { "About you" } textarea name="about" maxlength="280" rows="3" placeholder="What do you like making?" { (me.about) } }
+                        }
                     }
                     div.box {
                         h4 { "Head colour" }
@@ -1139,6 +1178,7 @@ async fn review_item(State(app): State<Shared>, h: HeaderMap, Path(id): Path<i64
                     form.stack method="post" action={ "/review/" (id) } {
                         textarea name="note" rows="2" placeholder="A note for the log (optional)" {}
                         button.btn.pri type="submit" name="decision" value="list" { "Fine: list it" @if c.visibility != "everyone" { " (stays shared by code)" } }
+                        button.btn type="submit" name="decision" value="list_all" { "Fine for all ages too: list it" }
                         button.btn type="submit" name="decision" value="unlist" { "Fine by code, not for the market" }
                         @if whys.iter().any(|(w, _)| w == "reports") { button.btn type="submit" name="decision" value="dismiss" { "The reports are wrong" } }
                         button.btn type="submit" name="decision" value="hide" { "Hide it for now" }
@@ -1325,6 +1365,7 @@ async fn servers_page(State(app): State<Shared>, h: HeaderMap) -> Response {
                         @let names: Vec<&str> = s.creations.iter().filter_map(|c| c["name"].as_str()).collect();
                         @if !names.is_empty() { span.sub { "Runs " (names.join(", ")) } }
                         span.tag { "for " (join_text(&s.join)) }
+                        @if s.all_ages { span.tag.ok { "all ages" } }
                         @if moderator {
                             form.inline method="post" action={ "/servers/" (s.id) "/hide" } { button.btn type="submit" { "Take off the list" } }
                         }

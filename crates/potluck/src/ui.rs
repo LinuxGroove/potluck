@@ -51,6 +51,11 @@ pub enum Screen {
     Link,
     /// Playing as the same account on another device.
     Devices,
+    /// Who's playing, asked once before the first thing that goes online;
+    /// then the act that asked.
+    Age(Box<Act>),
+    /// What a parent decides, behind their PIN.
+    Parents,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,6 +104,11 @@ pub enum Act {
     /// Play as the account a link or recovery code belongs to.
     LinkDevice(String),
     UnlinkDevice,
+    /// Under 13 (true) or not, from the Age screen.
+    SetAge(bool),
+    OpenParents,
+    UnlockParents(String),
+    SetPin(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +168,10 @@ pub struct Focus {
     pub account: Option<crate::share::Account>,
     /// A code for another device to type, on the Devices screen.
     pub link_code: Option<String>,
+    /// Parent settings are unlocked until the screen is left.
+    pub parents_open: bool,
+    /// Wrong PINs lately: a few in a row wait a while.
+    pub pin_misses: Vec<std::time::Instant>,
     qr: Option<(String, Handle<Image>)>,
 }
 
@@ -178,6 +192,8 @@ impl Default for Focus {
             servers: vec![],
             account: None,
             link_code: None,
+            parents_open: false,
+            pin_misses: vec![],
             qr: None,
         }
     }
@@ -279,9 +295,9 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 v.push(button("Remix (make my own copy)", Act::Remix(id.clone())));
             }
             let mark = lib.marks.get(id).filter(|m| m.version > 0);
-            if c.editable() {
+            if c.editable() && settings.sharing {
                 v.push(button(if mark.is_some() { "Share a new version" } else { "Share" }, Act::Share(id.clone())));
-                if m.from.as_ref().is_some_and(|f| f.code.is_some() || f.base.is_some()) {
+                if !settings.young && m.from.as_ref().is_some_and(|f| f.code.is_some() || f.base.is_some()) {
                     v.push(button("Suggest my change to the original", Act::Suggest(id.clone())));
                 }
                 if mark.is_some() {
@@ -338,12 +354,16 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 }
                 v.push(note("Say it or type it: anyone can load it from Load a creation from a code."));
             }
-            if c.is_some_and(|c| c.editable()) {
-                let everyone = lib.marks.get(id).is_some_and(|m| m.everyone);
-                v.push(button(if everyone { "Share this version to Everyone" } else { "Share to Everyone" }, Act::ShareTo(id.clone(), true)));
-                v.push(note("On the market for anyone to find, once a moderator has looked at it."));
+            if !settings.sharing {
+                v.push(note("A parent turned sharing off. It's under Settings, Parent settings."));
+            } else if c.is_some_and(|c| c.editable()) {
+                if !settings.young {
+                    let everyone = lib.marks.get(id).is_some_and(|m| m.everyone);
+                    v.push(button(if everyone { "Share this version to Everyone" } else { "Share to Everyone" }, Act::ShareTo(id.clone(), true)));
+                    v.push(note("On the market for anyone to find, once a moderator has looked at it."));
+                }
                 v.push(button("Share by code only", Act::ShareTo(id.clone(), false)));
-                v.push(note("Only people you give the code to can load it."));
+                v.push(note(if settings.young { "Give the code to your friends: only people who have it can load it." } else { "Only people you give the code to can load it." }));
             } else {
                 v.push(note("Remix it to share a version of your own."));
             }
@@ -428,6 +448,37 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             v.push(button("Back", Act::OpenSettings));
             ("Link a device".into(), v)
         }
+        Screen::Age(_) => (
+            "Who's playing?".into(),
+            vec![
+                note("Younger players share with friends, by code, and play on servers open to all ages. A parent can change it later in Settings, Parent settings."),
+                button("Under 13", Act::SetAge(true)),
+                button("13 or older", Act::SetAge(false)),
+                button("Back", Act::Back),
+            ],
+        ),
+        Screen::Parents => {
+            let mut v = vec![];
+            if !focus.parents_open {
+                v.push(note("These are for a parent or carer. Type the PIN to change them."));
+                let pin = focus.fields.get("pin").cloned().unwrap_or_default();
+                v.push(Item { label: "PIN".into(), kind: Kind::Field { key: "pin".into(), value: pin.clone() } });
+                v.push(button("Unlock", Act::UnlockParents(pin)));
+            } else {
+                v.push(Item { label: "Under 13: shares by code, with friends, and plays on all-ages servers".into(), kind: Kind::Toggle { key: "young".into(), value: settings.young } });
+                v.push(Item { label: "Can share creations".into(), kind: Kind::Toggle { key: "sharing".into(), value: settings.sharing } });
+                v.push(Item { label: "Can join servers from the market's list".into(), kind: Kind::Toggle { key: "servers".into(), value: settings.servers } });
+                let pin = focus.fields.get("newpin").cloned().unwrap_or_default();
+                let label = if settings.parent_pin.is_empty() { "A PIN, so only you can change these" } else { "A new PIN" };
+                v.push(Item { label: label.into(), kind: Kind::Field { key: "newpin".into(), value: pin.clone() } });
+                v.push(button(if settings.parent_pin.is_empty() { "Set the PIN" } else { "Change the PIN" }, Act::SetPin(pin)));
+            }
+            if !focus.status.is_empty() {
+                v.push(note(focus.status.clone()));
+            }
+            v.push(button("Back", Act::OpenSettings));
+            ("Parent settings".into(), v)
+        }
         Screen::Join => {
             let mut v = vec![];
             if focus.lan.is_empty() {
@@ -447,7 +498,15 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
         }
         Screen::Servers => {
             let mut v = vec![];
-            for s in &focus.servers {
+            if !settings.servers {
+                v.push(note("A parent turned off servers from the market's list. Friends' worlds still work, from Join a friend."));
+                v.push(button("Back", Act::Back));
+                return ("Servers".into(), v);
+            }
+            if settings.young {
+                v.push(note("Servers open to players of all ages."));
+            }
+            for s in focus.servers.iter().filter(|s| s.all_ages || !settings.young) {
                 let full = s.max_players > 0 && s.players >= s.max_players;
                 let label = format!("{}  ·  {} of {} here{}", s.name, s.players, s.max_players, if full { ", full" } else { "" });
                 v.push(button(label, Act::JoinAddress(s.address.clone())));
@@ -518,6 +577,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
                 Item { label: format!("Lighting: {} (after a restart)", cap(&settings.lighting)), kind: Kind::Button(Act::Lighting) },
                 button("Your profile on the market", Act::Market("/me/profile".into(), "Your profile".into())),
                 button("Link a device", Act::OpenDevices),
+                button("Parent settings", Act::OpenParents),
                 Item { label: "Game server".into(), kind: Kind::Field { key: "server".into(), value: focus.fields.get("server").cloned().unwrap_or_else(|| settings.server.clone()) } },
                 Item { label: "Market".into(), kind: Kind::Field { key: "market".into(), value: focus.fields.get("market").cloned().unwrap_or_else(|| settings.market.clone()) } },
                 button("Back", Act::Back),
@@ -698,7 +758,7 @@ pub fn menu_input(
                     let mut a = a.clone();
                     let v = focus.fields.get(key).cloned().unwrap_or_default();
                     match &mut a {
-                        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) => *s = v,
+                        Act::JoinAddress(s) | Act::LoadCode(s) | Act::LinkDevice(s) | Act::UnlockParents(s) | Act::SetPin(s) => *s = v,
                         _ => {}
                     }
                     acts.0.push(a);
@@ -712,7 +772,7 @@ pub fn menu_input(
             Screen::Title => None,
             Screen::Pause => Some(Act::Resume),
             Screen::Tweak(id) | Screen::Share(id) | Screen::Suggest(id) | Screen::Suggestions(id) | Screen::Report(id) => Some(Act::Inside(id.clone())),
-            Screen::Devices => Some(Act::OpenSettings),
+            Screen::Devices | Screen::Parents => Some(Act::OpenSettings),
             _ => Some(Act::Back),
         };
         if let Some(a) = back {
@@ -732,6 +792,10 @@ fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, ed
         ("fov", KnobValue::Number(n)) => settings.fov = n.round() as f32,
         ("invert", KnobValue::Toggle(b)) => settings.invert_y = b,
         ("survival", KnobValue::Toggle(b)) => settings.survival = b,
+        // a parent's, once unlocked
+        ("young", KnobValue::Toggle(b)) if focus.parents_open => settings.young = b,
+        ("sharing", KnobValue::Toggle(b)) if focus.parents_open => settings.sharing = b,
+        ("servers", KnobValue::Toggle(b)) if focus.parents_open => settings.servers = b,
         _ => {}
     }
     settings.save();
@@ -850,6 +914,8 @@ pub fn draw_menu(
                                 Kind::Slider { value, .. } => (item.label.clone(), trim_num(*value)),
                                 Kind::Toggle { value, .. } => (item.label.clone(), if *value { "On".into() } else { "Off".into() }),
                                 Kind::Swatch { value, .. } => (item.label.clone(), format!("< {value} >")),
+                                // a PIN shows as dots
+                                Kind::Field { key, value } if key.ends_with("pin") => (item.label.clone(), format!("{}{}", "\u{2022}".repeat(value.chars().count()), if picked { "|" } else { "" })),
                                 Kind::Field { value, .. } => (item.label.clone(), format!("{value}{}", if picked { "|" } else { "" })),
                                 _ => (item.label.clone(), String::new()),
                             };

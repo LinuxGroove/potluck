@@ -175,11 +175,21 @@ impl App {
     }
 
     /// The account behind a game's session, made the first time it's seen:
-    /// the device's own, or the one it was linked to.
-    pub async fn game_account(&self, token: &str, name: &str) -> R<Account> {
+    /// the device's own, or the one it was linked to. `young` is what the
+    /// game says about its player (under 13), when it says.
+    pub async fn game_account(&self, token: &str, name: &str, young: Option<bool>) -> R<Account> {
         let (_, id) = self.game_device(token).await?;
         let name = if name.trim().is_empty() && self.cfg.dev_accounts { token.split(':').nth(2).unwrap_or("").to_string() } else { name.to_string() };
-        let a = db::ensure_account(&self.db(), &id, &name)?;
+        let db = self.db();
+        let mut a = db::ensure_account(&db, &id, &name)?;
+        if let Some(y) = young.filter(|y| *y != a.young) {
+            // a younger player's profile has no line about them
+            db.execute("UPDATE accounts SET young = ?2, about = CASE WHEN ?2 THEN '' ELSE about END WHERE user_id = ?1", params![id, y])?;
+            a.young = y;
+            if y {
+                a.about.clear();
+            }
+        }
         if a.banned {
             return fail(403, "this account can't share on the market");
         }
@@ -353,7 +363,9 @@ impl App {
             _ => "code",
         };
         let not_yet = visibility == "everyone" && self.cfg.invite_only && !me.beta;
-        if not_yet {
+        // younger players share with friends, by code
+        let young = visibility == "everyone" && me.young;
+        if not_yet || young {
             visibility = "code";
         }
         let files = req.files;
@@ -391,7 +403,9 @@ impl App {
             return fail(413, "that creation is far too big");
         }
         let mut shared = self.publish(me, &c, files, req.note.as_deref().unwrap_or(""), None).await?;
-        if not_yet {
+        if young {
+            shared.message = format!("{}. Younger players share by code, with friends", shared.message);
+        } else if not_yet {
             shared.message = format!("{}. Sharing to Everyone is in a closed beta for now: an invite code lets you in", shared.message);
         }
         Ok(shared)
@@ -513,6 +527,9 @@ impl App {
     /// Suggest a change: the player's remix, as a pull request to the
     /// creation it was remixed from.
     pub async fn suggest(&self, me: &Account, code: &str, title: &str, body: &str) -> R<i64> {
+        if me.young {
+            return fail(403, "younger players share with friends, so suggestions to other makers aren't open to them");
+        }
         let _w = self.writing.lock().await;
         let (remix, parent) = {
             let db = self.db();
@@ -741,6 +758,21 @@ impl App {
             let s = self.publish(&me, &c, files, &format!("{} from the base game", toml.name), None).await?;
             println!("base creation {id} is {} version {} ({})", codes::pretty(&s.code), s.version, s.state);
         }
+        // the base game is ours, and made for all ages
+        self.db().execute("UPDATE versions SET all_ages = 1 WHERE creation IN (SELECT id FROM creations WHERE base IS NOT NULL AND owner = ?1)", [POTLUCK])?;
+        Ok(())
+    }
+
+    /// A moderator marks a creation's newest version checked for all ages,
+    /// or takes the mark off. A new version starts without it.
+    pub fn set_all_ages(&self, moderator: &Account, code: &str, on: bool) -> R<()> {
+        if !moderator.moderator {
+            return fail(403, "only moderators can do that");
+        }
+        let db = self.db();
+        let Some(c) = db::creation_by_code(&db, &codes::clean(code))? else { return fail(404, "no creation has that code") };
+        db.execute("UPDATE versions SET all_ages = ?3 WHERE creation = ?1 AND n = ?2", params![c.id, c.latest, on])?;
+        db::log(&db, &moderator.user_id, if on { "all_ages" } else { "not_all_ages" }, &c.code, "");
         Ok(())
     }
 
@@ -769,6 +801,14 @@ impl App {
                 db.execute("UPDATE creations SET listing = ?2, hidden_from = NULL WHERE id = ?1", params![creation, listing])?;
                 db.execute("UPDATE reports SET open = 0 WHERE creation = ?1", [creation])?;
                 close_all("list")?;
+            }
+            // looked at, fine for everyone, and fine for the youngest players too
+            "list_all" => {
+                db.execute("UPDATE versions SET state = 'ok', all_ages = 1 WHERE creation = ?1 AND ((state = 'waiting' AND n <= ?2) OR n = ?2)", params![creation, version])?;
+                let listing = if c.visibility == "everyone" { "listed" } else { "unlisted" };
+                db.execute("UPDATE creations SET listing = ?2, hidden_from = NULL WHERE id = ?1", params![creation, listing])?;
+                db.execute("UPDATE reports SET open = 0 WHERE creation = ?1", [creation])?;
+                close_all("list_all")?;
             }
             // fine to load by code, but not for the market's front page
             "unlist" => {
@@ -888,7 +928,8 @@ impl App {
     /// changing it.
     pub fn update_profile(&self, me: &Account, name: &str, about: &str, avatar: Option<Avatar>) -> R<Account> {
         let name: String = name.trim().chars().filter(|c| !c.is_control()).take(32).collect();
-        let about: String = about.trim().chars().map(|c| if c.is_control() { ' ' } else { c }).take(280).collect();
+        // a younger player's profile has no line about them
+        let about: String = if me.young { String::new() } else { about.trim().chars().map(|c| if c.is_control() { ' ' } else { c }).take(280).collect() };
         if name.is_empty() {
             return fail(400, "your name can't be empty");
         }

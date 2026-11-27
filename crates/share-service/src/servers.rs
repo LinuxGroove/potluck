@@ -61,6 +61,10 @@ struct PassBody {
     name: String,
     aud: String,
     exp: i64,
+    /// Under 13, as their game says: listed servers that aren't for all
+    /// ages turn them away.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    young: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -77,6 +81,7 @@ pub struct Server {
     pub last_seen: i64,
     pub reachable: bool,
     pub hidden: bool,
+    pub all_ages: bool,
 }
 
 fn server_row(r: &rusqlite::Row) -> rusqlite::Result<Server> {
@@ -94,10 +99,11 @@ fn server_row(r: &rusqlite::Row) -> rusqlite::Result<Server> {
         last_seen: r.get(9)?,
         reachable: r.get(10)?,
         hidden: r.get(11)?,
+        all_ages: r.get(12)?,
     })
 }
 
-const SERVER_COLS: &str = "s.id, s.name, s.about, s.address, s.players, s.max_players, s.join_rule, s.creations, s.version, s.last_seen, s.reachable, s.hidden";
+const SERVER_COLS: &str = "s.id, s.name, s.about, s.address, s.players, s.max_players, s.join_rule, s.creations, s.version, s.last_seen, s.reachable, s.hidden, s.all_ages";
 
 #[derive(Deserialize, Default)]
 pub struct Heartbeat {
@@ -117,6 +123,9 @@ pub struct Heartbeat {
     pub creations: Vec<Value>,
     #[serde(default)]
     pub version: String,
+    /// The server is for players of all ages, under 13 too.
+    #[serde(default)]
+    pub all_ages: bool,
 }
 
 #[derive(Deserialize)]
@@ -203,7 +212,7 @@ impl App {
     /// signature over who this is, for a few minutes.
     pub fn pass(&self, me: &Account, server: &str) -> R<String> {
         use base64::Engine;
-        let body = PassBody { handle: me.handle.clone(), name: me.name.clone(), aud: clip(server, 200), exp: now() + PASS_SECONDS };
+        let body = PassBody { handle: me.handle.clone(), name: me.name.clone(), aud: clip(server, 200), exp: now() + PASS_SECONDS, young: me.young };
         let json = serde_json::to_string(&body).map_err(|e| crate::market::Fail { status: 500, message: e.to_string() })?;
         let sig = codes::sign(&self.key, &json);
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -284,8 +293,8 @@ impl App {
         }
         let db = self.db();
         db.execute(
-            "UPDATE servers SET name = ?2, about = ?3, address = ?4, players = ?5, max_players = ?6, join_rule = ?7, creations = ?8, version = ?9, last_seen = ?10 WHERE id = ?1",
-            params![id, name, about, address, hb.players.clamp(0, 10_000), hb.max_players.clamp(0, 10_000), join, Value::Array(creations).to_string(), clip(&hb.version, 40), now()],
+            "UPDATE servers SET name = ?2, about = ?3, address = ?4, players = ?5, max_players = ?6, join_rule = ?7, creations = ?8, version = ?9, last_seen = ?10, all_ages = ?11 WHERE id = ?1",
+            params![id, name, about, address, hb.players.clamp(0, 10_000), hb.max_players.clamp(0, 10_000), join, Value::Array(creations).to_string(), clip(&hb.version, 40), now(), hb.all_ages],
         )?;
         if let Some(ok) = reachable {
             db.execute("UPDATE servers SET probed = ?2, reachable = ?3 WHERE id = ?1", params![id, now(), ok])?;
