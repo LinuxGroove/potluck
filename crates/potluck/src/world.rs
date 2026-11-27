@@ -8,6 +8,8 @@ use bevy::prelude::*;
 use crate::blocks::{self, *};
 use crate::noise::{fbm, smooth, Rng};
 
+mod places;
+
 pub const WX: i32 = 384;
 pub const WY: i32 = 128;
 pub const WZ: i32 = 384;
@@ -38,6 +40,9 @@ pub struct Voxels {
     data: Vec<BlockId>,
     /// Chunks whose mesh is out of date.
     pub dirty: HashSet<IVec3>,
+    /// Chunks whose sky a change may have opened or closed (`mesh::Sky`),
+    /// remeshed a few at a time once the dirty ones are done.
+    pub shade: HashSet<IVec3>,
     /// Block changes since the last network send: (position, block).
     pub changes: Vec<(IVec3, BlockId)>,
     /// Lantern positions, for the lights near the player.
@@ -50,6 +55,7 @@ impl Voxels {
             seed,
             data: vec![AIR; (WX * WY * WZ) as usize],
             dirty: HashSet::new(),
+            shade: HashSet::new(),
             changes: Vec::new(),
             lanterns: HashSet::new(),
         }
@@ -101,27 +107,24 @@ impl Voxels {
         }
         let old = self.at(p);
         self.data[Self::idx(p.x, p.y, p.z)] = id;
-        if old == LANTERN {
+        if blocks::block(old).light {
             self.lanterns.remove(&p);
         }
-        if id == LANTERN {
+        if blocks::block(id).light {
             self.lanterns.insert(p);
         }
         // the chunk and any neighbour the block touches (for faces and AO)
-        let c = p.div_euclid(IVec3::splat(CHUNK));
-        let l = p.rem_euclid(IVec3::splat(CHUNK));
-        for dz in -1..=1 {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let d = IVec3::new(dx, dy, dz);
-                    let near = |a: i32, v: i32| a == 0 || (a < 0 && v == 0) || (a > 0 && v == CHUNK - 1);
-                    if near(dx, l.x) && near(dy, l.y) && near(dz, l.z) {
-                        let n = c + d;
-                        if n.x >= 0 && n.y >= 0 && n.z >= 0 && n.x < CX && n.y < CY && n.z < CZ {
-                            self.dirty.insert(n);
-                        }
-                    }
-                }
+        let chunks = |d: IVec3, u: IVec3| {
+            let lo = (p - d).div_euclid(IVec3::splat(CHUNK)).max(IVec3::ZERO);
+            let hi = (p + u).div_euclid(IVec3::splat(CHUNK)).min(IVec3::new(CX - 1, CY - 1, CZ - 1));
+            (lo.z..=hi.z).flat_map(move |z| (lo.y..=hi.y).flat_map(move |y| (lo.x..=hi.x).map(move |x| IVec3::new(x, y, z))))
+        };
+        self.dirty.extend(chunks(IVec3::ONE, IVec3::ONE));
+        // and, soon after, any whose sky it can block (below and across)
+        let r = crate::mesh::SKY_REACH + 1;
+        for c in chunks(IVec3::splat(r), IVec3::new(r, 1, r)) {
+            if !self.dirty.contains(&c) {
+                self.shade.insert(c);
             }
         }
     }
@@ -150,7 +153,7 @@ impl Voxels {
     fn find_lanterns(&mut self) {
         self.lanterns.clear();
         for (i, &b) in self.data.iter().enumerate() {
-            if b == LANTERN {
+            if blocks::block(b).light {
                 let i = i as i32;
                 self.lanterns.insert(IVec3::new(i % WX, i / (WX * WZ), (i / WX) % WZ));
             }
@@ -273,6 +276,7 @@ pub fn generate(seed: u32) -> Voxels {
     }
     let mut r = Rng::new(seed ^ 0x9e37_79b9);
     plant(&mut w, &hs, &mut r, s);
+    places::build(&mut w, &hs, &mut r);
     build_green(&mut w);
     w.find_lanterns();
     w.mark_all_dirty();
@@ -320,16 +324,48 @@ fn oak(w: &mut Voxels, x: i32, z: i32, r: &mut Rng, big: bool) {
     let mut crowns = vec![(IVec3::new(x, y0 + h, z), if big { 4 } else { 3 }, if big { 3 } else { 2 })];
     for i in 0..branches {
         let ang = turn + (i as f32 + r.next() * 0.5) * std::f32::consts::TAU / branches as f32;
-        let dir = Vec3::new(ang.cos(), if big { 0.5 } else { 0.7 }, ang.sin());
+        let dir = Vec3::new(ang.cos(), if big { 0.65 } else { 0.8 }, ang.sin());
         let mut p = Vec3::new(x as f32 + 0.5, (y0 + h - 2 - r.range(0, 1) - big as i32) as f32 + 0.5, z as f32 + 0.5);
         for _ in 0..if big { 3 + r.range(0, 1) } else { 2 } {
             p += dir;
             wood(w, p.floor().as_ivec3(), LOG);
         }
-        crowns.push((p.floor().as_ivec3() + IVec3::Y, if big { 3 } else { 2 }, 2));
+        crowns.push((p.floor().as_ivec3(), if big { 3 } else { 2 }, 2));
     }
     for (c, a, b) in crowns {
-        blob(w, c, a, b, a, LEAVES, r, 0.35);
+        crown(w, c, a, b, LEAVES, r);
+    }
+}
+
+/// A crown of leaves as a few overlapping lumps round `c`, so it reads as
+/// rounded clumps rather than one ball, with a leaf or two hanging under it.
+fn crown(w: &mut Voxels, c: IVec3, a: i32, b: i32, id: BlockId, r: &mut Rng) {
+    blob(w, c, a, b, a, id, r, 0.2);
+    let lumps = 2 + r.range(0, 2);
+    for _ in 0..lumps {
+        let ang = r.next() * std::f32::consts::TAU;
+        let out = a as f32 * (0.5 + 0.3 * r.next());
+        let at = c + IVec3::new((ang.cos() * out).round() as i32, r.range(-1, 1), (ang.sin() * out).round() as i32);
+        let ra = (a - 1 - r.range(0, 1)).max(1);
+        blob(w, at, ra, (b - 1).max(1), ra, id, r, 0.2);
+    }
+    // under the rim: short hanging bits so the bottom isn't flat
+    for _ in 0..a * 2 {
+        let ang = r.next() * std::f32::consts::TAU;
+        let out = a as f32 * (0.4 + 0.5 * r.next());
+        let (hx, hz) = (c.x + (ang.cos() * out).round() as i32, c.z + (ang.sin() * out).round() as i32);
+        if w.get(hx, c.y, hz) != id {
+            continue;
+        }
+        let mut y = c.y;
+        while y > c.y - b - 2 && w.get(hx, y, hz) == id {
+            y -= 1;
+        }
+        for d in 0..1 + r.range(0, 1) {
+            if w.get(hx, y - d, hz) == AIR {
+                w.put(hx, y - d, hz, id);
+            }
+        }
     }
 }
 
@@ -340,10 +376,10 @@ fn birch(w: &mut Voxels, x: i32, z: i32, r: &mut Rng) {
     for y in 0..h {
         w.put(x, y0 + y, z, BIRCH);
     }
-    blob(w, IVec3::new(x, y0 + h - 1, z), 2, 3, 2, BIRCH_LEAVES, r, 0.3);
+    crown(w, IVec3::new(x, y0 + h - 1, z), 2, 3, BIRCH_LEAVES, r);
     let side = IVec3::new(r.range(-1, 1), y0 + h - 4, r.range(-1, 1));
     wood(w, IVec3::new(x + side.x, side.y, z + side.z), BIRCH);
-    blob(w, IVec3::new(x + side.x * 2, side.y, z + side.z * 2), 2, 2, 2, BIRCH_LEAVES, r, 0.4);
+    blob(w, IVec3::new(x + side.x * 2, side.y, z + side.z * 2), 2, 2, 2, BIRCH_LEAVES, r, 0.3);
 }
 
 /// A shrub: a knee-high lump of leaves.
@@ -381,7 +417,7 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
         let along = (START.z - z) / (START.z - GREEN.z);
         let off = (x - (START.x + (GREEN.x - START.x) * along)).abs();
         let corridor = along > 0.0 && along < 1.0 && off < 9.0 + along * 14.0;
-        dg < GREEN_R + 4.0 || dc < 12.0 || corridor
+        dg < GREEN_R + 4.0 || dc < 12.0 || corridor || places::keep_clear(x as i32, z as i32)
     };
     let h_at = |x: i32, z: i32| hs[(z * WX + x) as usize];
     for z in 4..WZ - 4 {
@@ -391,10 +427,12 @@ fn plant(w: &mut Voxels, hs: &[i32], r: &mut Rng, s: i32) {
                 continue;
             }
             let forest = fbm(x as f32 / 30.0, z as f32 / 30.0, 12 + s, 5);
+            // glades: small clearings where light gets down to the floor
+            let glade = fbm(x as f32 / 13.0, z as f32 / 13.0, 17 + s, 3) > 0.6;
             let v = r.next();
-            if h > 34 && h < 62 && v < 0.03 + forest * 0.03 {
+            if h > 34 && h < 62 && !glade && v < 0.01 + forest * 0.035 {
                 pine(w, x, z, r);
-            } else if h <= 34 && forest > 0.55 && v < 0.03 {
+            } else if h <= 34 && forest > 0.55 && !glade && v < 0.008 + 0.024 * smooth(0.55, 0.8, forest) {
                 let k = r.next();
                 if k < 0.3 {
                     birch(w, x, z, r)

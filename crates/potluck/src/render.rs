@@ -15,6 +15,10 @@ use bevy::pbr::{AtmosphereSettings, ContactShadows, DistanceFog, FogFalloff, Scr
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
+pub mod motes;
+#[cfg(feature = "raytracing")]
+pub mod adapt;
+
 use crate::mesh::BlockMaterials;
 use crate::player::{MainCamera, Me};
 use crate::settings::Settings;
@@ -129,8 +133,15 @@ pub struct Sun;
 #[derive(Component)]
 pub struct Haze;
 
-#[derive(Component)]
-pub struct LanternLight;
+/// A real light for a lantern, candle or brazier near the player: its
+/// steady brightness, how much its flame flickers, and a number that keeps
+/// neighbouring flames out of step.
+#[derive(Component, Default)]
+pub struct LanternLight {
+    pub base: f32,
+    pub flicker: f32,
+    pub phase: f32,
+}
 
 pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, rt: Raytraced) -> BlockMaterials {
     let solid = StandardMaterial {
@@ -141,6 +152,10 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
         perceptual_roughness: 1.0,
         metallic: 0.0,
         reflectance: 0.3,
+        // rooms under a roof see less of the sky (`mesh::Sky`); ray tracing
+        // finds that out for itself
+        occlusion_texture: if rt.0 { None } else { Some(atlas.sky.clone()) },
+        occlusion_channel: bevy::mesh::UvChannel::Uv1,
         ..default()
     };
     // only glowing blocks get a glowing material (see `mesh::ChunkMesh`).
@@ -150,6 +165,8 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, r
     let glow = StandardMaterial {
         emissive_texture: Some(atlas.glow.clone()),
         emissive: LinearRgba::rgb(12.0, 9.0, 5.0) * if rt.0 { 2400.0 } else { 600.0 },
+        // a flame's box shows only the flame
+        alpha_mode: AlphaMode::Mask(0.5),
         ..solid.clone()
     };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
@@ -245,6 +262,8 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         Projection::Perspective(PerspectiveProjection { fov: settings.fov.clamp(70.0, 110.0).to_radians() * 0.75, near: 0.05, far: 900.0, ..default() }),
         Transform::from_xyz(0.0, 60.0, 0.0),
         Exposure { ev100: 13.7 },
+        // set through the day (`sky`)
+        bevy::render::view::ColorGrading::default(),
         // keeps colours rich where AgX washed the island out to pastels
         Tonemapping::TonyMcMapface,
         DistanceFog {
@@ -274,6 +293,9 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         // smooths the shadow filter and the haze's ray marching too
         if on("taa") {
             commands.entity(cam).insert((Msaa::Off, TemporalAntiAliasing::default(), ShadowFilteringMethod::Temporal));
+        } else {
+            // SSAO won't run with MSAA
+            commands.entity(cam).insert(Msaa::Off);
         }
         if on("ssao") {
             commands.entity(cam).insert(ScreenSpaceAmbientOcclusion {
@@ -285,14 +307,17 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
             commands.entity(cam).insert(ContactShadows::default());
         }
         if on("haze") {
-            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 128 } else { 64 } });
+            commands.entity(cam).insert(VolumetricFog { ambient_color: Color::srgb(0.62, 0.74, 0.88), ambient_intensity: 0.0, jitter: 0.6, step_count: if ultra { 32 } else { 16 } });
             commands.spawn((
                 FogVolume { fog_color: Color::srgb(0.9, 0.93, 1.0), density_factor: 0.01, absorption: 0.25, scattering: 0.35, ..default() },
                 Transform::from_scale(Vec3::new(HAZE.x, HAZE.y, HAZE.x)),
                 Haze,
             ));
         }
-        commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 2048 } else if ultra { 8192 } else { 4096 } });
+        // ground cover casts shadows only near the player (`mesh::Detail`), and
+        // the first cascade covers 10 blocks, so 2048 keeps shadows crisp
+        // (sizes must be powers of two: Bevy rounds anything else up)
+        commands.insert_resource(DirectionalLightShadowMap { size: if !on("shadowmap") { 1024 } else if ultra { 4096 } else { 2048 } });
     }
     let cascades = CascadeShadowConfigBuilder {
         num_cascades: if medium { 4 } else { 2 },
@@ -335,7 +360,7 @@ pub fn sky(
     mut clock: ResMut<Clock>,
     settings: Res<Settings>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
-    mut cam: Query<(&mut Exposure, &mut DistanceFog, &mut Projection), With<MainCamera>>,
+    mut cam: Query<(&mut Exposure, &mut DistanceFog, &mut Projection, &mut bevy::render::view::ColorGrading), With<MainCamera>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
     mut haze: Query<(&mut Transform, &mut FogVolume), (With<Haze>, Without<Sun>, Without<MainCamera>)>,
@@ -383,7 +408,16 @@ pub fn sky(
         let low_sun = 1.0 - (up.abs() * 2.5).min(1.0);
         v.density_factor = 0.0025 + 0.0055 * low_sun;
     }
-    if let Ok((mut ex, mut fog, mut proj)) = cam.single_mut() {
+    if let Ok((mut ex, mut fog, mut proj, mut grade)) = cam.single_mut() {
+        // the day's grade: golden and a little richer as the sun goes down,
+        // cool and quieter at night, plain at noon
+        let golden = low * day;
+        let night = 1.0 - day;
+        grade.global.temperature = 0.035 * golden - 0.03 * night;
+        grade.global.tint = 0.015 * golden;
+        grade.global.post_saturation = 1.0 + 0.12 * golden - 0.18 * night;
+        grade.shadows.lift = -0.008 * golden;
+        grade.highlights.gain = 1.0 + 0.04 * golden;
         // eyes adjust to the dark, gently
         ex.ev100 = 13.7 - (1.0 - day).powf(0.7) * 4.4;
         if rt.0 {
@@ -406,13 +440,39 @@ pub fn sky(
     let _ = PI;
 }
 
-/// Real lights for the lanterns nearest the player; the rest just glow.
+/// How bright a glowing block's light is (a lantern's is 1), how high in the
+/// block it sits, its colour and how much its flame flickers (open flames
+/// more than one behind glass).
+fn lamp(id: crate::blocks::BlockId) -> (f32, f32, Color, f32) {
+    use crate::blocks::*;
+    match id {
+        CANDLE => (0.32, 0.6, Color::srgb(1.0, 0.74, 0.42), 0.16),
+        BRAZIER => (1.6, 0.9, Color::srgb(1.0, 0.6, 0.28), 0.22),
+        _ => (1.0, 0.5, Color::srgb(1.0, 0.78, 0.48), 0.07),
+    }
+}
+
+/// Flames flicker: each lamp's light wavers round its steady brightness,
+/// out of step with its neighbours. Slow and soft, never a strobe.
+pub fn flicker(time: Res<Time>, mut lights: Query<(&LanternLight, &mut PointLight)>) {
+    let t = time.elapsed_secs();
+    for (l, mut p) in &mut lights {
+        let a = t * 7.3 + l.phase;
+        let b = t * 13.1 + l.phase * 1.7;
+        let c = t * 2.1 + l.phase * 0.6;
+        let wave = 0.5 * a.sin() + 0.3 * b.sin() + 0.2 * c.sin();
+        p.intensity = l.base * (1.0 + l.flicker * wave);
+    }
+}
+
+/// Real lights for the lanterns, candles and braziers nearest the player;
+/// the rest just glow.
 pub fn lanterns(
     mut commands: Commands,
     voxels: Res<Voxels>,
     me: Res<Me>,
     clock: Res<Clock>,
-    mut lights: Query<(Entity, &mut Transform, &mut PointLight), With<LanternLight>>,
+    mut lights: Query<(Entity, &mut Transform, &mut PointLight, &mut LanternLight)>,
     mut every: Local<f32>,
     time: Res<Time>,
 ) {
@@ -428,19 +488,24 @@ pub fn lanterns(
     let lumens = 40_000.0 + 260_000.0 * night;
     let mut have: Vec<_> = lights.iter_mut().collect();
     for (i, p) in near.iter().enumerate() {
-        let at = p.as_vec3() + Vec3::splat(0.5);
-        if let Some((_, t, l)) = have.get_mut(i) {
+        let (k, high, color, flicker) = lamp(voxels.at(*p));
+        let at = p.as_vec3() + Vec3::new(0.5, high, 0.5);
+        let phase = crate::noise::hash2(p.x * 7 + p.y, p.z * 13 - p.y, 401) * 100.0;
+        let me = LanternLight { base: lumens * k, flicker, phase };
+        if let Some((_, t, l, lamp)) = have.get_mut(i) {
             t.translation = at;
-            l.intensity = lumens;
+            l.color = color;
+            l.range = 14.0 * k.sqrt().max(0.5);
+            **lamp = me;
         } else {
             commands.spawn((
-                PointLight { intensity: lumens, range: 14.0, color: Color::srgb(1.0, 0.78, 0.48), shadow_maps_enabled: false, ..default() },
+                PointLight { intensity: lumens * k, range: 14.0 * k.sqrt().max(0.5), color, shadow_maps_enabled: false, ..default() },
                 Transform::from_translation(at),
-                LanternLight,
+                me,
             ));
         }
     }
-    for (e, _, _) in have.into_iter().skip(near.len()) {
+    for (e, _, _, _) in have.into_iter().skip(near.len()) {
         commands.entity(e).despawn();
     }
 }
