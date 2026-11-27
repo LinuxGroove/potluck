@@ -120,15 +120,18 @@ pub fn slug(s: &str) -> String {
 /// The base game's creations, the roots of every family tree that starts
 /// from something Potluck made. Keep in step with `BASE` in the game's
 /// creations.rs.
-pub const BASE: &[(&str, &[(&str, &str)])] = &[(
-    "mossback",
-    &[
-        ("potluck.toml", include_str!("../../../creations/mossback/potluck.toml")),
-        ("main.luau", include_str!("../../../creations/mossback/main.luau")),
-        ("AGENTS.md", include_str!("../../../creations/AGENTS.md")),
-        ("types/potluck.d.luau", include_str!("../../../creations/types/potluck.d.luau")),
-    ],
-)];
+macro_rules! base {
+    ($($id:literal),* $(,)?) => {
+        &[$(($id, &[
+            ("potluck.toml", include_str!(concat!("../../../creations/", $id, "/potluck.toml"))),
+            ("main.luau", include_str!(concat!("../../../creations/", $id, "/main.luau"))),
+            ("AGENTS.md", include_str!("../../../creations/AGENTS.md")),
+            ("types/potluck.d.luau", include_str!("../../../creations/types/potluck.d.luau")),
+        ])),*]
+    };
+}
+
+pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram", "jelly", "tag-bot"];
 
 pub const POTLUCK: &str = "potluck";
 

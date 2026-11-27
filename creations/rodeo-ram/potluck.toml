@@ -1,6 +1,6 @@
 name = "Rodeo Ram"
 by = "Potluck"
-kind = "mini game"
+kind = "game"
 about = "A ram by the paddock that does not want a rider. Climb on and hold on: the longest rides go on the board."
 main = "main.luau"
 version = 1

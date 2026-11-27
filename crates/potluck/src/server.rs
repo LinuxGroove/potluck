@@ -278,10 +278,22 @@ fn list_on_market(time: Res<Time>, mut listing: ResMut<Listing>, net: Res<net::N
         let mut shared = scripts.shared.lock().unwrap();
         let mut out = vec![];
         for (cid, bs) in shared.boards.boards.iter_mut() {
-            let Some(code) = lib.list.get(cid).and_then(|c| c.code.clone()) else { continue };
+            // by market code, or the base game's own by name
+            let which = match lib.list.get(cid) {
+                Some(c) if c.origin == Origin::Base => serde_json::json!({ "base": cid }),
+                Some(c) => match &c.code {
+                    Some(code) => serde_json::json!({ "creation": code }),
+                    None => continue,
+                },
+                None => continue,
+            };
             for (name, b) in bs.iter_mut().filter(|(_, b)| b.dirty) {
                 b.dirty = false;
-                out.push(serde_json::json!({ "creation": code, "board": name, "lower": b.lower, "scores": b.scores.iter().take(20).collect::<Vec<_>>() }));
+                let mut post = which.clone();
+                post["board"] = serde_json::json!(name);
+                post["lower"] = serde_json::json!(b.lower);
+                post["scores"] = serde_json::json!(b.scores.iter().take(20).collect::<Vec<_>>());
+                out.push(post);
             }
         }
         out

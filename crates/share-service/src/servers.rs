@@ -121,7 +121,11 @@ pub struct Heartbeat {
 
 #[derive(Deserialize)]
 pub struct BoardPost {
+    /// The creation's code, or `base` for one of the base game's.
+    #[serde(default)]
     pub creation: String,
+    #[serde(default)]
+    pub base: Option<String>,
     pub board: String,
     #[serde(default)]
     pub lower: bool,
@@ -309,7 +313,13 @@ impl App {
         let db = self.db();
         let mut n = 0;
         for b in boards.into_iter().take(64) {
-            let creation = codes::clean(&b.creation);
+            let creation = match &b.base {
+                Some(base) if b.creation.is_empty() => match db::creation_by_base(&db, base)? {
+                    Some(c) => c.code,
+                    None => continue,
+                },
+                _ => codes::clean(&b.creation),
+            };
             let board = clip(&b.board, 40);
             if creation.len() != 8 || board.is_empty() {
                 continue;
