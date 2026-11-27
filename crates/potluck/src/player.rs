@@ -74,6 +74,9 @@ pub struct Me {
     /// How many lots of changes to the hotbar creations have made here
     /// (`world.give`, `world.take`), for the host to know a report is new.
     pub pockets_seen: u32,
+    /// Hurts (less than 0) and heals creations sent, for `walk` to apply
+    /// in survival.
+    pub health_due: f32,
     /// Blocks walked since the last step's sound.
     stride: f32,
     regen: f32,
@@ -113,6 +116,7 @@ impl Default for Me {
             captions: vec![],
             notes: vec![],
             pockets_seen: 0,
+            health_due: 0.0,
             stride: 0.0,
             regen: 0.0,
             hurt: 9.0,
@@ -324,6 +328,13 @@ pub fn walk(
     let dt = time.delta_secs().min(0.05);
     let now = time.elapsed_secs_f64();
     me.hurt += dt;
+    // what creations did to your health, in survival
+    let due = std::mem::take(&mut me.health_due);
+    if settings.survival && due < 0.0 {
+        me.hurt(-due);
+    } else if settings.survival && due > 0.0 {
+        me.health = (me.health + due).min(MAX_HEALTH);
+    }
     if me.riding.is_some() {
         me.vel = Vec3::ZERO;
         me.fall_from = me.pos.y;
