@@ -253,7 +253,7 @@ pub fn stack(t: Thing) -> u32 {
 pub fn by_name(name: &str) -> Option<Thing> {
     blocks::by_name(name).filter(|&b| b != blocks::AIR).map(of_block).or_else(|| {
         let key = blocks::squash(name);
-        ITEMS.iter().position(|i| blocks::squash(i.name) == key).map(|i| FIRST_ITEM + i as Thing)
+        ITEMS.iter().position(|i| blocks::squashes_to(i.name, &key)).map(|i| FIRST_ITEM + i as Thing)
     })
 }
 

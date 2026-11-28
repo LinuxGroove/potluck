@@ -256,8 +256,8 @@ end
 
 -- A clearing round it: no trunk stands on the plaza, and no branches hang over it
 -- (a trunk just outside keeps its own side of the tree).
-local function clearing(s: Site)
-	for v = -7, 7 do
+local function clearing(s: Site, v0: number, v1: number)
+	for v = v0, v1 do
 		for u = -7, 7 do
 			local inside = math.abs(u) <= 4 and math.abs(v) <= 4
 			for h = 1, 24 do
@@ -271,9 +271,10 @@ local function clearing(s: Site)
 	end
 end
 
-local function build(s: Site)
+-- the plaza a few rows at a time (v0 to v1), then the arch and the hearth
+local function build(s: Site, v0: number, v1: number)
 	local g = BY_ID[s.id]
-	for v = -4, 4 do
+	for v = v0, math.min(v1, 4) do
 		for u = -4, 4 do
 			local p = spot(s, u, 0, v)
 			-- level ground under it, and nothing standing in it
@@ -301,6 +302,9 @@ local function build(s: Site)
 				end
 			end
 		end
+	end
+	if v1 < 5 then
+		return
 	end
 	-- the arch: two columns and a lintel, with a cold pot on each
 	for _, u in { -2, 2 } do
@@ -342,24 +346,32 @@ local function light(s: Site)
 end
 
 -- Looks for places a hundred at a tick, so the world doesn't stutter, then
--- clears round one on a tick and builds it on the next. Found places are kept
--- straight away and each is marked built once it is, so a reload carries on
--- where it was.
+-- clears round one a few rows at a tick and builds it the same way. Found
+-- places are kept straight away and each is marked built once it is, so a
+-- reload carries on where it was.
+local ROWS = 3
 local next_point = 1
 local searched = #sites > 0
-local cleared: { [Site]: boolean } = {}
+-- how far along clearing (from -7 to 7) and building (from -4 to 5) each is
+local cleared: { [Site]: number } = {}
+local built: { [Site]: number } = {}
 local work: number? = nil
 work = world.every(0.1, function()
 	for _, s in sites do
 		if not s.built then
-			if not cleared[s] then
-				clearing(s)
-				cleared[s] = true
+			local c = cleared[s] or -7
+			if c <= 7 then
+				clearing(s, c, c + ROWS - 1)
+				cleared[s] = c + ROWS
 				return
 			end
-			build(s)
-			s.built = true
-			save()
+			local b = built[s] or -4
+			build(s, b, b + ROWS - 1)
+			built[s] = b + ROWS
+			if b + ROWS - 1 >= 5 then
+				s.built = true
+				save()
+			end
 			return
 		end
 	end

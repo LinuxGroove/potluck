@@ -2154,10 +2154,12 @@ impl Vm {
             })?)?;
             world.set("set_block", s.create_function(move |_, (p, name, facing): (Value, String, Option<String>)| {
                 let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?.floor().as_ivec3();
-                if items::by_name(&name).is_some_and(items::is_item) {
-                    return Err(bad(format!("{name} is something to hold, not a block to put down")));
-                }
-                let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
+                let Some(id) = blocks::by_name(&name) else {
+                    if items::by_name(&name).is_some_and(items::is_item) {
+                        return Err(bad(format!("{name} is something to hold, not a block to put down")));
+                    }
+                    return Err(bad(format!("there's no block called \"{name}\"")));
+                };
                 let mut ctx = c.borrow_mut();
                 // a block that turns faces the way it's told, or the way
                 // the one it takes the place of faced (world 0.15)
