@@ -1,7 +1,8 @@
 --!strict
 -- Circuits: copper wire carries power from levers, buttons, pressure plates
 -- and daylight sensors, through inverters and delays, to copper lamps and
--- copper gates. Power is on or off, nothing in between.
+-- copper gates, and to pistons and note blocks. Power is on or off, nothing
+-- in between.
 --
 -- Wire joins wire beside it, above or below it, and a step up or down, so
 -- a line of wire can climb stairs. Anything that gives power (a lever
@@ -13,12 +14,21 @@
 -- on what comes in a moment later (use it to set how long). Gates touching
 -- each other open together.
 --
+-- A piston pushes what's in front of it (up to twelve blocks) one along
+-- when power reaches it from any other side, and pulls its head back when
+-- the power goes; an up piston does the same upward. It can't move what
+-- keeps things, circuit parts or other machines, and what can't move stops
+-- it. A note block plays a note as power reaches it: use it to tune it a
+-- step higher (25 notes, F#3 to F#5), and what it stands on gives it its
+-- voice: a bass on wood, a bell on stone and brick, a chime on glass and a
+-- harp on anything else.
+--
 -- The circuit is worked out ten times a second, so every inverter and
 -- delay takes at least a tenth of a second: a loop of them makes a clock.
 -- Everything is saved in the world's store. The blocks are in potluck.toml;
 -- what each is called is in BLOCKS below.
 
-local world = require("@potluck/world@0.15")
+local world = require("@potluck/world@0.23")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -29,6 +39,8 @@ local knobs = tweak {
 	button = { 1, min = 0.2, max = 5, label = "Seconds a button stays pressed", order = 2 },
 	blink = { 0.25, min = 0.1, max = 1, label = "Fastest a lamp changes, in seconds", order = 3 },
 	sounds = { true, label = "Levers and gates make sounds", order = 4 },
+	reach = { 12, min = 1, max = 12, label = "How many blocks a piston pushes", order = 5 },
+	loud = { 0.8, min = 0.1, max = 1, label = "How loud note blocks are", order = 6 },
 }
 
 -- What each part is, by its blocks' names: [off, on].
@@ -42,7 +54,11 @@ local BLOCKS: { [string]: { string } } = {
 	delay = { "Delay", "Lit delay" },
 	lamp = { "Copper lamp", "Lit copper lamp" },
 	gate = { "Copper gate", "Open copper gate" },
+	piston = { "Piston" },
+	lift = { "Up piston" },
+	note = { "Note block" },
 }
+local HEAD, UP_HEAD = "Piston head", "Up piston head"
 -- Which kind each block is, and whether it's its on look.
 local KIND: { [string]: { kind: string, on: boolean } } = {}
 for kind, names in BLOCKS do
@@ -53,6 +69,8 @@ end
 
 local SOURCES = { lever = true, button = true, plate = true, sensor = true }
 local GATES = { inverter = true, delay = true }
+-- what turns the way it's put down
+local TURNS = { inverter = true, delay = true, piston = true }
 
 -- The way each facing points.
 local AHEAD: { [string]: vector } = {
@@ -70,6 +88,7 @@ local SIDES = {
 	vector.create(0, 0, 1),
 	vector.create(0, 0, -1),
 }
+local UP = vector.create(0, 1, 0)
 -- Wire also joins wire a step up or down.
 local STEPS = {}
 for _, d in { vector.create(1, 0, 0), vector.create(-1, 0, 0), vector.create(0, 0, 1), vector.create(0, 0, -1) } do
@@ -77,9 +96,9 @@ for _, d in { vector.create(1, 0, 0), vector.create(-1, 0, 0), vector.create(0, 
 	table.insert(STEPS, d - vector.create(0, 1, 0))
 end
 
--- One part of a circuit: what it is, where, which way it faces (inverters
--- and delays), whether it's on, and for a delay its tenths of a second and
--- what's coming through it.
+-- One part of a circuit: what it is, where, which way it faces (inverters,
+-- delays and pistons), whether it's on, for a delay its tenths of a second
+-- and what's coming through it, and for a note block its note.
 type Part = {
 	at: vector,
 	kind: string,
@@ -92,6 +111,7 @@ type Part = {
 	ends: number,
 	queue: { { at: number, on: boolean } },
 	heard: boolean,
+	tune: number,
 }
 local parts: { [string]: Part } = {}
 -- Wire networks: their wire, what touches them that could power them, and
@@ -118,7 +138,7 @@ local function add(at: vector, block: string): Part?
 	local p: Part = {
 		at = middle(at),
 		kind = k.kind,
-		facing = if GATES[k.kind] then world.facing(at) or "north" else nil,
+		facing = if TURNS[k.kind] then world.facing(at) or "north" else nil,
 		on = k.on,
 		shown = k.on,
 		shown_at = -1,
@@ -126,6 +146,7 @@ local function add(at: vector, block: string): Part?
 		ends = 0,
 		queue = {},
 		heard = k.on,
+		tune = 12,
 	}
 	parts[key(at)] = p
 	shaped, changed = true, true
@@ -197,10 +218,12 @@ local function powered_from(from: vector, at: vector): boolean
 	return gives_to(q, at)
 end
 
--- Whether anything beside `at` powers it.
-local function powered(at: vector): boolean
+-- Whether anything beside `at` powers it (but not from `front`, where a
+-- piston's head goes).
+local function powered(at: vector, front: vector?): boolean
 	for _, d in SIDES do
-		if powered_from(at + d, at) then
+		local from = at + d
+		if from ~= front and powered_from(from, at) then
 			return true
 		end
 	end
@@ -214,6 +237,108 @@ local function show(p: Part, on: boolean)
 	if world.block(p.at) ~= want then
 		world.set_block(p.at, want)
 	end
+end
+
+-- ---- pistons ----
+
+-- What a piston can't move: what keeps things in it, circuit parts,
+-- machines, and what's fixed in the world.
+local FIXED: { [string]: boolean } = { [HEAD] = true, [UP_HEAD] = true }
+for _, name in {
+	"Bedrock", "Crate", "Barrel", "Dispenser", "Chute", "Furnace", "Lit furnace", "Campfire", "Cooking pot",
+	"Old chest", "Lost pack", "Beehive", "Anvil", "Charm table", "Table", "Balloon basket",
+} do
+	FIXED[name] = true
+end
+for name in KIND do
+	FIXED[name] = true
+end
+-- What a pushed block goes into, and crushes.
+local GIVES_WAY: { [string]: boolean } = { Air = true, Water = true, ["Tall grass"] = true, Fern = true, Bush = true, Fire = true }
+
+-- The way a piston's head goes.
+local function ahead(p: Part): vector
+	if p.kind == "lift" then
+		return UP
+	end
+	return AHEAD[p.facing or "north"]
+end
+
+-- Pushes the line of blocks in front one along and puts the head out.
+-- False if something fixed, or too many, is in the way.
+local function push(p: Part): boolean
+	local d = ahead(p)
+	local front = p.at + d
+	local line: { { at: vector, name: string, facing: string? } } = {}
+	local q = front
+	while not GIVES_WAY[world.block(q)] do
+		local b = world.block(q)
+		if FIXED[b] or #line >= math.floor(knobs.reach) or q.y >= 127 then
+			return false
+		end
+		table.insert(line, { at = q, name = b, facing = world.facing(q) })
+		q += d
+	end
+	if q.y >= 128 then
+		return false
+	end
+	for i = #line, 1, -1 do
+		local e = line[i]
+		world.set_block(e.at + d, e.name, e.facing)
+	end
+	if p.kind == "lift" then
+		world.set_block(front, UP_HEAD)
+	else
+		world.set_block(front, HEAD, p.facing or "north")
+	end
+	sound.play("push", { at = p.at })
+	return true
+end
+
+-- Pulls the head back in.
+local function pull(p: Part)
+	local front = p.at + ahead(p)
+	local b = world.block(front)
+	if b == HEAD or b == UP_HEAD then
+		world.set_block(front, "Air")
+		sound.play("pull", { at = p.at })
+	end
+end
+
+-- ---- note blocks ----
+
+local NAMES = { "F#", "G", "G#", "A", "A#", "B", "C", "C#", "D", "D#", "E", "F" }
+-- "F#4": tune 0 is F#3, 12 is F#4 and 24 is F#5
+local function note_name(t: number): string
+	return NAMES[t % 12 + 1] .. (3 + math.floor((t + 6) / 12))
+end
+
+-- its voice, by what it stands on
+local function voice(at: vector): string
+	local under = string.lower(world.block(at - UP))
+	if string.find(under, "glass", 1, true) then
+		return "chime"
+	end
+	for _, w in { "plank", "log", "wood", "crate", "barrel", "bookshelf" } do
+		if string.find(under, w, 1, true) then
+			return "bass"
+		end
+	end
+	for _, s in { "stone", "brick", "cobble", "slate", "column" } do
+		if string.find(under, s, 1, true) then
+			return "bell"
+		end
+	end
+	return "harp"
+end
+
+local function play(p: Part)
+	sound.play(voice(p.at), {
+		at = p.at + vector.create(0, 0.5, 0),
+		pitch = 2 ^ ((p.tune - 12) / 12),
+		volume = knobs.loud,
+		caption = "A note: " .. note_name(p.tune),
+	})
 end
 
 -- Some players on a plate.
@@ -322,6 +447,22 @@ local function step()
 					sound.play("thud", { at = p.at, volume = 0.4, caption = if open then "A gate opens" else "A gate shuts" })
 				end
 			end
+		elseif p.kind == "piston" or p.kind == "lift" or p.kind == "note" then
+			local on = powered(p.at, if p.kind == "note" then nil else p.at + ahead(p))
+			if on ~= p.on then
+				p.on = on
+				changed = true
+				if p.kind == "note" then
+					if on then
+						play(p)
+					end
+				elseif on then
+					-- nothing moves if it can't: it tries again when power comes back
+					push(p)
+				else
+					pull(p)
+				end
+			end
 		end
 	end
 end
@@ -338,7 +479,12 @@ world.on("block_placed", function(_player, at: vector, block: string)
 end)
 
 world.on("block_broken", function(_player, at: vector, _block: string)
-	if parts[key(at)] then
+	local p = parts[key(at)]
+	if p then
+		-- a piston taken up takes its head with it
+		if p.on and (p.kind == "piston" or p.kind == "lift") then
+			pull(p)
+		end
 		parts[key(at)] = nil
 		shaped, changed = true, true
 	end
@@ -380,6 +526,15 @@ world.on("block_used", function(player, at: vector, block: string)
 		if knobs.sounds then
 			sound.play("click", { at = p.at, pitch = 1.6, caption = "Delay set" })
 		end
+	elseif p.kind == "note" then
+		-- a step higher each time, and round again
+		p.tune = (p.tune + 1) % 25
+		changed = true
+		play(p)
+		ui.show(player, "note", "Tuned to " .. note_name(p.tune), { at = "bottom" })
+		world.after(2, function()
+			ui.hide(player, "note")
+		end)
 	end
 end)
 
@@ -389,6 +544,13 @@ for _, names in BLOCKS do
 		world.drops(names[2], { gives = names[1] })
 	end
 end
+-- and pistons' heads into nothing: they're part of the piston
+world.drops(HEAD, { gives = false })
+world.drops(UP_HEAD, { gives = false })
+
+-- Whether a part's on is kept: a lever's, and a machine's, so a piston
+-- already out doesn't push again, nor a note play, after a restart.
+local KEEPS_ON = { lever = true, piston = true, lift = true, note = true }
 
 -- Now and then, forget parts that aren't there any more (taken away by
 -- another creation, or the world changed under them), a few at a time.
@@ -422,7 +584,7 @@ world.every(2, function()
 	changed = false
 	local kept = {}
 	for _, p in parts do
-		table.insert(kept, { p.at.x, p.at.y, p.at.z, p.kind, p.facing or "", if p.kind == "lever" and p.on then 1 else 0, p.tenths })
+		table.insert(kept, { p.at.x, p.at.y, p.at.z, p.kind, p.facing or "", if KEEPS_ON[p.kind] and p.on then 1 else 0, p.tenths, p.tune })
 	end
 	store.set("parts", kept)
 end)
@@ -435,6 +597,7 @@ do
 			local p = add(at, world.block(at)) :: Part
 			p.on = p.on or s[6] == 1
 			p.tenths = s[7] or 1
+			p.tune = s[8] or 12
 		end
 	end
 	changed = false
