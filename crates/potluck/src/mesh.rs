@@ -356,25 +356,36 @@ pub fn pack(mesh: &mut Mesh) {
 /// glowing blocks (lanterns: ray tracing treats every glowing mesh as a
 /// lamp, so only these glow, or the sun would be one lamp among hundreds),
 /// ground cover (tufts and grass lips, which aren't blocks: thousands of
-/// them, so they cast shadows only on desktop cards) and blocks under water
+/// them, so they cast shadows only on desktop cards), blocks under water
 /// (their corners darken with depth, but ray traced meshes have no colours,
-/// so there the material tints them).
+/// so there the material tints them) and faintly glowing blocks (`FAINT`).
 pub struct ChunkMesh {
     pub layers: [MeshData; LAYERS],
     /// Whether anything in it changes with its `Detail` (grass, leaves, plants).
     pub varies: bool,
+    /// The faintly glowing blocks' solid faces again, plain: what the ray
+    /// tracer sees in their place (`FAINT`).
+    pub rock: MeshData,
 }
 
 pub mod cull;
 
-pub const LAYERS: usize = 7;
+pub const LAYERS: usize = 8;
+/// The lanterns' layer: glowing blocks that light what's round them.
+pub const GLOW: usize = 4;
 /// The ground cover layer.
 pub const COVER: usize = 5;
 /// Faces of solid blocks under water.
 pub const UNDER: usize = 6;
+/// Faces whose tile glows on blocks that give no light (crystal and
+/// moonsilver ores, glowcaps, creations' glowing blocks): they glow a
+/// little in their own colours so they're found in the dark. Ray traced,
+/// they're drawn glowing but the tracer sees plain rock in their place,
+/// so they don't join the lamps (see `ChunkMesh`).
+pub const FAINT: usize = 7;
 
 /// Which material each layer of a chunk uses.
-pub const LAYER_MATERIAL: [usize; LAYERS] = [0, 1, 2, 1, 3, 1, 4];
+pub const LAYER_MATERIAL: [usize; LAYERS] = [0, 1, 2, 1, 3, 1, 4, 5];
 
 struct Face {
     n: [i32; 3],
@@ -719,7 +730,7 @@ fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32
         }
         let lo = Vec3::from(b.from.map(|v| v as f32 / 16.0));
         let hi = Vec3::from(b.to.map(|v| v as f32 / 16.0));
-        let layer = if b.glow { 4 } else { 0 };
+        let layer = if b.glow { GLOW } else { 0 };
         for f in &FACES {
             let axis = (0..3).find(|&i| f.n[i] != 0).unwrap();
             let out = if f.n[axis] > 0 { hi[axis] >= 1.0 } else { lo[axis] <= 0.0 };
@@ -843,6 +854,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
     let fins = matches!(detail, Detail::Near | Detail::Mid) && !cover.off.fins;
     let mut varies = false;
     let mut layers: [MeshData; LAYERS] = Default::default();
+    let mut rock = MeshData::default();
     let o = c * CHUNK;
     let tints = Tints::of(w.seed, IVec2::new(c.x, c.z));
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
@@ -891,7 +903,10 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                     Shape::Model => model(&mut layers, w, atlas, x, y, z, id),
                     Shape::Cross => {
                         varies = true;
-                        let rect = BlockAtlas::uv(atlas.tile(def.faces[1]));
+                        let tile = atlas.tile(def.faces[1]);
+                        let rect = BlockAtlas::uv(tile);
+                        // glowcaps glow a little, and stand still
+                        let sheet = if atlas.glows(tile) { FAINT } else { 3 };
                         // a little offset per block so a meadow isn't a grid
                         let h = hash2(x, z, 77);
                         let (ox, oz) = ((h - 0.5) * 0.3, (hash2(z, x, 78) - 0.5) * 0.3);
@@ -927,23 +942,27 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             let b = [cx + ax, fy, cz + az];
                             let up = [0.0, 1.0, 0.0];
                             let q = [a, b, [b[0], fy + tall, b[2]], [a[0], fy + tall, a[2]]];
-                            layers[3].quad(q, up, rect, shade, false);
-                            layers[3].sway_top(sway);
-                            layers[3].quad([q[1], q[0], q[3], q[2]], up, rect, shade, false);
-                            layers[3].sway_top(sway);
+                            for q in [q, [q[1], q[0], q[3], q[2]]] {
+                                layers[sheet].quad(q, up, rect, shade, false);
+                                if sheet != FAINT {
+                                    layers[sheet].sway_top(sway);
+                                }
+                            }
                         }
                     }
                     Shape::Solid | Shape::Cutout => {
                         // glass goes with the plants, which stay out of the ray
                         // traced scene: the tracer would count it solid
-                        let layer = if def.light { 4 } else if def.shape == Shape::Solid { 0 } else if id == GLASS { 3 } else { 1 };
+                        let plain = if def.light { GLOW } else if def.shape == Shape::Solid { 0 } else if id == GLASS { 3 } else { 1 };
                         for f in &FACES {
                             let (nx, ny, nz) = (x + f.n[0], y + f.n[1], z + f.n[2]);
                             let nb = w.get(nx, ny, nz);
                             if blocks::is_opaque(nb) || (def.shape == Shape::Cutout && nb == id) {
                                 continue;
                             }
-                            let rect = BlockAtlas::uv(atlas.tile(def.faces[f.s]));
+                            let tile = atlas.tile(def.faces[f.s]);
+                            let layer = if plain != GLOW && atlas.glows(tile) { FAINT } else { plain };
+                            let rect = BlockAtlas::uv(tile);
                             let mut light = [1.0; 4];
                             let mut occ = [0usize; 4];
                             let axes: Vec<usize> = (0..3).filter(|&i| f.n[i] == 0).collect();
@@ -988,6 +1007,9 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             } else {
                                 layers[layer].quad(corners, n, rect, light, flip);
                             }
+                            if layer == FAINT {
+                                rock.quad(corners, n, rect, light, flip);
+                            }
                         }
                         if id == GRASS {
                             ground_cover(&mut layers[COVER], w, atlas, x, y, z, cover, detail, &tints);
@@ -1006,12 +1028,12 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
     if !cover.off.sky && layers.iter().enumerate().any(|(i, l)| i != 2 && !l.is_empty()) {
         Sky::new(w, o, detail).shade(&mut layers);
     }
-    ChunkMesh { layers, varies }
+    ChunkMesh { layers, varies, rock }
 }
 
 #[derive(Resource)]
 pub struct BlockMaterials {
-    pub layers: [Handle<StandardMaterial>; 5],
+    pub layers: [Handle<StandardMaterial>; 6],
     /// The ray tracer's stand-in canopy's (`porous_leaves`): plain leaf green.
     pub canopy: Handle<StandardMaterial>,
     /// The water layer's, which keeps its own normals (`render::WaterMaterial`).
@@ -1082,7 +1104,7 @@ pub struct ChunkEntities {
 }
 
 /// What each layer of a chunk holds, for the memory report.
-pub const LAYER_NAMES: [&str; LAYERS] = ["solid blocks", "leaves and glass", "water", "plants", "glowing blocks", "ground cover", "under water"];
+pub const LAYER_NAMES: [&str; LAYERS] = ["solid blocks", "leaves and glass", "water", "plants", "glowing blocks", "ground cover", "under water", "faintly glowing blocks"];
 
 impl ChunkEntities {
     /// Every chunk's sizes added up, by layer (see `sizes`).
@@ -1261,6 +1283,7 @@ pub fn remesh(
         }
         let mut sizes = [[0u64; 4]; LAYERS];
         let slot = chunks.map.entry(c).or_insert([None; LAYERS]);
+        let mut rock = Some(m.rock);
         for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
                 commands.entity(e).despawn();
@@ -1316,6 +1339,15 @@ pub fn remesh(
                 }
                 3 => {
                     e.insert(crate::render::NotRaytraced);
+                }
+                // drawn glowing, but traced as plain rock: a glowing mesh is
+                // a lamp to the tracer, and hundreds of faint ones would
+                // take its samples from the sun and lanterns
+                FAINT if rt.0 => {
+                    e.insert(crate::render::NotRaytraced);
+                    if let Some(rock) = rock.take().filter(|d| !d.is_empty()) {
+                        crate::render::trace_only(&mut e, meshes.add(rock.into_mesh(true)), mats.layers[0].clone());
+                    }
                 }
                 COVER => {
                     e.insert(crate::render::NotRaytraced);

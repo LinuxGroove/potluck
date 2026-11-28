@@ -216,6 +216,16 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
         alpha_mode: AlphaMode::Mask(0.5),
         ..solid.clone()
     };
+    // ores and glowcaps that glow a little (`mesh::FAINT`), in their own
+    // colours, bright enough to find in the dark but lighting nothing.
+    // Drawn normally that's what the screen shows whatever the eye's
+    // exposure; ray traced, the eye's exposure takes it down by day
+    let faint = StandardMaterial {
+        emissive_texture: Some(atlas.glow.clone()),
+        emissive: LinearRgba::rgb(1.0, 1.0, 1.0) * if rt.0 { 800.0 } else { 0.8 },
+        alpha_mode: AlphaMode::Mask(0.5),
+        ..solid.clone()
+    };
     let cutout = StandardMaterial { alpha_mode: AlphaMode::Mask(0.5), double_sided: true, cull_mode: None, ..solid.clone() };
     // water reflects about 2% straight on (reflectance 0.35); its colour and
     // how see-through it is come from its depth (`mesh::water_tint`), and the
@@ -236,7 +246,7 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
     let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
     let own = waters.add(WaterMaterial { base: water.clone(), extension: OwnNormals {} });
     let canopy = mats.add(StandardMaterial { base_color: Color::srgb(0.22, 0.4, 0.15), perceptual_roughness: 0.9, ..default() });
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], canopy, water: own }
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under), mats.add(faint)], canopy, water: own }
 }
 
 /// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked
@@ -498,13 +508,45 @@ fn night_eye(day: f32) -> f32 {
     (1.0 - day).powf(0.7)
 }
 
+/// What the eye has got used to: how much of the sky it sees, and how far
+/// underground it is (0 in the open, 1 deep in a cave where no sky
+/// reaches), each followed slowly as eyes adjust. Deep underground it's as
+/// dark by day as by night: the eye opens up as it does at night, the
+/// sky's fill and reflections stay outside, and flames burn as bright as
+/// they do at night.
+#[derive(Resource)]
+pub struct Eye {
+    since: f32,
+    open: f32,
+    pub below: f32,
+}
+
+impl Default for Eye {
+    fn default() -> Self {
+        Self { since: 1.0, open: 1.0, below: 0.0 }
+    }
+}
+
+/// How far underground a point is for the eye: 0 within a few blocks of
+/// the ground over it (rooms, overhangs, the shade of trees), 1 well down.
+pub fn underground(voxels: &Voxels, p: Vec3) -> f32 {
+    let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
+    let top = voxels.top(x, z);
+    // the highest rock over it, not a tree's trunk
+    let roof = (p.y.floor() as i32 + 1..=top).rev().find(|&y| {
+        let b = voxels.get(x, y, z);
+        crate::blocks::is_opaque(b) && b != crate::blocks::LOG
+    });
+    roof.map_or(0.0, |r| crate::noise::smooth(5.0, 15.0, r as f32 - p.y))
+}
+
 pub fn sky(
     time: Res<Time>,
     mut clock: ResMut<Clock>,
     settings: Res<Settings>,
     mut commands: Commands,
     mut sun: Query<(Entity, &mut Transform, &mut DirectionalLight, Has<VolumetricLight>), With<Sun>>,
-    mut cam: Query<(&mut Exposure, &mut DistanceFog, &mut Projection, &mut bevy::render::view::ColorGrading), With<MainCamera>>,
+    mut cam: Query<(&mut Exposure, &mut DistanceFog, &mut Projection, &mut bevy::render::view::ColorGrading, Option<&mut bevy::light::EnvironmentMapLight>), With<MainCamera>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
     mut haze: Query<(&mut Transform, &mut FogVolume), (With<Haze>, Without<Sun>, Without<MainCamera>)>,
@@ -513,18 +555,21 @@ pub fn sky(
     voxels: Res<crate::world::Voxels>,
     mut under: Query<(&mut Visibility, &MeshMaterial3d<StandardMaterial>), With<UnderSea>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    mut eye: Local<Option<(f32, f32)>>,
+    mut eye: ResMut<Eye>,
 ) {
-    // how open the sky over the player is, looked at a few times a second
-    // and followed slowly, as eyes adjust
-    let (since, open) = eye.get_or_insert((1.0, 1.0));
-    *since += time.delta_secs();
-    if *since > 0.25 {
+    // how open the sky over the player is, and how far underground they
+    // are, looked at a few times a second and followed slowly, as eyes adjust
+    eye.since += time.delta_secs();
+    if eye.since > 0.25 {
         let now = crate::mesh::sky_seen(&voxels, me.eye());
-        *open += (now - *open) * (*since / 1.5).min(1.0);
-        *since = 0.0;
+        let below = underground(&voxels, me.eye()) * (1.0 - now).clamp(0.0, 1.0);
+        let k = (eye.since / 1.5).min(1.0);
+        eye.open += (now - eye.open) * k;
+        eye.below += (below - eye.below) * k;
+        eye.since = 0.0;
     }
-    let shade = 1.0 - open.clamp(0.0, 1.0);
+    let shade = 1.0 - eye.open.clamp(0.0, 1.0);
+    let below = eye.below.clamp(0.0, 1.0);
     if clock.running {
         clock.time = (clock.time + time.delta_secs() / (DAY_MINUTES * 60.0)) % 1.0;
     }
@@ -577,7 +622,7 @@ pub fn sky(
         let low_sun = 1.0 - (up.abs() * 2.5).min(1.0);
         v.density_factor = if me.under_water { 0.0 } else { (0.0025 + 0.0055 * low_sun) * haze_lit };
     }
-    if let Ok((mut ex, mut fog, mut proj, mut grade)) = cam.single_mut() {
+    if let Ok((mut ex, mut fog, mut proj, mut grade, env)) = cam.single_mut() {
         // the day's grade: golden and a little richer as the sun goes down,
         // cool and quieter at night, plain at noon
         let golden = low * day;
@@ -587,17 +632,19 @@ pub fn sky(
         grade.global.post_saturation = 1.0 + 0.12 * golden - 0.18 * night;
         grade.shadows.lift = -0.008 * golden;
         grade.highlights.gain = 1.0 + 0.04 * golden;
-        // eyes adjust to the dark, gently
-        ex.ev100 = 13.7 - night_eye(day) * 4.4;
-        if rt.0 {
-            // ray traced shade has no made-up fill from everywhere, so the
-            // eye opens up a little, and more at night
-            ex.ev100 -= 0.4 + 1.0 * night_eye(day);
-        }
+        // eyes adjust to the dark, gently; ray traced shade has no made-up
+        // fill from everywhere, so there the eye opens up a little more
+        let night_open = |n: f32| n * 4.4 + if rt.0 { 0.4 + 1.0 * n } else { 0.0 };
         // under trees or a roof by day the eye opens up: a little where the
         // sky's fill still reaches in, more where ray tracing finds the
-        // shade truly dark
-        ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
+        // shade truly dark; deep underground, as far as it does at night
+        let open = night_open(night_eye(day)) + day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
+        ex.ev100 = 13.7 - open.max(night_open(below));
+        // the sky's reflections don't reach down into caves either (the
+        // sky's share each face sees only dims the fill, not reflections)
+        if let Some(mut env) = env {
+            env.intensity = 1.0 - 0.97 * below;
+        }
         let f = fog_colour(day, low);
         fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });
         fog.directional_light_color = Color::srgba(1.0, 0.93, 0.8, 0.4);
@@ -625,7 +672,7 @@ pub fn sky(
         // the fog colours it whole; and where nothing's fogged (ray traced),
         // it's the fog's colour itself
         if me.under_water {
-            let c = cam.single().map(|(_, f, _, _)| f.color).unwrap_or(Color::BLACK);
+            let c = cam.single().map(|(_, f, _, _, _)| f.color).unwrap_or(Color::BLACK);
             if let Some(mut mat) = mats.get_mut(&m.0) {
                 mat.base_color = c.with_alpha(1.0);
             }
@@ -634,7 +681,8 @@ pub fn sky(
     // Low's sky, under its dome (`dome`)
     let s = Vec3::new(0.02, 0.03, 0.07).lerp(Vec3::new(0.5, 0.68, 0.9), day).lerp(SUNSET, 0.4 * low * day);
     clear.0 = Color::srgb(s.x, s.y, s.z);
-    ambient.brightness = if medium { 40.0 + 1310.0 * day } else { 160.0 + 5940.0 * day };
+    // deep underground the sky's fill is the night's, day or night
+    ambient.brightness = if medium { 40.0 + 1310.0 * day * (1.0 - below) } else { 160.0 + 5940.0 * day * (1.0 - below) };
     let _ = PI;
 }
 
@@ -646,6 +694,9 @@ fn lamp(id: crate::blocks::BlockId) -> (f32, f32, Color, f32) {
     match id {
         CANDLE => (0.32, 0.6, Color::srgb(1.0, 0.74, 0.42), 0.16),
         BRAZIER => (1.6, 0.9, Color::srgb(1.0, 0.6, 0.28), 0.22),
+        // a small open flame: a wall beside it would burn out to white at
+        // a lantern's brightness
+        TORCH => (0.6, 0.62, Color::srgb(1.0, 0.72, 0.4), 0.12),
         _ => (1.0, 0.5, Color::srgb(1.0, 0.78, 0.48), 0.07),
     }
 }
@@ -671,6 +722,7 @@ pub fn lanterns(
     voxels: Res<Voxels>,
     me: Res<Me>,
     clock: Res<Clock>,
+    eye: Res<Eye>,
     mut lights: Query<(Entity, &mut Transform, &mut PointLight, &mut LanternLight)>,
     mut every: Local<f32>,
     time: Res<Time>,
@@ -685,7 +737,9 @@ pub fn lanterns(
     // on Low each light costs integrated graphics dearly, and the furthest
     // still glow without lighting the ground round them
     near.truncate(if Tier::of(&settings.lighting) == Tier::Low { 8 } else { 20 });
-    let night = 1.0 - clock.daylight();
+    // flames show brighter in the dark (the eye's open wider); deep
+    // underground it's as dark by day as by night
+    let night = (1.0 - clock.daylight()).max(eye.below);
     let lumens = 40_000.0 + 260_000.0 * night;
     let mut have: Vec<_> = lights.iter_mut().collect();
     for (i, p) in near.iter().enumerate() {

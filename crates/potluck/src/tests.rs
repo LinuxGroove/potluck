@@ -6862,3 +6862,33 @@ fn the_block_atlas_leaves_room_for_creations_blocks() {
     // the base game's creations alone made more than 66 tiles fill it (#59)
     assert!(atlas.room() >= 300, "room for {} more tiles", atlas.room());
 }
+
+#[test]
+fn glowing_ores_and_glowcaps_glow_a_little_without_lighting_anything() {
+    use crate::blocks::*;
+    use crate::mesh::{Detail, FAINT, GLOW};
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let quads = |b: BlockId| {
+        let mut w = Voxels::empty(1);
+        w.set(IVec3::new(4, 4, 4), b);
+        let m = crate::mesh::mesh_chunk(&w, &atlas, IVec3::ZERO, crate::mesh::Cover::default(), Detail::Near);
+        let rock = m.rock.into_mesh(true).count_vertices() / 4;
+        let n: Vec<usize> = m.layers.into_iter().map(|l| l.into_mesh(false).count_vertices() / 4).collect();
+        (n, rock)
+    };
+    // crystal and moonsilver show all six faces glowing, and the ray
+    // tracer gets the same faces as plain rock
+    for ore in [CRYSTAL_ORE, MOONSILVER_ORE] {
+        let (n, rock) = quads(ore);
+        assert_eq!((n[0], n[FAINT], n[GLOW], rock), (0, 6, 0, 6), "{}", block(ore).name);
+    }
+    // a glowcap's sheets glow, both ways round, and the tracer leaves them out
+    let (n, rock) = quads(GLOWCAP);
+    assert!(n[FAINT] >= 4 && n[3] == 0 && rock == 0, "{n:?} {rock}");
+    // the other ores don't glow, and lanterns stay lamps
+    let (n, rock) = quads(IRON_ORE);
+    assert_eq!((n[0], n[FAINT], rock), (6, 0, 0));
+    let (n, _) = quads(LANTERN);
+    assert!(n[GLOW] > 0 && n[FAINT] == 0, "{n:?}");
+}

@@ -168,6 +168,11 @@ impl BlockAtlas {
             .collect()
     }
 
+    /// Whether a tile glows: glowing tiles sit at the far end (`build`).
+    pub fn glows(&self, tile: u16) -> bool {
+        tile as usize > self.far
+    }
+
     /// How many more plain tiles creations' blocks can have.
     pub fn room(&self) -> usize {
         self.far.saturating_sub(self.next + GRID)
