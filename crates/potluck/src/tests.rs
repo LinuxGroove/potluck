@@ -3662,6 +3662,11 @@ fn a_table_is_a_workbench_for_survival_players() {
     // and the charm table when the Charms creation's is
     let charms = lib.remove("charms").expect("the base game has charms");
     crate::made::register(&charms.id, &charms.manifest.blocks).unwrap();
+    // and rails, carts, dispensers and chutes when Rails' and Storage's are
+    for id in ["rails", "storage"] {
+        let c = lib.remove(id).expect("a base creation");
+        crate::made::register(&c.id, &c.manifest.blocks).unwrap();
+    }
     let b = |n: &str| by_name(n).unwrap();
     let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
     let mut voxels = world();
@@ -3726,8 +3731,8 @@ fn a_table_is_a_workbench_for_survival_players() {
         vec!["Planks", "Dirt", "Wheat", "Copper ingot", "Hay"],
         vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool", "Silk"],
         vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint", "Feather", "Silk", "Bristles", "Leather"],
-        vec!["Cream wool", "Planks", "Lantern"],
-        vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
+        vec!["Cream wool", "Planks", "Lantern", "Iron ingot", "Gold ingot", "Copper wire"],
+        vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal", "Iron ingot", "Crate"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
@@ -5600,7 +5605,7 @@ fn creations_make_blocks_of_their_own() {
     assert!(glow.faces[1].glow[9] && !glow.faces[1].glow[0], "the letters in glow glow");
     assert_eq!(glow.faces[0].rgba[9][3], 0, "and . is see-through");
     assert_eq!(made::color(marble).map(|c| c[0] > 200), Some(true), "the map's colour from the top");
-    assert!(made::register("too-many", &(0..17).map(|i| (format!("b{i}"), spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}")))).collect()).is_err());
+    assert!(made::register("too-many", &(0..33).map(|i| (format!("b{i}"), spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}")))).collect()).is_err());
 
     // its code uses them by name, as soon as it starts
     let mut voxels = world();
@@ -6861,4 +6866,192 @@ fn the_block_atlas_leaves_room_for_creations_blocks() {
     let atlas = crate::textures::build(&mut images);
     // the base game's creations alone made more than 66 tiles fill it (#59)
     assert!(atlas.room() >= 300, "room for {} more tiles", atlas.room());
+}
+
+/// Storage's dispensers and Rails' powered rails take power from the
+/// Circuits creation's blocks beside them, by name: their own tests can't
+/// put down a lever (only the tested creation's blocks are there), so
+/// these play with Circuits' blocks registered.
+#[test]
+fn dispensers_and_powered_rails_run_off_circuits() {
+    home();
+    let mut lib = Library::load().list;
+    let circuits = lib.remove("circuits").expect("the base game has circuits");
+    crate::made::register(&circuits.id, &circuits.manifest.blocks).unwrap();
+    for (id, script) in [("storage", DISPENSERS), ("rails", POWERED_RAILS)] {
+        let mut c = lib.remove(id).expect("a base creation");
+        c.files.insert(crate::testing::FILE.into(), script.into());
+        let report = crate::testing::run(&c, &world());
+        println!("{}", report.text());
+        assert!(report.passed(), "{}", report.text());
+    }
+}
+
+const DISPENSERS: &str = r##"
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.15")
+local store = require("@potluck/store@0.1")
+local EAST, SOUTH = vector.create(1, 0, 0), vector.create(0, 0, 1)
+
+local function held(at)
+	return (store.get("boxes") or {})[math.floor(at.x) .. "," .. math.floor(at.y) .. "," .. math.floor(at.z)] or {}
+end
+local function put(p, at, thing)
+	test.hold(p, thing)
+	test.use_block(p, at)
+	test.answer(p, 1)
+end
+-- a dispenser facing east, with a lever beside it, and the player near
+local function dispenser(name, carrying)
+	carrying.Dispenser = 1
+	local p = test.player(name, { survival = true, carrying = carrying })
+	local x, z = math.floor(p.position.x) + 2, math.floor(p.position.z)
+	local d = vector.create(x, world.top(x, z) + 1, z)
+	for _, c in { d, d + EAST, d + EAST * 2, d + SOUTH } do
+		world.set_block(c, "Air")
+	end
+	test.place(p, d, "Dispenser", "east")
+	test.move(p, d + vector.create(1.5, 0, 2.5))
+	return p, d
+end
+local function pulse(lever)
+	world.set_block(lever, "Pulled lever")
+	test.wait(0.3)
+	world.set_block(lever, "Lever")
+	test.wait(0.3)
+end
+
+test.case("power gives out a thing at a time: a block is put down, the rest handed over", function()
+	local p, d = dispenser("Ada", { Stone = 2, Bread = 1 })
+	put(p, d, "Stone")
+	put(p, d, "Bread")
+	test.same(world.has(p, "Bread"), 0, "the bread's in")
+	pulse(d + SOUTH)
+	test.same(world.has(p, "Bread"), 1, "bread first, by name, handed over")
+	pulse(d + SOUTH)
+	test.same(world.block(d + EAST), "Stone", "a block put down in front")
+	pulse(d + SOUTH)
+	test.same(world.has(p, "Stone"), 1, "with no room in front, handed over")
+	test.wait(2.1)
+	test.same(next(held(d)), nil, "it's empty")
+	test.check(test.heard("click") >= 3, "it clicks")
+end)
+
+test.case("a lit inverter facing it powers it, and it pours water and fills the bucket again", function()
+	local p, d = dispenser("Bo", { ["Water bucket"] = 1 })
+	put(p, d, "Water bucket")
+	world.set_block(d - EAST, "Lit inverter", "east")
+	test.wait(0.3)
+	test.same(world.block(d + EAST), "Water", "poured")
+	test.wait(2.1)
+	test.same(held(d).Bucket, 1, "the bucket's kept")
+	world.set_block(d - EAST, "Inverter", "east")
+	test.wait(0.3)
+	world.set_block(d - EAST, "Lit inverter", "east")
+	test.wait(2.4)
+	test.same(held(d)["Water bucket"], 1, "filled again from the water in front")
+end)
+"##;
+
+const POWERED_RAILS: &str = r##"
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.23")
+
+local function floor()
+	local g = world.spot("green")
+	local x0, z0, y = math.floor(g.x) + 60, math.floor(g.z) - 12, 90
+	for dz = 0, 23 do
+		for dx = 0, 11 do
+			world.set_block(vector.create(x0 + dx, y, z0 + dz), "Stone")
+		end
+		test.wait(0)
+	end
+	return vector.create(x0, y + 1, z0)
+end
+local function at(o, x, y, z)
+	return o + vector.create(x, y, z)
+end
+local function cart_on(c, from)
+	local p = test.player("Ada", { survival = true, carrying = { Cart = 1 }, at = from })
+	test.place(p, c + vector.create(0, 1, 0), "Cart")
+	test.wait(0.2)
+	local list = world.creatures(test.kind("Cart"))
+	test.same(#list, 1, "a cart")
+	return p, list[1]
+end
+local function where(id)
+	return (test.creature(id) :: any).position
+end
+
+test.case("a powered rail with live wire beside it sends a cart on fast", function()
+	local o = floor()
+	for z = 2, 22 do
+		world.set_block(at(o, 4, 0, z), if z == 6 then "Powered rail" else "Rail", "north")
+	end
+	world.set_block(at(o, 5, 0, 6), "Live wire")
+	local p, id = cart_on(at(o, 4, 0, 3), at(o, 4, 0, 1))
+	test.ride(p, test.creature(id))
+	test.press(p, "push")
+	test.wait(0.2)
+	test.release(p, "push")
+	local before, after, last = 0, 0, where(id)
+	for _ = 1, 40 do
+		test.wait(0.1)
+		local now = where(id)
+		local speed = vector.magnitude(now - last) * 10
+		if now.z < o.z + 6 then
+			before = math.max(before, speed)
+		elseif now.z > o.z + 9 then
+			after = math.max(after, speed)
+		end
+		last = now
+	end
+	test.check(after > before + 2, "faster after it: " .. before .. " then " .. after)
+end)
+
+test.case("a cart resting on a powered rail sets off when power reaches it", function()
+	local o = floor()
+	for z = 2, 22 do
+		world.set_block(at(o, 4, 0, z), if z == 12 then "Powered rail" else "Rail", "north")
+	end
+	local _, id = cart_on(at(o, 4, 0, 12), at(o, 6, 0, 12))
+	test.wait(1)
+	local rest = where(id)
+	world.set_block(at(o, 5, 0, 12), "Pulled lever")
+	test.wait(2)
+	test.check(vector.magnitude(where(id) - rest) > 3, "it went: " .. tostring(where(id) - rest))
+end)
+"##;
+
+/// Every base creation's blocks fit in the block atlas and a world's ids
+/// for made blocks, with room to spare for players' own creations.
+#[test]
+fn the_base_games_blocks_leave_room_for_players_own() {
+    home();
+    let mut images = Assets::<Image>::default();
+    let mut atlas = crate::textures::build(&mut images);
+    let (mut ids, mut used) = (0, 0);
+    for c in Library::load().list.values().filter(|c| c.origin == Origin::Base) {
+        for (key, def) in crate::made::read_all(&c.manifest.blocks).unwrap() {
+            ids += if def.turns { 4 } else { 1 };
+            // a picture each, but faces with the same picture share, and a
+            // block that turns has a top for each way it faces
+            for i in (0..3).filter(|&i| def.same[i] == i) {
+                for q in 0..if i == 0 && def.turns { 4 } else { 1 } {
+                    let name: &'static str = Box::leak(format!("base/{}/{key}/{i}/{q}", c.id).into_boxed_str());
+                    let f = &def.faces[i];
+                    assert!(atlas.put(&mut images, name, &f.rgba, f.size, &f.glow).is_some(), "room in the atlas for {}'s {key}", c.id);
+                    used += 1;
+                }
+            }
+        }
+    }
+    let plain = vec![[200u8, 40, 40, 255]; 16 * 16];
+    let mut left = 0;
+    while atlas.put(&mut images, Box::leak(format!("test/spare{left}").into_boxed_str()), &plain, 16, &vec![false; 256]).is_some() {
+        left += 1;
+    }
+    println!("the base game's own blocks take {ids} ids and {used} pictures, leaving {left} pictures");
+    assert!(left >= 64, "room in the atlas for players' blocks: {left} pictures");
+    assert!(ids <= 128 - 24, "ids for players' blocks: the base game takes {ids} of 128");
 }

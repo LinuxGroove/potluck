@@ -1,14 +1,142 @@
 name = "Storage"
 by = "Potluck"
 kind = "mod"
-about = "Crates and barrels keep what you put in them, in survival: use one holding something to put it in, or to take things out. Make a crate or a barrel at a workbench."
+about = "Crates and barrels keep what you put in them, in survival: use one holding something to put it in, or to take things out. A dispenser gives out what it holds, a thing each time power reaches it: it puts a block down in front of it, pours water, fills a bucket or hands the thing to someone near. A chute moves things down from what's over it into what's under it, a crate, barrel, dispenser or another chute, unless it has power. Make them at a workbench."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.8"
+world = "0.15"
 tweak = "0.1"
 ui = "0.1"
 sound = "0.1"
 store = "0.1"
+
+# What dispensers and chutes are: a dispenser gives out what it holds, one
+# thing each time power reaches it; a chute moves things down from what's
+# over it into what's under it.
+[blocks.dispenser]
+name = "Dispenser"
+kind = "hard"
+hardness = 2
+turns = true
+# a cobblestone body with a spout at the front, where things come out
+boxes = [[0, 0, 2, 16, 16, 16], [4, 4, 0, 12, 12, 2]]
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+kkkkddddddddkkkk
+kcccddddddddkccc
+kccceeeeeeeekccc
+kkkkkkkkkkkkkkkk
+kgggkccckgggkggg
+kgggkccckgggkggg
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+kgggkccckgggkggg
+kgggkccckgggkggg
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+"""
+side = """
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+kgggkccckgggkggg
+kgggkccckgggkggg
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+kgggkccckgggkggg
+kgggkccckgggkggg
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+"""
+bottom = """
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+kgggkccckgggkggg
+kgggkccckgggkggg
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+kgggkccckgggkggg
+kgggkccckgggkggg
+kkkkkkkkkkkkkkkk
+kccckgggkgggkccc
+kccckgggkgggkccc
+kkkkkkkkkkkkkkkk
+"""
+
+[blocks.chute]
+name = "Chute"
+kind = "hard"
+hardness = 2
+boxes = [[0, 10, 0, 16, 16, 16], [4, 0, 4, 12, 10, 12]]
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+jiiiijiiiijiiiij
+iiiijiiiijiiiiji
+iiijiiiijiiiijii
+iijiiiijiiiijiii
+ijiijjjjjjjjiiii
+jiiijddddddjiiij
+iiiijddddddjiiji
+iiijjddddddjijii
+iijijddddddjjiii
+ijiijddddddjiiii
+jiiijddddddjiiij
+iiiijjjjjjjjiiji
+iiijiiiijiiiijii
+iijiiiijiiiijiii
+ijiiiijiiiijiiii
+jiiiijiiiijiiiij
+"""
+side = """
+jiiiiiijiiiiiiji
+iijiiiiiijiiiiii
+iiiijiiiiiijiiii
+iiiiiijiiiiiijii
+ijiiiiiijiiiiiij
+iiijiiiiiijiiiii
+....iijiiiji....
+....ijiiijii....
+....jiiijiii....
+....iiijiiij....
+....iijiiiji....
+....ijiiijii....
+....jiiijiii....
+....iiijiiij....
+....iijiiiji....
+....ijiiijii....
+"""
+bottom = """
+jiiiijiiiijiiiij
+iiiijiiiijiiiiji
+iiijiiiijiiiijii
+iijiiiijiiiijiii
+ijiijjjjjjjjiiii
+jiiijddddddjiiij
+iiiijddddddjiiji
+iiijjddddddjijii
+iijijddddddjjiii
+ijiijddddddjiiii
+jiiijddddddjiiij
+iiiijjjjjjjjiiji
+iiijiiiijiiiijii
+iijiiiijiiiijiii
+ijiiiijiiiijiiii
+jiiiijiiiijiiiij
+"""
+

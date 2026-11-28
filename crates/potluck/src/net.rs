@@ -1501,6 +1501,10 @@ fn blank_body(id: u64) -> Body {
         rev: 0,
         phase: 0.0,
         born: String::new(),
+        path: Default::default(),
+        path_speed: 0.0,
+        along: 0.0,
+        steer: true,
     }
 }
 
