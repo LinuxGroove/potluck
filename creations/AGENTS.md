@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.24")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.24. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.25")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.25. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.24
+### `@potluck/world` 0.25
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -408,6 +408,46 @@ boxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4]]  # the post at the front, whi
 - `world.facing(pos)` says which way one faces, and `world.set_block(pos, name, facing)` puts one down facing that way. Changing a block that turns into another that turns (an off look to an on look) keeps the way it faces.
 - `joins` names the side as the block is drawn, so on a block that turns, `"north"` is its front whichever way it faces.
 - Each of the four ways takes an id of its own in the world (which holds 128 blocks from creations), though it's one block of the 16 in `potluck.toml`: players carry, find and break all four as the one they put down, and `world.block` names them alike. Circuits in the base game is the example: wire that joins up, and inverters and delays that face the way they're put down.
+
+#### Items of its own (0.25)
+
+A creation makes items in `potluck.toml` too: things to carry that aren't blocks, each with a picture for its icon, drawn in letters as a block's is, and a kind. Players and code use them by name like the game's own items (`world.give(player, "Plum jam", 2)`, `world.held`, `world.wear`, `world.digging`), and pockets keep them by name, so they come back with the creation. Require `@potluck/world@0.25` (or newer).
+
+```toml
+[items.plum_jam]
+name = "Plum jam"     # what players see it called (default: the key, "Plum jam")
+kind = "food"         # material (the default), food, tool, weapon or armor
+food = 7              # how much it fills, 1 to 20 (4 if left out)
+says = "You ate some plum jam. Sweet!"
+recipe = { Berries = 4, Honey = 1 }   # what a workbench makes it from
+makes = 2             # how many the recipe makes (default 1)
+colors = { p = "#6a2050", g = "#c8c2b8", w = "#f0ece4" }
+picture = """
+..gggg..
+.wwwwww.
+.pppppp.
+.pwpppp.
+.pppppp.
+.pppppp.
+.pppppp.
+..pppp..
+"""
+```
+
+- `picture` is the icon, 8, 16, 32 or 64 pixels square, with `.` for see-through. `stack` is how many fit in a slot: 99 for materials and food unless it says, one for the rest.
+- What each kind says, read by the base game's creations: `food` with `food` and `says` (Hunger eats it when hungry, the most filling that fits); `armor` with `slot` (`"head"`, `"body"`, `"legs"`, `"feet"` or `"arm"`), `guard` (0 to 10: each point keeps off 3.5% of a hurt) and `warm = true` if it keeps the cold off as wool does (Armor puts it on); `weapon` with `power`, how hard it bops (0 to 20; a hand is 1 and an iron sword 4); and `tool` with `digs`, speeds by kind of block and a level, as `world.digging` takes them (`digs = { hard = 3, level = 2 }`), which the game gives the creation's tool as it starts. Anything with a `recipe` is on the Workbench, under its kind's page.
+- `world.item(name)` reads one back: for a creation's item, its table as written (without the picture and colours), with `name`, `kind`, `stack` and `by`, the creation that made it; for one of the game's own, just `{ name, stack, by = "game" }`; nil for a block or nothing. `world.items()` is the names of every item creations made in this world, so a creation can find foods, armor or recipes it didn't make.
+
+```luau
+for _, name in world.items() do
+	local it = world.item(name)
+	if it and it.kind == "weapon" then
+		print(name, "bops", it.power or 1)
+	end
+end
+```
+
+- Up to 32 items a creation, 256 in a world. A name in `potluck.toml` is lowercase letters, digits and `_`, and what players see it called can't be one of the game's blocks or items. A world gives a creation's items their ids each time it starts; save things by name, as `store` and pockets do.
 
 ### `@potluck/tweak` 0.1
 

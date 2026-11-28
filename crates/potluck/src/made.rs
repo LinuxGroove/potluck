@@ -19,6 +19,8 @@ use serde_json::Value;
 
 use crate::blocks::{self, Block, BlockId, Cuboid, Shape, FIRST_MADE};
 
+pub mod items;
+
 /// How many blocks one creation can make.
 pub const MOST_EACH: usize = 32;
 /// How many colours one block's pictures can use.
@@ -33,7 +35,7 @@ pub const MOST_FRAMES: usize = 8;
 /// comfort.
 pub const FASTEST: f32 = 8.0;
 /// The longest name a made block can have.
-const LONGEST_NAME: usize = 24;
+pub(crate) const LONGEST_NAME: usize = 24;
 /// The keys a block's table can have.
 const KEYS: &[&str] = &["name", "shape", "kind", "hardness", "light", "glow", "colors", "picture", "top", "side", "bottom", "boxes", "solid", "frames", "speed", "turns"];
 /// The keys of a box written as a table (world 0.15).
@@ -115,7 +117,7 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// Tile names, leaked once each.
 static NAMES: Mutex<BTreeMap<String, &'static str>> = Mutex::new(BTreeMap::new());
 
-fn intern(s: String) -> &'static str {
+pub(crate) fn intern(s: String) -> &'static str {
     let mut names = NAMES.lock().unwrap();
     if let Some(n) = names.get(&s) {
         return n;
@@ -138,7 +140,7 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
 }
 
-fn title(key: &str) -> String {
+pub(crate) fn title(key: &str) -> String {
     let words = key.replace('_', " ");
     let mut c = words.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
@@ -165,7 +167,33 @@ fn rows(what: &str, v: &Value) -> Result<Vec<Vec<char>>, String> {
     Ok(lines.into_iter().map(|l| l.chars().collect()).collect())
 }
 
-fn picture(what: &str, v: &Value, colors: &BTreeMap<char, [u8; 3]>, glow: &[char], glow_bright: bool, clear_ok: bool) -> Result<Picture, String> {
+/// A picture's colours, a letter each: `colors = { w = "#f0ece4" }`.
+/// `thing` is what needs them, for the message ("a block").
+pub(crate) fn colors_of(what: &str, v: Option<&Value>, thing: &str) -> Result<BTreeMap<char, [u8; 3]>, String> {
+    let mut colors = BTreeMap::new();
+    match v {
+        Some(Value::Object(c)) => {
+            if c.len() > MOST_COLORS {
+                return Err(format!("{what}: colors gives {MOST_COLORS} colours at most"));
+            }
+            for (letter, v) in c {
+                let mut ch = letter.chars();
+                let (Some(l), None) = (ch.next(), ch.next()) else {
+                    return Err(format!("{what}: each of colors is one letter, like w = \"#f0ece4\""));
+                };
+                if l == '.' || l.is_whitespace() {
+                    return Err(format!("{what}: . is see-through, so colors can't give it a colour"));
+                }
+                colors.insert(l, hex(what, letter, v)?);
+            }
+        }
+        None => return Err(format!("{what}: {thing} needs colors, a colour for each letter in its pictures")),
+        Some(_) => return Err(format!("{what}: colors is a table of letters and colours, like {{ w = \"#f0ece4\" }}")),
+    }
+    Ok(colors)
+}
+
+pub(crate) fn picture(what: &str, v: &Value, colors: &BTreeMap<char, [u8; 3]>, glow: &[char], glow_bright: bool, clear_ok: bool) -> Result<Picture, String> {
     let rows = rows(what, v)?;
     let n = rows.len();
     if !SIZES.contains(&n) {
@@ -289,26 +317,7 @@ pub fn read(key: &str, spec: &Value) -> Result<Def, String> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(format!("{what}: light is true or false")),
     };
-    let mut colors = BTreeMap::new();
-    match t.get("colors") {
-        Some(Value::Object(c)) => {
-            if c.len() > MOST_COLORS {
-                return Err(format!("{what}: colors gives {MOST_COLORS} colours at most"));
-            }
-            for (letter, v) in c {
-                let mut ch = letter.chars();
-                let (Some(l), None) = (ch.next(), ch.next()) else {
-                    return Err(format!("{what}: each of colors is one letter, like w = \"#f0ece4\""));
-                };
-                if l == '.' || l.is_whitespace() {
-                    return Err(format!("{what}: . is see-through, so colors can't give it a colour"));
-                }
-                colors.insert(l, hex(&what, letter, v)?);
-            }
-        }
-        None => return Err(format!("{what}: a block needs colors, a colour for each letter in its pictures")),
-        Some(_) => return Err(format!("{what}: colors is a table of letters and colours, like {{ w = \"#f0ece4\" }}")),
-    }
+    let colors = colors_of(&what, t.get("colors"), "a block")?;
     let glow: Vec<char> = match t.get("glow") {
         None => vec![],
         Some(Value::String(g)) => g.chars().filter(|c| !c.is_whitespace()).collect(),
@@ -662,7 +671,7 @@ pub struct MadePlugin;
 
 impl Plugin for MadePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Moving>().add_systems(Update, (draw, animate).chain());
+        app.init_resource::<Moving>().add_systems(Update, ((draw, animate).chain(), items::draw));
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
             render
                 .init_resource::<Writes>()

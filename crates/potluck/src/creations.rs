@@ -48,6 +48,10 @@ pub struct Manifest {
     /// colours and pictures (`made::read` reads them).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub blocks: BTreeMap<String, serde_json::Value>,
+    /// Items of their own, drawn in letters too: `[items.lamp_oil]` with a
+    /// kind, colours and a picture (`made::items::read` reads them).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub items: BTreeMap<String, serde_json::Value>,
 }
 
 /// One of a creation's actions: what players see it called, and the pad
@@ -101,6 +105,7 @@ impl Default for Manifest {
             client: None,
             sounds: BTreeMap::new(),
             blocks: BTreeMap::new(),
+            items: BTreeMap::new(),
         }
     }
 }

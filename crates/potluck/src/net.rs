@@ -31,7 +31,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 32;
+pub const PROTOCOL: u32 = 33;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -104,6 +104,9 @@ pub enum Msg {
     /// Every block creations made in this world (`made`), by id: in the
     /// welcome, and again when it changes.
     Made(Vec<crate::made::Entry>),
+    /// Every item creations made in this world (`made::items`), by id: in
+    /// the welcome, and again when it changes.
+    MadeItems(Vec<crate::made::items::Entry>),
     Blocks(Vec<(i32, i32, i32, u8)>),
     Me { pos: [f32; 3], yaw: f32 },
     /// Players near you that moved (or changed what they hold or wear),
@@ -694,7 +697,7 @@ pub fn host_net(
     mut info: ResMut<WorldInfo>,
     ticks: Res<crate::hosting::TickTimes>,
     mut heard: ResMut<crate::sound::Heard>,
-    mut made_sent: Local<u64>,
+    mut made_sent: Local<(u64, u64)>,
 ) {
     let pending = std::mem::take(&mut net.pending);
     info.joined = matches!(net.role, Role::Client(_));
@@ -710,9 +713,14 @@ pub fn host_net(
         return;
     };
     // blocks creations made go before anything built with them
-    if crate::made::generation() != *made_sent {
-        *made_sent = crate::made::generation();
+    if crate::made::generation() != made_sent.0 {
+        made_sent.0 = crate::made::generation();
         net.broadcast(&Msg::Made(crate::made::table()));
+    }
+    // and items too, before anyone is given one
+    if crate::made::items::generation() != made_sent.1 {
+        made_sent.1 = crate::made::items::generation();
+        net.broadcast(&Msg::MadeItems(crate::made::items::table()));
     }
     for m in &pending {
         net.broadcast(m);
@@ -794,6 +802,9 @@ pub fn host_net(
                     let mut sent = world.len();
                     let _ = out.send(frame_msg(&Msg::Welcome { id, seed: voxels.seed, time: clock.time, host: h.name.clone(), teleport: rules.teleport, chat: rules.chat }));
                     let made = frame_msg(&Msg::Made(crate::made::table()));
+                    sent += made.len();
+                    let _ = out.send(made);
+                    let made = frame_msg(&Msg::MadeItems(crate::made::items::table()));
                     sent += made.len();
                     let _ = out.send(made);
                     let _ = out.send(world);
@@ -1352,6 +1363,7 @@ pub fn client_net(
             Event::Joined(..) => {}
             Event::Msg(_, m) => match m {
                 Msg::Made(list) => crate::made::adopt(&list),
+                Msg::MadeItems(list) => crate::made::items::adopt(&list),
                 Msg::Welcome { id, seed, time, host, teleport, chat } => {
                     net.my_id = id;
                     voxels.seed = seed;
