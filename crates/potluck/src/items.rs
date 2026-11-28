@@ -51,6 +51,13 @@ pub const MOONSILVER_HOE: Thing = 293;
 /// The tools for the land and water (294 to 300), and fish (301, 302).
 pub const SHEARS: Thing = 294;
 pub const COOKED_FISH: Thing = 302;
+/// Armor (303 to 318: a cap or helmet, a coat, leggings and boots in wool,
+/// copper, iron and moonsilver) and the shield (319).
+pub const WOOL_CAP: Thing = 303;
+pub const SHIELD: Thing = 319;
+/// What's shot and thrown: a bow, arrows, a sling and a spear (320 to 323).
+pub const BOW: Thing = 320;
+pub const SPEAR: Thing = 323;
 
 /// How many of a block go in one slot.
 pub const BLOCK_STACK: u32 = 99;
@@ -136,6 +143,28 @@ pub static ITEMS: &[Item] = &[
     tool("Hammer", "hammer"),
     stuff("Raw fish", "fish_raw"),
     stuff("Cooked fish", "fish_cooked"),
+    // armor, put on by using it on nothing (the armor creation)
+    tool("Wool cap", "armor_wool_head"),
+    tool("Wool coat", "armor_wool_body"),
+    tool("Wool leggings", "armor_wool_legs"),
+    tool("Wool boots", "armor_wool_feet"),
+    tool("Copper helmet", "armor_copper_head"),
+    tool("Copper coat", "armor_copper_body"),
+    tool("Copper leggings", "armor_copper_legs"),
+    tool("Copper boots", "armor_copper_feet"),
+    tool("Iron helmet", "armor_iron_head"),
+    tool("Iron coat", "armor_iron_body"),
+    tool("Iron leggings", "armor_iron_legs"),
+    tool("Iron boots", "armor_iron_feet"),
+    tool("Moonsilver helmet", "armor_moonsilver_head"),
+    tool("Moonsilver coat", "armor_moonsilver_body"),
+    tool("Moonsilver leggings", "armor_moonsilver_legs"),
+    tool("Moonsilver boots", "armor_moonsilver_feet"),
+    tool("Shield", "shield"),
+    tool("Bow", "bow"),
+    stuff("Arrow", "arrow"),
+    tool("Sling", "sling"),
+    tool("Spear", "spear"),
 ];
 
 /// A block as a thing to carry.

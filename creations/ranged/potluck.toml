@@ -1,0 +1,67 @@
+name = "Bows, slings and spears"
+by = "Potluck"
+kind = "mod"
+about = "A bow shoots arrows, a sling throws cobblestone and a spear flies far and hard. Hold one and Interact looking where you'd like it to go. They hit creatures from afar (a Gloomling pops at an arrow), and arrows that miss can sometimes be found again; a thrown spear comes back to you. Make them at a workbench."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.19"
+tweak = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# A bow's string, a sling's whirr and a spear's throw, and something hit.
+[sounds.twang]
+caption = "A bowstring twangs"
+wave = "triangle"
+pitch = [220, 160]
+length = 0.3
+attack = 0.002
+decay = 0.12
+
+[[sounds.twang.layers]]
+wave = "noise"
+pitch = 2400
+length = 0.08
+attack = 0.002
+decay = 0.03
+highpass = 1200
+gain = 0.6
+
+[sounds.whirr]
+caption = "A sling whirrs"
+wave = "noise"
+pitch = [600, 1800]
+length = 0.3
+attack = 0.08
+decay = 0.08
+lowpass = 2600
+highpass = 300
+
+[sounds.whoosh]
+caption = "A spear is thrown"
+wave = "noise"
+pitch = [1400, 500]
+length = 0.4
+attack = 0.03
+decay = 0.15
+lowpass = 1800
+
+[sounds.thud]
+caption = "Something hits"
+wave = "sine"
+pitch = [180, 90]
+length = 0.15
+attack = 0.002
+decay = 0.06
+
+[[sounds.thud.layers]]
+wave = "noise"
+pitch = 900
+length = 0.06
+attack = 0.001
+decay = 0.02
+lowpass = 1500
+gain = 0.7

@@ -7,7 +7,7 @@ version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.14"
+world = "0.18"
 tweak = "0.1"
 store = "0.1"
 sound = "0.2"

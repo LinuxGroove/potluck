@@ -12,7 +12,8 @@
 -- creation), and a hammer breaks stone three by three, leaving ores for a
 -- pickaxe (HAMMERED below says what it breaks).
 -- The anvil (made at a workbench from iron) makes iron and moonsilver
--- tools, and mends a worn tool with one more of what it's made of.
+-- tools and armor (for the Armor creation), and mends a worn tool with one
+-- more of what it's made of.
 -- TOOLS below says what each does, so a remix can change them. Swords are
 -- for Gloomlings, who say what a sword does to them, and hoes till for the
 -- farming creation.
@@ -76,16 +77,26 @@ for name, t in TOOLS do
 	world.digging(name, { [t.digs] = math.min(t.speed * knobs.faster, 10), level = t.level })
 end
 
--- What the anvil makes, for each of its metals: what each tool takes.
+-- What the anvil makes, for each of its metals: tools, and armor for the
+-- Armor creation, and what each takes.
 type Recipe = { tool: string, metal: number, planks: number }
-local ANVIL_MAKES: { Recipe } = {
-	{ tool = "pickaxe", metal = 3, planks = 2 },
-	{ tool = "axe", metal = 3, planks = 2 },
-	{ tool = "shovel", metal = 1, planks = 2 },
-	{ tool = "hoe", metal = 2, planks = 2 },
-	{ tool = "sword", metal = 2, planks = 1 },
+local ANVIL_MAKES: { [string]: { Recipe } } = {
+	tools = {
+		{ tool = "pickaxe", metal = 3, planks = 2 },
+		{ tool = "axe", metal = 3, planks = 2 },
+		{ tool = "shovel", metal = 1, planks = 2 },
+		{ tool = "hoe", metal = 2, planks = 2 },
+		{ tool = "sword", metal = 2, planks = 1 },
+	},
+	armor = {
+		{ tool = "helmet", metal = 5, planks = 0 },
+		{ tool = "coat", metal = 8, planks = 0 },
+		{ tool = "leggings", metal = 7, planks = 0 },
+		{ tool = "boots", metal = 4, planks = 0 },
+	},
 }
 local ANVIL_METALS = { "Iron", "Moonsilver" }
+local ANVIL_KINDS = { "tools", "armor" }
 
 local function uses(t: Tool): number
 	return math.max(1, math.floor(t.uses * knobs.last))
@@ -194,7 +205,7 @@ end)
 
 -- "3 Iron ingot and 2 Planks"
 local function needs(metal: string, r: Recipe): string
-	return r.metal .. " " .. metal .. " ingot and " .. r.planks .. " Planks"
+	return r.metal .. " " .. metal .. " ingot" .. (if r.planks > 0 then " and " .. r.planks .. " Planks" else "")
 end
 
 local function title(s: string): string
@@ -203,19 +214,20 @@ end
 
 local anvil
 
--- The tools of one metal: pick one to make.
-local function make(player, at: vector, metal: string, said: string?)
+-- The tools or armor of one metal: pick one to make.
+local function make(player, at: vector, metal: string, kind: string, said: string?)
+	local list = ANVIL_MAKES[kind]
 	local choices = {}
 	local lines = {}
-	for _, r in ANVIL_MAKES do
+	for _, r in list do
 		table.insert(choices, title(r.tool))
 		table.insert(lines, title(r.tool) .. ": " .. needs(metal, r))
 	end
 	table.insert(choices, "Back")
 	local text = (if said then said .. "\n\n" else "") .. table.concat(lines, "\n")
-	ui.ask(player, { title = "Anvil: " .. metal .. " tools", text = text, choices = choices }, function(who, choice)
-		local r = choice and ANVIL_MAKES[choice]
-		if choice == #ANVIL_MAKES + 1 then
+	ui.ask(player, { title = "Anvil: " .. metal .. " " .. kind, text = text, choices = choices }, function(who, choice)
+		local r = choice and list[choice]
+		if choice == #list + 1 then
 			anvil(who, at)
 			return
 		end
@@ -224,22 +236,27 @@ local function make(player, at: vector, metal: string, said: string?)
 		end
 		local ingot = metal .. " ingot"
 		if world.has(who, ingot) < r.metal or world.has(who, "Planks") < r.planks then
-			make(who, at, metal, "You'll need " .. needs(metal, r) .. " for that.")
+			make(who, at, metal, kind, "You'll need " .. needs(metal, r) .. " for that.")
 			return
 		end
 		local tool = metal .. " " .. r.tool
 		world.take(who, ingot, r.metal)
-		world.take(who, "Planks", r.planks)
+		if r.planks > 0 then
+			world.take(who, "Planks", r.planks)
+		end
 		if world.give(who, tool, 1) == 0 then
 			world.give(who, ingot, r.metal)
-			world.give(who, "Planks", r.planks)
-			make(who, at, metal, "Your pockets are full. Make some room first.")
+			if r.planks > 0 then
+				world.give(who, "Planks", r.planks)
+			end
+			make(who, at, metal, kind, "Your pockets are full. Make some room first.")
 			return
 		end
 		sound.play("clink", { at = at })
 		-- "Made an iron pickaxe."
 		local a = if string.find(string.lower(tool), "^[aeiou]") then "an " else "a "
-		make(who, at, metal, "Made " .. a .. string.lower(tool) .. ".")
+		local made = if r.tool == "leggings" or r.tool == "boots" then "Made " .. string.lower(tool) .. "." else "Made " .. a .. string.lower(tool) .. "."
+		make(who, at, metal, kind, made)
 	end)
 end
 
@@ -267,7 +284,7 @@ function anvil(player, at: vector, said: string?)
 	if world.pockets(player) == nil then
 		ui.ask(player, {
 			title = "Anvil",
-			text = "In survival, an anvil makes iron and moonsilver tools and mends worn ones.",
+			text = "In survival, an anvil makes iron and moonsilver tools and armor, and mends worn tools.",
 			choices = { "OK" },
 		}, function() end)
 		return
@@ -283,8 +300,12 @@ function anvil(player, at: vector, said: string?)
 	else
 		text ..= "Hold a worn tool to mend it, or make a new one."
 	end
+	local makes = {}
 	for _, metal in ANVIL_METALS do
-		table.insert(choices, "Make " .. string.lower(metal) .. " tools")
+		for _, kind in ANVIL_KINDS do
+			table.insert(choices, "Make " .. string.lower(metal) .. " " .. kind)
+			table.insert(makes, { metal, kind })
+		end
 	end
 	ui.ask(player, { title = "Anvil", text = text, choices = choices }, function(who, choice)
 		if not choice then
@@ -298,9 +319,9 @@ function anvil(player, at: vector, said: string?)
 			anvil(who, at, result)
 			return
 		end
-		local metal = ANVIL_METALS[choice - (if held and t then 1 else 0)]
-		if metal then
-			make(who, at, metal)
+		local m = makes[choice - (if held and t then 1 else 0)]
+		if m then
+			make(who, at, m[1], m[2])
 		end
 	end)
 end

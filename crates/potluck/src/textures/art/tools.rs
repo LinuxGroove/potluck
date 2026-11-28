@@ -6,6 +6,11 @@
 
 use super::*;
 
+#[path = "armor.rs"]
+mod armor;
+#[path = "ranged.rs"]
+mod ranged;
+
 /// What a tool's head is made of.
 #[derive(Clone, Copy, PartialEq)]
 enum Made {
@@ -453,5 +458,5 @@ const GEAR: &[(&str, Gear)] = &[
 
 /// Every tool's, sword's and hoe's icon, and the rest of the gear's.
 pub(super) fn tiles() -> Vec<(&'static str, Tex)> {
-    ICONS.iter().map(|&(name, tool, made)| (name, paint(name, tool, made))).chain(GEAR.iter().map(|&(name, g)| (name, gear(name, g)))).collect()
+    ICONS.iter().map(|&(name, tool, made)| (name, paint(name, tool, made))).chain(GEAR.iter().map(|&(name, g)| (name, gear(name, g)))).chain(armor::tiles()).chain(ranged::tiles()).collect()
 }
