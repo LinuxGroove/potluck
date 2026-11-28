@@ -6520,3 +6520,65 @@ fn under_water_darkens() {
     assert!(c(1.0, 0.0).length() > c(1.0, 20.0).length());
     assert!(c(1.0, 0.0).length() > 4.0 * c(0.0, 0.0).length());
 }
+
+#[test]
+fn chunks_know_which_faces_open_space_joins() {
+    use crate::blocks::{AIR, STONE};
+    use crate::mesh::cull::{connections, joins, ALL};
+    let mut w = Voxels::empty(1);
+    // high in the sky over the island, a chunk of stone with a tunnel
+    // running east to west through it, and a closed room in its middle
+    let c = IVec3::new(1, 3, 1);
+    let o = c * 32;
+    assert_eq!(connections(&w, c), ALL, "all air");
+    for y in 0..32 {
+        for z in 0..32 {
+            for x in 0..32 {
+                w.set(o + IVec3::new(x, y, z), STONE);
+            }
+        }
+    }
+    assert_eq!(connections(&w, c), 0, "solid right through");
+    for x in 0..32 {
+        w.set(o + IVec3::new(x, 5, 9), AIR);
+    }
+    for (x, y, z) in [(10, 20, 10), (11, 20, 10), (11, 21, 10)] {
+        w.set(o + IVec3::new(x, y, z), AIR);
+    }
+    let j = connections(&w, c);
+    assert!(joins(j, 0, 1) && joins(j, 1, 0), "the tunnel joins east and west");
+    assert!(!joins(j, 2, 3) && !joins(j, 0, 2) && !joins(j, 4, 5), "nothing else: {j:b}");
+}
+
+#[test]
+fn cave_culling_reaches_what_open_space_leads_to() {
+    use crate::mesh::cull::{reached, ALL};
+    // a column of chunks: sky from y 1 up, solid rock under it with a cave
+    // in chunk y -2 that no tunnel reaches, and a shaft down from the
+    // surface beside it at x 1
+    let join = |c: IVec3| {
+        if c.y >= 1 {
+            ALL
+        } else if c.x == 1 && c.z == 0 && c.y >= -3 {
+            // the shaft: up and down only
+            1 << (2 * 6 + 3) | 1 << (3 * 6 + 2)
+        } else {
+            0
+        }
+    };
+    let shown = |c: IVec3| c.x.abs() <= 3 && c.z.abs() <= 3;
+    let seen = reached(IVec3::new(0, 2, 0), shown, join);
+    assert!(seen.contains(&IVec3::new(3, 1, -3)), "the open air all round");
+    assert!(seen.contains(&IVec3::new(0, 0, 0)), "the ground under the camera");
+    assert!(!seen.contains(&IVec3::new(0, -2, 0)), "a cave nothing leads to");
+    assert!(seen.contains(&IVec3::new(1, -3, 0)), "the shaft's foot");
+    assert!(!seen.contains(&IVec3::new(2, -3, 0)), "rock beside the shaft");
+    // from inside the closed cave, only the chunks touching it
+    let inside = reached(IVec3::new(0, -2, 0), shown, join);
+    assert!(inside.contains(&IVec3::new(0, -1, 0)) && !inside.contains(&IVec3::new(0, 1, 0)), "rock walls the cave in");
+    // never back toward the camera: up the shaft and over to a chunk
+    // that's only open sideways, from below, isn't seen
+    let seen_from_below = reached(IVec3::new(1, -3, 0), shown, join);
+    assert!(seen_from_below.contains(&IVec3::new(1, 2, 0)), "up the shaft to the sky");
+    assert!(!seen_from_below.contains(&IVec3::new(3, 0, 0)), "not back down onto the ground past it");
+}
