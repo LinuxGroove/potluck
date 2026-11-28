@@ -126,29 +126,16 @@ parts:
       cargo install iroh-relay@1.5.0 --features server --locked --root "$CRAFT_PART_BUILD/root"
       install -D -m 0755 "$CRAFT_PART_BUILD/root/bin/iroh-relay" "$CRAFT_PART_INSTALL/bin/iroh-relay"
 
-  # Forgejo's own release, checked against its release key (keys/forgejo.asc,
-  # fingerprint EB11 4F5E 6C0D C2BC DD18 3550 A4B6 1A2D C592 3710).
-  # deploy/market/test.sh runs the same version: change both together.
+  # Forgejo's own release, its signature checked against Forgejo's release
+  # key (tools/forgejo.sh, which deploy/market/test.sh uses too, so both run
+  # the same version).
   forgejo:
     plugin: nil
-    source: snap/keys
-    build-packages: [curl, gnupg, gpgv]
+    source: tools
+    build-packages: [curl, gnupg]
     override-build: |
-      v=17.0.2
-      case "$CRAFT_ARCH_BUILD_FOR" in
-        amd64 | arm64) arch="$CRAFT_ARCH_BUILD_FOR" ;;
-        *) echo "Forgejo has no build for $CRAFT_ARCH_BUILD_FOR" >&2; exit 1 ;;
-      esac
-      file="forgejo-$v-linux-$arch"
-      for site in https://code.forgejo.org https://codeberg.org; do
-        if curl -fsSL --retry 3 -o "$file" "$site/forgejo/forgejo/releases/download/v$v/$file" &&
-          curl -fsSL --retry 3 -o "$file.asc" "$site/forgejo/forgejo/releases/download/v$v/$file.asc"; then
-          break
-        fi
-      done
-      gpg --batch --dearmor <forgejo.asc >forgejo.gpg
-      gpgv --keyring ./forgejo.gpg "$file.asc" "$file"
-      install -D -m 0755 "$file" "$CRAFT_PART_INSTALL/bin/forgejo"
+      sh ./forgejo.sh "$CRAFT_ARCH_BUILD_FOR" "$CRAFT_PART_INSTALL/bin/forgejo"
+      v="$(sh ./forgejo.sh --version)"
       mkdir -p "$CRAFT_PART_INSTALL/usr/share/doc/forgejo"
       printf 'Forgejo %s, GPL-3.0-or-later: the release binary, unchanged.\nSource: https://codeberg.org/forgejo/forgejo/src/tag/v%s\n' "$v" "$v" \
         >"$CRAFT_PART_INSTALL/usr/share/doc/forgejo/README"

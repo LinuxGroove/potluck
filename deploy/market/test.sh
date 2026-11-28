@@ -5,15 +5,14 @@
 #
 #   deploy/market/test.sh
 #
-# Forgejo is its own release, the version the market's snap runs
-# (packaging/potluck-market/snap/snapcraft.yaml: change both together),
-# checked against its release key and kept in build/forgejo/. It's left
+# Forgejo is its own release, the version the market's snap runs, fetched
+# and checked by tools/forgejo.sh and kept in build/forgejo/. It's left
 # running on port 3300 so the next run is quick; stop it with
 #   kill $(cat build/forgejo/pid)
 set -eu
-version=17.0.2
 port=3300
 cd "$(dirname "$0")/../.."
+version=$(tools/forgejo.sh --version)
 dir=$PWD/build/forgejo
 work=$dir/work
 ini=$work/custom/conf/app.ini
@@ -29,15 +28,7 @@ if [ ! -x "$bin" ]; then
 		exit 1
 		;;
 	esac
-	file=forgejo-$version-linux-$arch
-	url=https://code.forgejo.org/forgejo/forgejo/releases/download/v$version/$file
-	echo "fetching Forgejo $version"
-	curl -fsSL --retry 3 -o "$bin.part" "$url"
-	curl -fsSL --retry 3 -o "$bin.asc" "$url.asc"
-	gpg --batch --yes --dearmor -o "$dir/forgejo.gpg" packaging/potluck-market/snap/keys/forgejo.asc
-	gpgv --keyring "$dir/forgejo.gpg" "$bin.asc" "$bin.part"
-	chmod +x "$bin.part"
-	mv "$bin.part" "$bin"
+	tools/forgejo.sh "$arch" "$bin"
 fi
 
 forgejo() {
