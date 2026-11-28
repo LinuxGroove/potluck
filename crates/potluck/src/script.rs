@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 14), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 4)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 17), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 5)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -951,7 +951,7 @@ pub(crate) fn find_block(voxels: &Voxels, p: &Value, radius: f32, name: &str) ->
         for z in -r..=r {
             for x in -r..=r {
                 let q = p + IVec3::new(x, y, z);
-                if voxels.at(q) == id {
+                if blocks::base(voxels.at(q)) == id {
                     let d = x * x + y * y + z * z;
                     if best.is_none_or(|(b, _)| d < b) {
                         best = Some((d, q));
@@ -1211,7 +1211,15 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
             if parts.is_empty() {
                 Vec3::new(0.4, 1.0, 0.4)
             } else {
+                // as wide as it stands (its legs, or its body across its
+                // narrower side), not as long as it reaches: the box doesn't
+                // turn, and one as long as a pup would rest on the block
+                // beside it and hold it up in the air
                 let w = (hi.x - lo.x).max(hi.z - lo.z).min(2.8) / 2.0 * 0.85;
+                let reach = |a: Vec3, b: Vec3| Vec2::new(a.x.abs().max(b.x.abs()), a.z.abs().max(b.z.abs()));
+                let body = reach(lo, hi);
+                let legs = parts.iter().filter(|p| p.leg).map(|p| reach(p.at - p.size / 2.0, p.at + p.size / 2.0)).fold(Vec2::ZERO, Vec2::max);
+                let w = w.min(body.min_element().max((legs.x + legs.y) / 2.0));
                 Vec3::new(w, hi.y.clamp(0.3, 4.0), w)
             }
         }
@@ -1956,13 +1964,24 @@ impl Vm {
                 let p = vec_of(&p).ok_or_else(|| bad("world.block needs a position"))?;
                 Ok(blocks::block(c.borrow().voxels.at(p.floor().as_ivec3())).name)
             })?)?;
-            world.set("set_block", s.create_function(move |_, (p, name): (Value, String)| {
-                let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?;
+            world.set("set_block", s.create_function(move |_, (p, name, facing): (Value, String, Option<String>)| {
+                let p = vec_of(&p).ok_or_else(|| bad("world.set_block needs a position"))?.floor().as_ivec3();
                 if items::by_name(&name).is_some_and(items::is_item) {
                     return Err(bad(format!("{name} is something to hold, not a block to put down")));
                 }
                 let id = blocks::by_name(&name).ok_or_else(|| bad(format!("there's no block called \"{name}\"")))?;
-                Ok(c.borrow_mut().voxels.set(p.floor().as_ivec3(), id))
+                let mut ctx = c.borrow_mut();
+                // a block that turns faces the way it's told, or the way
+                // the one it takes the place of faced (world 0.15)
+                let q = match facing {
+                    Some(f) => blocks::QUARTERS.iter().position(|q| *q == f.as_str()).ok_or_else(|| bad(format!("world.set_block's facing is one of {}", blocks::QUARTERS.join(", "))))? as u8,
+                    None => blocks::facing(ctx.voxels.at(p)).unwrap_or(0),
+                };
+                Ok(ctx.voxels.set(p, blocks::turned(id, q)))
+            })?)?;
+            world.set("facing", s.create_function(move |_, p: Value| {
+                let p = vec_of(&p).ok_or_else(|| bad("world.facing needs a position"))?;
+                Ok(blocks::facing(c.borrow().voxels.at(p.floor().as_ivec3())).map(|q| blocks::QUARTERS[q as usize]))
             })?)?;
             world.set("top", s.create_function(move |_, (x, z): (f32, f32)| Ok(c.borrow().voxels.top(x.floor() as i32, z.floor() as i32)))?)?;
             world.set("find_block", s.create_function(move |_, (p, radius, name): (Value, f32, String)| find_block(&*c.borrow().voxels, &p, radius, &name))?)?;
@@ -2679,7 +2698,9 @@ impl Scripts {
         if vm.paused {
             return;
         }
-        let Ok((t, _)) = vm.instance(&b) else { return };
+        // one spawned since the last tick hasn't had `spawned` yet: it has it
+        // first, or its handlers find the fields it sets missing
+        let Ok((t, new)) = vm.instance(&b) else { return };
         let _ = vm.fill(&t, &b, &players);
         let mut log = Vec::new();
         let p = player.clone();
@@ -2697,6 +2718,11 @@ impl Scripts {
             self.shared.lock().unwrap().sounds.extend(sounds.into_iter().map(|p| (None, p)));
         }
         let r = vm.session(voxels, herd, &players, &mut self.out, &creation, time.max(0.001), &mut log, |lua, _| {
+            if new {
+                if let Some(f) = t.get::<Option<Function>>("spawned")? {
+                    f.call::<()>(t.clone())?;
+                }
+            }
             if let Some(f) = t.get::<Option<Function>>(event)? {
                 f.call::<()>((t.clone(), player_table(lua, &p)?))?;
             }

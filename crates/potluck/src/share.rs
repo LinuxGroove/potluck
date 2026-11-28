@@ -76,8 +76,114 @@ pub enum Done {
     Green { picks: Vec<Pick>, jam: Option<JamNow> },
     /// A creation went into a jam.
     Entered { theme: String },
+    /// The player's friends page, and what the last change to it did.
+    Friends { page: Friends, said: String },
+    /// A world shared from home is open on the market: the first time with
+    /// the key to share it with, then on each heartbeat.
+    WorldShared(WorldOpen),
+    /// The way into a world shared from home, and the key to dial it with.
+    WorldWay(WorldWay),
+    /// Friends' worlds open now, invitations first.
+    Worlds(Vec<OpenWorld>),
     Said(String),
     Failed(String),
+}
+
+/// Someone on the player's friends page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Friend {
+    pub handle: String,
+    pub name: String,
+}
+
+/// A friend request waiting for the player's answer.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Asking {
+    pub id: i64,
+    pub handle: String,
+    pub name: String,
+    /// Under 13.
+    #[serde(default)]
+    pub young: bool,
+}
+
+/// The player's friends page on the market.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Friends {
+    /// Their own friend code, to give out.
+    pub code: String,
+    #[serde(default)]
+    pub friends: Vec<Friend>,
+    /// Requests sent to them.
+    #[serde(default)]
+    pub asking: Vec<Asking>,
+    /// Requests they sent, still waiting.
+    #[serde(default)]
+    pub asked: Vec<Friend>,
+    #[serde(default)]
+    pub blocked: Vec<Friend>,
+}
+
+/// A world shared from home that the player may join.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct OpenWorld {
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub handle: String,
+    #[serde(default)]
+    pub players: i64,
+    #[serde(default)]
+    pub max_players: i64,
+    /// Its host invited them.
+    #[serde(default)]
+    pub invited: bool,
+}
+
+/// What the market says of a world this game shares from home.
+#[derive(Clone, Debug)]
+pub struct WorldOpen {
+    pub code: String,
+    /// Its page, for the QR code.
+    pub url: String,
+    /// "friends" or "code", as the market keeps it (a younger player's is
+    /// always "friends").
+    pub who: String,
+    pub name: String,
+    /// The relay to listen through, and the market's key to check passes with.
+    pub relay: String,
+    pub market_key: String,
+    /// The key to share it with, when this opened it: None on a heartbeat.
+    pub secret: Option<iroh::SecretKey>,
+}
+
+/// What a game needs to reach a world shared from home.
+#[derive(Clone, Debug)]
+pub struct WorldWay {
+    pub code: String,
+    pub name: String,
+    pub by: String,
+    pub key: String,
+    pub addrs: Vec<String>,
+    pub relay: String,
+    pub pass: String,
+    /// This game's key for the connection, which the pass names.
+    pub secret: iroh::SecretKey,
+}
+
+/// A world's heartbeat to the market, while it's shared from home.
+#[derive(Clone, Debug, Serialize)]
+pub struct WorldBeat {
+    pub slot: String,
+    pub name: String,
+    pub who: String,
+    pub key: String,
+    pub addrs: Vec<String>,
+    pub players: i64,
+    pub max_players: i64,
+    pub new_code: bool,
 }
 
 /// A creation the market offers the Green's arches, and why: a favourite
@@ -787,8 +893,146 @@ impl ShareJobs {
         });
     }
 
+    /// The player's friends page: their code, friends, requests and blocks.
+    pub fn friends(&self, who: &Who) {
+        self.run(who, |c| friends_after(c, Ok(String::new())));
+    }
+
+    /// A new friend code for the player: the old one stops working.
+    pub fn new_friend_code(&self, who: &Who) {
+        self.run(who, |c| {
+            let r = c.market("POST", "/api/friends/code", None).map(|_| "Your new friend code is ready. The old one doesn't work any more.".to_string());
+            friends_after(c, r)
+        });
+    }
+
+    /// Someone's friend code, typed: a request to them, or friends at once
+    /// when they'd asked first.
+    pub fn add_friend(&self, who: &Who, code: &str) {
+        let code = clean_code(code);
+        self.run(who, move |c| {
+            let r = c.market("POST", "/api/friends/add", Some(json!({ "code": code }))).map(|v| {
+                let name = v["name"].as_str().unwrap_or("them");
+                if v["friends"].as_bool().unwrap_or(false) { format!("You and {name} are friends now.") } else { format!("Sent. You'll be friends when {name} says yes.") }
+            });
+            friends_after(c, r)
+        });
+    }
+
+    /// Yes or no to a friend request.
+    pub fn answer_friend(&self, who: &Who, id: i64, yes: bool) {
+        self.run(who, move |c| {
+            let r = c.market("POST", "/api/friends/answer", Some(json!({ "id": id, "yes": yes }))).map(|v| match v["friend"]["name"].as_str() {
+                Some(name) => format!("You and {name} are friends now."),
+                None => String::new(),
+            });
+            friends_after(c, r)
+        });
+    }
+
+    /// No longer friends with someone; with `block`, they can't ask again or
+    /// join this player's worlds.
+    pub fn unfriend(&self, who: &Who, handle: &str, block: bool) {
+        let handle = handle.to_string();
+        self.run(who, move |c| {
+            let path = if block { "/api/friends/block" } else { "/api/friends/remove" };
+            let r = c.market("POST", path, Some(json!({ "handle": handle }))).map(|_| if block { "Blocked. They can't send you a request or join your worlds.".to_string() } else { "Removed.".to_string() });
+            friends_after(c, r)
+        });
+    }
+
+    pub fn unblock(&self, who: &Who, handle: &str) {
+        let handle = handle.to_string();
+        self.run(who, move |c| {
+            let r = c.market("POST", "/api/friends/unblock", Some(json!({ "handle": handle }))).map(|_| "Unblocked.".to_string());
+            friends_after(c, r)
+        });
+    }
+
+    /// Opens a world to friends on the market, or keeps it open: with
+    /// `open` a fresh key goes with it, to share the world with.
+    pub fn share_world(&self, who: &Who, beat: WorldBeat, secret: Option<iroh::SecretKey>) {
+        self.run(who, move |c| {
+            let market = c.who.market.trim_end_matches('/').to_string();
+            match c.market("POST", "/api/worlds/share", Some(serde_json::to_value(&beat).unwrap_or_default())) {
+                Ok(v) => {
+                    let market_key = match trusted_key(&market, v["market_key"].as_str().unwrap_or("")) {
+                        Ok(k) => k,
+                        Err(e) => return Done::Failed(e),
+                    };
+                    let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+                    Done::WorldShared(WorldOpen { code: s("code"), url: s("url"), who: s("who"), name: s("name"), relay: s("relay"), market_key, secret })
+                }
+                Err(e) => Done::Failed(e.text()),
+            }
+        });
+    }
+
+    /// Closes a world on the market; its code keeps for next time.
+    pub fn stop_world(&self, who: &Who, code: &str) {
+        let code = code.to_string();
+        self.run(who, move |c| match c.market("POST", "/api/worlds/stop", Some(json!({ "code": code }))) {
+            Ok(_) => Done::Said("Your world isn't shared any more.".into()),
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
+    /// The way into a world by its code, with a fresh key of this game's
+    /// that the pass names.
+    pub fn join_world(&self, who: &Who, code: &str) {
+        let code = clean_code(code);
+        self.run(who, move |c| {
+            let secret = crate::p2p::new_key();
+            match c.market("POST", "/api/worlds/join", Some(json!({ "code": code, "peer": crate::p2p::key_text(&secret) }))) {
+                Ok(v) => {
+                    let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+                    let addrs = v["addrs"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+                    Done::WorldWay(WorldWay { code: s("code"), name: s("name"), by: s("by"), key: s("key"), addrs, relay: s("relay"), pass: s("pass"), secret })
+                }
+                Err(e) => Done::Failed(e.text()),
+            }
+        });
+    }
+
+    /// Friends' worlds open now. Quietly nothing when the market can't say.
+    pub fn worlds(&self, who: &Who) {
+        self.run(who, |c| match c.market("GET", "/api/worlds", None) {
+            Ok(v) => Done::Worlds(serde_json::from_value(v["worlds"].clone()).unwrap_or_default()),
+            Err(_) => Done::Worlds(vec![]),
+        });
+    }
+
+    /// Tells a friend about the world shared now: it goes to the top of
+    /// their list under Join a friend's world.
+    pub fn invite(&self, who: &Who, code: &str, handle: &str) {
+        let (code, handle) = (code.to_string(), handle.to_string());
+        self.run(who, move |c| match c.market("POST", "/api/worlds/invite", Some(json!({ "code": code, "handle": handle }))) {
+            Ok(v) => Done::Said(format!("Invited {}: it's at the top of their Join a friend's world.", v["invited"].as_str().unwrap_or("them"))),
+            Err(e) => Done::Failed(e.text()),
+        });
+    }
+
     pub fn poll(&self) -> Vec<Done> {
         self.rx.lock().unwrap().try_iter().collect()
+    }
+}
+
+/// The friends page after a change to it, with what the change said (or
+/// why it didn't happen).
+fn friends_after(c: &Ctx, change: Result<String, Fail>) -> Done {
+    let said = match change {
+        Ok(s) => s,
+        Err(e) => {
+            let t = sentence(&e.text());
+            if t.ends_with(['.', '!', '?']) { t } else { format!("{t}.") }
+        }
+    };
+    match c.market("GET", "/api/friends", None) {
+        Ok(v) => match serde_json::from_value(v) {
+            Ok(page) => Done::Friends { page, said },
+            Err(e) => Done::Failed(format!("the market's answer didn't make sense ({e})")),
+        },
+        Err(e) => Done::Failed(e.text()),
     }
 }
 

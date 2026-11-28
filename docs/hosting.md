@@ -7,7 +7,8 @@ What it takes to run Potluck online: one world for friends, the market, and worl
 | Piece | What it does | Where it lives | How it grows |
 |---|---|---|---|
 | **World server** (`potluck-server`) | One world: its blocks, creatures and running creations, and the players in it. Host-authoritative over WebSocket (`net.rs`), 30 ticks a second, snapshots 20 times a second. | `crates/potluck/src/server.rs`, the `potluck-server` snap (`packaging/potluck-server`) | One process per world. More worlds, more processes: they share nothing but the market. |
-| **The market** (`potluck-share`, Forgejo, a file store) | Shares, versions, remixes, suggestions, jams, the server list and passes, boards, the web pages. Creations' files by SHA-256. | `crates/share-service`, `deploy/market` | One service in front of SQLite, Forgejo and a folder or S3 bucket. Read-heavy; files go to a CDN. |
+| **The market** (`potluck-share`, Forgejo, a file store) | Shares, versions, remixes, suggestions, jams, the server list and passes, boards, the web pages. Creations' files by SHA-256. | `crates/share-service`, the `potluck-market` snap (`packaging/potluck-market`) | One service in front of SQLite, Forgejo and a folder or S3 bucket. Read-heavy; files go to a CDN. |
+| **The relay** (`iroh-relay`) | Worlds shared from home: introduces two players' games so they can reach each other through home routers (hole punching), and carries the connections that can't. The market says which keys may use it. | a service in the `potluck-market` snap, `crates/potluck/src/p2p.rs` | Bandwidth only for the connections it carries: its own machine when it's busy, then more relays in more places. |
 | **The game server** (Nakama) | Device sign-in for the market, the older share codes, the launch ping. Shared by every LinuxGroove game. | `LinuxGroove/game-server` (its `docs/operations.md`) | Already running at `play.linuxgroove.com`; Potluck adds a sign-in per session. |
 
 Players' games do the expensive work: drawing, meshing, their own movement, and client halves of creations. A world server does no drawing and no meshing; it runs creations' Luau, moves creatures, and tells each player what changed near them.
@@ -63,6 +64,17 @@ For comparison, hosting companies size a Minecraft Java server at 4 to 16 GB for
 - **The index** (`market.db`): 1.26 KB per creation with one version, **measured** with 100,000 made-up creations (below; real ones add a row to the search index too). amd-halo's test market, with the 17 base creations and a few test shares and accounts, is 151 KB. The `plays` table gains a row per creation, player and day (about 50 bytes); nothing prunes it yet, so at 100,000 players loading five creations a day it would grow by about 25 MB a day.
 - **The service:** **measured** with 100,000 made-up creations from 20,000 makers put straight into its index (no Forgejo, so reads only): 13 MB resident when idle and 16 MB under load. It loaded creations by code 1,570 times a second on two cores (median 4.8 ms, 99th percentile 14 ms), each load also writing a play. The index came to 1.26 KB per creation with one version. `/api/green` is the weak spot: it sorts every listed creation on each call, 70 ms each at 100,000, and since the index has one connection, 13 calls a second fill a core and hold up every other request (median 660 ms under load). It needs a cache before the market has tens of thousands of creations; every game asks on entering a world and every half hour.
 
+### Worlds shared from home
+
+A world shared from home (Share this world) runs on the host's own game, and friends connect to it peer to peer (`p2p.rs`: iroh, QUIC dialled by the host's key). What we pay for:
+
+- **The market:** one heartbeat a minute per shared world (a few hundred bytes of JSON and one row in `worlds`), one request per friend joining, and a row per key in `relay_keys` (the host's for five minutes after its last heartbeat, a joiner's for eight hours). **Estimate:** nothing next to loading creations.
+- **The relay, introducing:** every shared world and every friend joining holds a connection open to the relay while it plays, and the two games exchange their addresses through it to punch through their routers. **Estimate** (iroh's own figures): a few KB per connection, and pings every few seconds.
+- **The relay, carrying:** the connections that can't go direct, about **one in ten** by n0's account of their public relays (two strict NATs, some phone networks and campus networks). A relayed friend costs what a player costs a world server, about **20 KB/s from the host to the friend** (measured on world servers, above), so **72 MB an hour**. The relay passes it on, so it's counted in and out.
+- **Always connect through LinuxGroove** (a setting, on by default for players under 13) sends every connection of that player's through the relay, so their address never reaches anyone. If most younger players' parents leave it on, younger players' play is all relay traffic.
+
+Caps (the market snap's `relay.rate`, written into the relay's config): each game may send **192 KB/s** through the relay (about ten friends' worth, with a 4 MB burst for a friend's first download of the world), and a world from home takes the host and 8 friends at once (`game::HOME_PLAYERS`), each about 20 KB/s of the host's upload. **Estimate** of a month: if 2,000 players a day share or join for two hours and one in ten (plus the younger players who always go through) is relayed, 400 relayed hours a day at 72 MB is 29 GB a day, under 1 TB a month. A cheap VPS with 20 TB of traffic covers about twenty times that. Watch `relayserver` `bytes_sent` on the relay's metrics (`curl 127.0.0.1:47183/metrics` on the market's machine; `potluck-market.info` shows the total): alarm at half the plan's traffic, and if it gets there, lower `relay.rate` or `snap set potluck-market relay.mode=off` for a while (friends on the same network still connect; others can't).
+
 ### The game server
 
 Potluck's use is small: a device sign-in when a player first needs the market, a session the market checks against Nakama once per five minutes per player (`identity.rs` keeps it), and one launch ping per start. **Estimate:** a few KB per account in Nakama's PostgreSQL. The game server's own operations guide covers its sizing; a single Nakama handles tens of thousands of players online at once.
@@ -78,14 +90,14 @@ From the measurements above, with headroom for night (creatures double) and play
 | The market, starting out | 2 vCPU | 2 GB (Forgejo is the biggest part) | 20 GB, plus backups | small: files go to a CDN once it's busy |
 | Everything to start (market and three or four official worlds) | 4 vCPU | 8 GB | 80 GB | a plan with unmetered or 20 TB+ traffic |
 
-Any 64-bit Linux, amd64 or arm64 (both snaps build for both). The world needs no GPU. Pick a provider whose plans include traffic: at today's 27 KB/s a player, a full world of 50 sends about 3.6 TB a month by day, which is free on most VPS plans and costs about $300 a month at the big clouds' egress prices (**estimate**, about $0.09/GB). That alone is a reason to do the network work before moving anything to a big cloud.
+Any 64-bit Linux, amd64 or arm64 (every snap builds for both). The world needs no GPU. Pick a provider whose plans include traffic: at today's 27 KB/s a player, a full world of 50 sends about 3.6 TB a month by day, which is free on most VPS plans and costs about $300 a month at the big clouds' egress prices (**estimate**, about $0.09/GB). That alone is a reason to do the network work before moving anything to a big cloud.
 
 ## A cheap start
 
 One VPS with 4 vCPUs, 8 GB and unmetered or 20 TB+ traffic (about $10 to $15 a month in October 2026 at OVHcloud's VPS range; check prices again before buying), next to the game server's existing VPS:
 
-- the market from `deploy/market/compose.yaml` (Forgejo, `potluck-share`, Caddy) at `potluck.linuxgroove.com`, files in a folder to begin with;
-- three or four official worlds as systemd instances of `potluck-server` behind the same Caddy (`wss://w1.worlds.potluck.linuxgroove.com`, ...), each listed on the market and `join = "signed-in"`;
+- the `potluck-market` snap (Forgejo, `potluck-share`, Caddy and the relay) at `potluck.linuxgroove.com`, files in a folder to begin with;
+- three or four official worlds as parallel installs of the `potluck-server` snap, served by the market's Caddy (`wss://w1.worlds.potluck.linuxgroove.com`, ...), each listed on the market and `join = "signed-in"`;
 - backups every hour to storage at another provider (restic to Backblaze B2 or similar): the worlds' folders, the market's `market.db` (with `.backup`), its `signing.key` and files, and Forgejo's dump.
 
 Four full worlds of 50 use under half a core and under 1 GB, so the machine has room for many more worlds than that; with today's netcode its traffic runs out first (four full worlds send 45 to 85 Mbit/s, 15 to 28 TB a month if full around the clock), so check the plan's port speed and fair use terms. Steps for each part are below.
@@ -122,79 +134,74 @@ Logs: `sudo snap logs -n 100 potluck-server`. The status page (`https://<domain>
 
 ### Several worlds on one machine
 
-The snap runs one world. For more on one machine, run the binary from systemd, one data folder and port each, behind one Caddy:
+The snap runs one world, and snapd can install it more than once side by side, each install with its own name, settings, port and data (`/var/snap/potluck-server_w1/common`, ...). One install's Caddy serves the others' names too (`proxy.worlds`), or the market's does when they share its machine:
 
-```ini
-# /etc/systemd/system/potluck-world@.service: one world per instance name
-[Unit]
-Description=Potluck world %i
-After=network-online.target
-
-[Service]
-User=potluck
-Environment=POTLUCK_HOME=/var/lib/potluck/worlds/%i
-ExecStart=/usr/local/bin/potluck-server --no-beacon
-Restart=on-failure
-RestartSec=5
-# it saves on SIGTERM before it stops
-TimeoutStopSec=30
-MemoryMax=1G
-CPUQuota=100%
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo snap set system experimental.parallel-instances=true
+sudo snap install potluck-server_w1 potluck-server_w2
+sudo snap set potluck-server_w1 name="Riverbend" port=47201 beacon=false \
+  domain=w1.worlds.example.org proxy.worlds="w2.worlds.example.org=47202"
+sudo snap set potluck-server_w2 name="Lantern Bay" port=47202 beacon=false
 ```
 
-Each world's `server.toml` sets its own `port` (47201, 47202, ...) and its `address`. Give each world a name under one wildcard DNS record (`*.worlds.example.org` pointing at the machine) and let Caddy fetch a certificate for each:
-
-```
-w1.worlds.example.org {
-	reverse_proxy 127.0.0.1:47201
-}
-w2.worlds.example.org {
-	reverse_proxy 127.0.0.1:47202
-}
-```
+On the market's machine, leave `domain` off the worlds (the market's Caddy has ports 80 and 443) and list them on the market's snap instead: `sudo snap set potluck-market proxy.worlds="w1.worlds.example.org=47201 w2.worlds.example.org=47202"`. Either way, give each world a name under one wildcard DNS record (`*.worlds.example.org` pointing at the machine), and Caddy fetches a certificate for each. Each world's `server.toml` still sets its `address` for the server list.
 
 The game would also join a path (`wss://worlds.example.org/w/1` reaches the server, which ignores the path), but the market's server list only takes addresses without one (`status_url` in `servers.rs`), so names are the way to list several worlds on one machine until that changes.
 
-`MemoryMax` and `CPUQuota` keep one busy world from starving the rest; a world's creations already have their own limits (32 MB and 15 ms a tick each). Build the binary with `cargo build --release --bin potluck-server` (it needs `libasound2` and `libudev1` at run time, as the snap stages).
+To keep one busy world from starving the rest, give its service limits with a systemd drop-in (a world's creations already have their own limits, 32 MB and 15 ms a tick each):
+
+```sh
+sudo systemctl edit snap.potluck-server_w2.potluck-server.service
+# [Service]
+# MemoryMax=1G
+# CPUQuota=100%
+```
 
 ### The market
 
-The market is `deploy/market/compose.yaml`: Forgejo (git for every creation, never public), `potluck-share` (the service and the web pages) and Caddy. It needs the game server registered for Potluck first (game-server#11, share kind `creation`), since every signed-in request is checked against it.
+The market is the `potluck-market` snap: `potluck-share` (the service and the web pages), Forgejo (a git repository for every creation, never public, on this machine only), Caddy (HTTPS from Let's Encrypt) and the relay, each a service of the snap. It needs the game server registered for Potluck first (game-server#11, share kind `creation`), since every signed-in request is checked against it.
 
-First run, on a machine with Docker or Podman and ports 80 and 443 open:
-
-```sh
-cd deploy/market
-# share.toml: public_url, nakama (the game server) and, later, [store]
-docker compose up -d forgejo
-docker compose exec -u git forgejo forgejo admin user create --admin --username market \
-  --email market@users.potluck.linuxgroove.com --password "$(head -c 18 /dev/urandom | base64)" --must-change-password=false
-docker compose exec -u git forgejo forgejo admin user generate-access-token --username market \
-  --token-name market --scopes all --raw > forgejo.token && chmod 600 forgejo.token
-FORGEJO_TOKEN=$(cat forgejo.token) docker compose up -d
-```
-
-The base game's creations go up on their own once Forgejo answers. Then open the market from the game once (so your account exists) and make yourself a moderator, and make invites while sharing to Everyone is invite-only:
+First run, on a machine with TCP 80, 443 and 8443 and UDP 7842 open and `potluck.linuxgroove.com` pointing at it:
 
 ```sh
-docker compose exec market potluck-share --config /etc/potluck-share/share.toml moderator <your handle>
-docker compose exec market potluck-share --config /etc/potluck-share/share.toml invite 20
+sudo snap install potluck-market
+sudo snap set potluck-market domain=potluck.linuxgroove.com email=<who Let's Encrypt writes to>
+sudo potluck-market.info
 ```
 
-What to keep:
+On its first start the snap makes Forgejo's secrets, Forgejo's account for the market and the token the market uses, and the token the relay and the market share (`relay.token`); the base game's creations go up on their own once Forgejo answers. Then open the market from the game once (so your account exists), make yourself a moderator, and make invites while sharing to Everyone is invite-only:
+
+```sh
+sudo potluck-market.admin moderator <your handle>
+sudo potluck-market.admin invite 20
+```
+
+Settings are `snap set potluck-market`, and the snap writes the market's, Forgejo's, Caddy's and the relay's configs from them at every start: `nakama` (the game server, `https://play.linuxgroove.com`), `invite-only`, `hide-after-reports`, `email-domain`, `store=s3` with `s3.endpoint`, `s3.bucket`, `s3.region`, `s3.public-url`, `s3.key` and `s3.secret`, `proxy.worlds` (worlds on this machine), and the relay's below. A word list of your own goes in `/var/snap/potluck-market/common/words.txt`. Logs: `sudo snap logs -n 100 potluck-market`.
+
+What to keep, all in `/var/snap/potluck-market/common/`:
 
 | Where | What | How |
 |---|---|---|
-| `market` volume, `signing.key` | The key every creation's signature is made with. Release builds of the game carry its public half (`POTLUCK_MARKET_KEY`), so **losing it breaks every share for every player until a new game release**. Keep two copies off the machine. | copy once |
-| `market` volume, `market.db` | Accounts, creations, versions, stars, plays, servers, jams | `sqlite3 market.db ".backup /backups/market.db"` every hour (WAL, so don't copy the file while it runs) |
-| `market` volume, `files/` (or the bucket) | Every creation's files by hash, written once | `restic` or the bucket's own replication |
-| `forgejo` volume | One git repository per creation, and Forgejo's own SQLite | `docker compose exec -u git forgejo forgejo dump` nightly, or the volume with restic while Forgejo is stopped |
-| `caddy` volume | Certificates | none needed; Caddy fetches them again |
+| `market/signing.key` | The key every creation's signature is made with. Release builds of the game carry its public half (`POTLUCK_MARKET_KEY`), so **losing it breaks every share for every player until a new game release**. Keep two copies off the machine. | copy once |
+| `market/market.db` | Accounts, creations, versions, stars, plays, servers, jams, friends, shared worlds | `sqlite3 market.db ".backup /backups/market.db"` every hour (WAL, so don't copy the file while it runs) |
+| `market/files/` (or the bucket) | Every creation's files by hash, written once | `restic` or the bucket's own replication |
+| `forgejo/` | One git repository per creation, and Forgejo's own SQLite | nightly: `sudo snap stop potluck-market.forgejo`, restic the folder, `sudo snap start potluck-market.forgejo` (the market waits for it) |
+| `secrets/` | Forgejo's secrets and the market's token for it | with `forgejo/`: they go together |
+| `caddy/` | Certificates | none needed; Caddy fetches them again |
 
-Files: with `[store] kind = "s3"` and `public_url` (a bucket with a CDN in front), the game fetches creations' files from the CDN and the market only sends small JSON. Files are named by their SHA-256 and never change, so they cache forever (`/f/<sha>` already says `immutable`).
+Files: with `store=s3` and `s3.public-url` (a bucket with a CDN in front), the game fetches creations' files from the CDN and the market only sends small JSON. Files are named by their SHA-256 and never change, so they cache forever (`/f/<sha>` already says `immutable`).
+
+### The relay
+
+The relay runs in the market's snap, on the same machine: iroh-relay at the version the game uses, on HTTPS port 8443 (`relay.port`) with the certificate Caddy keeps for `domain` (read again every day, so renewals reach it), and UDP 7842, where games learn the address the internet sees them at, which is where hole punching starts. Caddy hands it port 80's `/generate_204`, where games check for a captive portal. Games get its address (`https://potluck.linuxgroove.com:8443`) from the market, and it asks the market (`/api/relay/allow`, with `relay.token`) before carrying a key. It's on as soon as `domain` is set; `relay.rate` is what each game may send through it (KB a second, 192), and `relay.mode=off` turns it off. Nothing on it needs keeping; the market's `relay_keys` rows run out by themselves.
+
+Port 8443 is blocked on some school and office networks where 443 isn't; friends there still connect directly when they can. When the relay's traffic outgrows the market's machine (watch `potluck-market.info`), it moves to a small VPS of its own: the same relay in a snap of its own there, taking ports 80 and 443 itself (iroh-relay's own Let's Encrypt) with `relay.potluck.linuxgroove.com` pointing at it, then
+
+```sh
+sudo snap set potluck-market relay.mode=elsewhere relay.url=https://relay.potluck.linuxgroove.com relay.token=<the same token on both>
+```
+
+Games get the new address from the market the next time they share or join a world; nothing in the game changes.
 
 ### The game server
 
@@ -224,7 +231,7 @@ Players should be able to press **Play online** and land in a busy world without
 - **A world is a cell.** Every official world is a `potluck-server` with its own data folder, seed, creations and `max_players`. They're all the same binary players can run themselves, so nothing official is special.
 - **Placement.** A new endpoint on the market, `POST /api/play`, answers "which world, and a pass for it". It sends a player to the world their friend is in when they follow someone, else to the fullest world that still has room below a soft cap (say 80% of `max_players`), else wakes or starts a world. Worlds already send a heartbeat with their player count every minute (`/api/servers/heartbeat`); placement needs it every few seconds, or a count it keeps itself from the passes it hands out.
 - **Sleeping worlds.** A world with nobody in it for ten minutes saves and stops; its files go to object storage. The next player who needs it starts it again from its save. Running worlds cost memory and CPU; sleeping ones cost about a megabyte of storage. That's what lets every player have a world of their own (like Realms) without paying for it to run: only busy worlds run.
-- **A fleet agent** on each world machine starts and stops worlds (systemd instances, or containers) and reports what fits. Kubernetes with Agones does the same job once there are many machines; it isn't needed before then.
+- **A fleet agent** on each world machine starts and stops worlds (installs of the `potluck-server` snap) and reports what fits. Kubernetes with Agones does the same job once there are many machines; it isn't needed before then.
 - **Kinds of official worlds.** Public islands that fill up and persist; one island per player or group that sleeps when they're away; a hub (a Green with arches) that sends players on with `game.send`; mini game worlds that run one creation (Rodeo Ram, Tag Bot) with their boards. All of them are the same server with different `server.toml`s.
 - **Regions.** The same fleet in each region (US East first, then Europe), with placement choosing by the player's region. Worlds don't talk to each other, so regions need nothing shared but the market.
 
@@ -265,7 +272,7 @@ The aim is far more players per server than Minecraft manages. Memory and CPU pe
 - Metrics: the status page's numbers as Prometheus metrics (`/metrics`), and per-message byte counts like the bots now report.
 - The world's save in a form that can grow: chunks with their own version, so saves can be partial and worlds can be bigger than 384 x 384.
 - Addresses with a path in the server list: `status_url` in `servers.rs` refuses `wss://host/w/1`, so today each listed world needs its own name or port.
-- A package for fleets: the snap runs one world; a container image or a release tarball of `potluck-server` would replace building it by hand for the systemd template.
+- Fleets of snaps: parallel installs are set up one at a time by hand today; a fleet agent would install, set and remove them (`snap install potluck-server_<id>`, `snap set`, `snap remove`), and snapd still marks parallel installs experimental.
 
 **The market**
 

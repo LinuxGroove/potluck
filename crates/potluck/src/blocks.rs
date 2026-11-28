@@ -105,7 +105,19 @@ pub struct Block {
     pub model: &'static [Cuboid],
     /// Whether bodies bump into a model (a table, but not a candle).
     pub solid: bool,
+    /// Which creation made it, as a number (0 for the game's own), so boxes
+    /// can join its kin (`When::Kin`).
+    pub kin: u16,
+    /// A block that faces the way it was put down (world 0.15): the id of
+    /// its north-facing self, and which way this one faces (`QUARTERS`).
+    /// `turn_of` is 0 for blocks that don't turn.
+    pub turn_of: BlockId,
+    pub quarter: u8,
 }
+
+/// The ways a block that turns can face, in quarter turns clockwise from
+/// north as seen from above: its picture's top row points that way.
+pub const QUARTERS: [&str; 4] = ["north", "east", "south", "west"];
 
 /// Which way a side faces: east, west, up, down, south, north.
 pub const SIDES: [[i32; 3]; 6] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -125,7 +137,7 @@ pub struct Cuboid {
 }
 
 /// When a box of a model shows, by what's next to the block (indices into `SIDES`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum When {
     Always,
     /// Only when the block that way isn't the same: a column's base and capital.
@@ -134,6 +146,9 @@ pub enum When {
     Same(usize),
     /// Only when the block that way is the same or a full block: a fence's rails.
     Joins(usize),
+    /// Only when the block that way was made by the same creation: a wire
+    /// reaching out to what it joins (world 0.15).
+    Kin(usize),
 }
 
 impl When {
@@ -147,7 +162,34 @@ impl When {
                 let n = next(d);
                 n == id || is_opaque(n)
             }
+            When::Kin(d) => {
+                let n = next(d);
+                n == id || (block(id).kin != 0 && block(n).kin == block(id).kin)
+            }
         }
+    }
+
+    /// The same, for a block turned `q` quarter turns clockwise.
+    pub fn turned(self, q: u8) -> When {
+        let t = |d: usize| turn_side(d, q);
+        match self {
+            When::Always => When::Always,
+            When::Alone(d) => When::Alone(t(d)),
+            When::Same(d) => When::Same(t(d)),
+            When::Joins(d) => When::Joins(t(d)),
+            When::Kin(d) => When::Kin(t(d)),
+        }
+    }
+}
+
+/// A side (an index into `SIDES`) after `q` quarter turns clockwise from
+/// above: north to east to south to west. Up and down stay.
+pub fn turn_side(d: usize, q: u8) -> usize {
+    // east, west, up, down, south, north in turn order: north 5, east 0, south 4, west 1
+    const ROUND: [usize; 4] = [5, 0, 4, 1];
+    match ROUND.iter().position(|&r| r == d) {
+        Some(i) => ROUND[(i + q as usize) % 4],
+        None => d,
     }
 }
 
@@ -173,12 +215,12 @@ impl Cuboid {
 }
 
 const fn b(name: &'static str, faces: [&'static str; 3], shape: Shape, hardness: f32) -> Block {
-    Block { name, faces, shape, light: false, hardness, model: &[], solid: false }
+    Block { name, faces, shape, light: false, hardness, model: &[], solid: false, kin: 0, turn_of: 0, quarter: 0 }
 }
 
 /// A block made of boxes.
 const fn m(name: &'static str, faces: [&'static str; 3], model: &'static [Cuboid], solid: bool, hardness: f32) -> Block {
-    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid }
+    Block { name, faces, shape: Shape::Model, light: false, hardness, model, solid, kin: 0, turn_of: 0, quarter: 0 }
 }
 
 const fn lit(mut b: Block) -> Block {
@@ -344,7 +386,7 @@ static MADE: [AtomicPtr<Block>; 128] = [const { AtomicPtr::new(std::ptr::null_mu
 
 /// A made block's id that no creation here has given a block (a guest's
 /// copy of a world before the host's list comes).
-static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false };
+static UNKNOWN: Block = Block { name: "Unknown block", faces: ["missing"; 3], shape: Shape::Solid, light: false, hardness: 1.0, model: &[], solid: false, kin: 0, turn_of: 0, quarter: 0 };
 
 /// Gives a made block's id its block, or takes it away (`made` only).
 pub(crate) fn set_made(id: BlockId, b: Option<&'static Block>) {
@@ -399,7 +441,45 @@ pub fn by_name(name: &str) -> Option<BlockId> {
         .iter()
         .position(|b| squash(b.name) == key)
         .map(|i| i as BlockId)
-        .or_else(|| (FIRST_MADE..=BlockId::MAX).find(|&id| made(id).is_some_and(|b| squash(b.name) == key)))
+        .or_else(|| (FIRST_MADE..=BlockId::MAX).find(|&id| made(id).is_some_and(|b| squash(b.name) == key && b.quarter == 0)))
+}
+
+/// The block as it's carried and named: a turned block's north-facing
+/// self, and any other block as it is.
+pub fn base(id: BlockId) -> BlockId {
+    match block(id).turn_of {
+        0 => id,
+        b => b,
+    }
+}
+
+/// Which way a block that turns faces (an index into `QUARTERS`), or None
+/// for one that doesn't.
+pub fn facing(id: BlockId) -> Option<u8> {
+    let b = block(id);
+    (b.turn_of != 0).then_some(b.quarter)
+}
+
+/// A block that turns, facing `q` (an index into `QUARTERS`); any other
+/// block as it is.
+pub fn turned(id: BlockId, q: u8) -> BlockId {
+    let base = base(id);
+    if block(base).turn_of == 0 {
+        return id;
+    }
+    (FIRST_MADE..=BlockId::MAX).find(|&v| made(v).is_some_and(|b| b.turn_of == base && b.quarter == q % 4)).unwrap_or(base)
+}
+
+/// The way a player looking along `(x, z)` faces, as a quarter (an index
+/// into `QUARTERS`): what they put down faces away from them.
+pub fn quarter_looking(x: f32, z: f32) -> u8 {
+    if z.abs() >= x.abs() {
+        if z < 0.0 { 0 } else { 2 }
+    } else if x > 0.0 {
+        1
+    } else {
+        3
+    }
 }
 
 /// A name as `by_name` compares it: letters and digits, lowercase.

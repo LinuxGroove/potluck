@@ -65,6 +65,9 @@ pub struct Me {
     pub riding: Option<u64>,
     pub third_person: bool,
     pub target: Option<Hit>,
+    /// Water in the crosshair, nearer than any block: Interact with an
+    /// item in hand uses it (a bucket filling, a rod cast).
+    pub water: Option<IVec3>,
     /// The creature in the crosshair, nearer than any block.
     pub aim_body: Option<u64>,
     /// The Green's arch in the crosshair, and what the HUD says about it.
@@ -135,6 +138,7 @@ impl Default for Me {
             riding: None,
             third_person: false,
             target: None,
+            water: None,
             aim_body: None,
             aim_arch: None,
             focus: None,
@@ -392,6 +396,16 @@ pub fn move_body(w: &Voxels, pos: &mut Vec3, d: Vec3, half: f32, height: f32) ->
 /// Walks a ray through the blocks (Amanatides and Woo) to the first one that
 /// can be broken.
 pub fn raycast(w: &Voxels, from: Vec3, dir: Vec3, reach: f32) -> Option<Hit> {
+    ray(w, from, dir, reach, |id| id != AIR && id != WATER)
+}
+
+/// The water a ray reaches before any block, if it does.
+pub fn water_ahead(w: &Voxels, from: Vec3, dir: Vec3, reach: f32) -> Option<IVec3> {
+    ray(w, from, dir, reach, |id| id != AIR).filter(|h| h.id == WATER).map(|h| h.block)
+}
+
+/// Walks a ray to the first block `stop` says.
+fn ray(w: &Voxels, from: Vec3, dir: Vec3, reach: f32, stop: impl Fn(BlockId) -> bool) -> Option<Hit> {
     let mut p = from.floor().as_ivec3();
     let step = dir.signum().as_ivec3();
     let next = |v: f32, s: i32, p: i32| {
@@ -403,7 +417,7 @@ pub fn raycast(w: &Voxels, from: Vec3, dir: Vec3, reach: f32) -> Option<Hit> {
     let mut t = 0.0;
     while t <= reach {
         let id = w.at(p);
-        if id != AIR && id != WATER {
+        if stop(id) {
             return Some(Hit { block: p, normal, id });
         }
         if t_max.x < t_max.y && t_max.x < t_max.z {
@@ -624,6 +638,7 @@ pub fn build(
     let dt = time.delta_secs();
     let dir = me.forward();
     me.target = raycast(&voxels, me.eye(), dir, REACH);
+    me.water = water_ahead(&voxels, me.eye(), dir, REACH);
     if !focus.playing() || me.riding.is_some() {
         me.breaking = None;
         return;
@@ -712,6 +727,8 @@ pub fn build(
         if settings.survival && slot.empty() {
             return;
         }
+        // a block that turns faces the way the player looks
+        let id = blocks::turned(id, blocks::quarter_looking(-me.yaw.sin(), -me.yaw.cos()));
         let at = if blocks::shape(hit.id) == Shape::Cross { hit.block } else { hit.block + hit.normal };
         let here = voxels.at(at);
         if here != AIR && here != WATER && blocks::shape(here) != Shape::Cross {

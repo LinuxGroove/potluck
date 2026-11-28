@@ -170,6 +170,8 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     conn.execute_batch(crate::servers::SCHEMA)?;
     conn.execute_batch(crate::devices::SCHEMA)?;
     conn.execute_batch(crate::jams::SCHEMA)?;
+    conn.execute_batch(crate::friends::SCHEMA)?;
+    conn.execute_batch(crate::worlds::SCHEMA)?;
     add_columns(&conn)?;
     Ok(conn)
 }

@@ -30,5 +30,8 @@ jobs:
         run: cargo build --locked --bins
       - name: Run tests
         run: cargo test --locked
+      # the market's tests that need a real Forgejo (they skip above)
+      - name: Run the market's tests against Forgejo
+        run: deploy/market/test.sh
       - name: Build the game with ray tracing
         run: cargo build --locked --bin potluck --features raytracing

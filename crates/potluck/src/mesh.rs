@@ -129,10 +129,52 @@ impl Detail {
 }
 
 /// The colour grass takes where it grows: lush green across most of the
-/// island, with drier, yellower patches, and a little unevenness close up.
-pub fn grass_tint(x: f32, z: f32) -> Vec3 {
+/// island, with drier, yellower patches, and a little unevenness close up,
+/// shifted by the climate there (`climate_tint`).
+pub fn grass_tint(climate: Vec3, x: f32, z: f32) -> Vec3 {
     let dry = smooth(0.45, 0.72, fbm(x / 41.0, z / 41.0, 317, 3));
-    Vec3::new(0.92, 1.04, 0.9).lerp(Vec3::new(1.16, 1.05, 0.64), dry) * (0.93 + 0.14 * vnoise(x / 5.0, z / 5.0, 319))
+    Vec3::new(0.92, 1.04, 0.9).lerp(Vec3::new(1.16, 1.05, 0.64), dry) * (0.93 + 0.14 * vnoise(x / 5.0, z / 5.0, 319)) * climate
+}
+
+/// How a place's climate shifts the green of what grows there: yellower
+/// where it's warm and dry, cooler and darker where it's cold, deeper where
+/// it's wet. Exactly white in the island's mild climate (a half each), so
+/// the island and the lands near it keep their colours.
+pub fn climate_tint(c: crate::world::Climate) -> Vec3 {
+    let (warm, wet) = (c.warm - 0.5, c.wet - 0.5);
+    let dry = ((warm * 0.9 - wet) * 2.0).clamp(0.0, 1.0);
+    let cold = (-warm * 2.0).clamp(0.0, 1.0);
+    let lush = ((wet - warm.max(0.0)) * 2.0).clamp(0.0, 1.0);
+    Vec3::ONE.lerp(Vec3::new(1.2, 1.02, 0.6), dry) * Vec3::ONE.lerp(Vec3::new(0.8, 0.93, 1.02), cold) * Vec3::ONE.lerp(Vec3::new(0.84, 0.98, 0.8), lush)
+}
+
+/// Leaves take less of the climate's shift than grass does.
+pub fn leaf_tint(climate: Vec3) -> Vec3 {
+    Vec3::ONE + (climate - Vec3::ONE) * 0.6
+}
+
+/// The climate's tint across one column (`climate_tint` at its corners,
+/// blended between), worked out once for each chunk meshed: the climate
+/// changes over hundreds of blocks, and working it out for every grass
+/// block's corners would cost more than the rest of the meshing.
+pub struct Tints {
+    o: Vec2,
+    c: [Vec3; 4],
+}
+
+impl Tints {
+    pub fn of(seed: u32, key: IVec2) -> Tints {
+        let o = (key * CHUNK).as_vec2();
+        let at = |dx: f32, dz: f32| climate_tint(crate::world::climate(seed, o.x + dx, o.y + dz));
+        let s = CHUNK as f32;
+        Tints { o, c: [at(0.0, 0.0), at(s, 0.0), at(0.0, s), at(s, s)] }
+    }
+
+    pub fn at(&self, x: f32, z: f32) -> Vec3 {
+        let (u, v) = (((x - self.o.x) / CHUNK as f32).clamp(0.0, 1.0), ((z - self.o.y) / CHUNK as f32).clamp(0.0, 1.0));
+        let top = self.c[0].lerp(self.c[1], u);
+        top.lerp(self.c[2].lerp(self.c[3], u), v)
+    }
 }
 
 fn rgba(c: Vec3) -> [f32; 4] {
@@ -581,11 +623,11 @@ impl Sky {
 
 /// How much of red, green and blue each block of water soaks up, on the way
 /// down to what's under it and back up.
-const UNDERWATER: [f32; 3] = [0.25, 0.06, 0.045];
+pub(crate) const UNDERWATER: [f32; 3] = [0.25, 0.06, 0.045];
 
 /// Water's colour and how much it lets through, by how many blocks deep it
 /// is: the shallows over sand are pale and clear, the deep is dark blue. The
-/// open sea past the island (`render::spawn_sea`) is the deepest of these.
+/// far sea (`render::far`) takes these too, as deep as it is.
 pub fn water_tint(depth: f32) -> [f32; 4] {
     let t = crate::noise::smooth(0.5, 6.0, depth);
     let c = Vec3::new(0.16, 0.62, 0.6).lerp(Vec3::new(0.008, 0.05, 0.09), t);
@@ -595,13 +637,13 @@ pub fn water_tint(depth: f32) -> [f32; 4] {
 /// Grass over a grass block: a lip hanging over each open side, so terraces
 /// don't show a line of dirt, and a tuft on most tops, tinted lush or dry by
 /// where it grows.
-fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, cover: Cover, detail: Detail) {
+fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, cover: Cover, detail: Detail, tints: &Tints) {
     let above = w.get(x, y + 1, z);
     if blocks::is_opaque(above) || above == WATER {
         return;
     }
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);
-    let tint = grass_tint(fx + 0.5, fz + 0.5);
+    let tint = grass_tint(tints.at(fx + 0.5, fz + 0.5), fx + 0.5, fz + 0.5);
     let up = [0.0, 1.0, 0.0];
     let lip = BlockAtlas::uv(atlas.tile("grass_lip"));
     for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -736,7 +778,7 @@ fn shore_foam(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, 
 /// Leaf fins: two sheets of leaves standing out of a leaf block's open face,
 /// crossed and turned at random, so a canopy's outline is ragged clumps of
 /// leaves rather than the edge of a cube.
-fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], light: [f32; 4], h: f32) {
+fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 4], light: [f32; 4], tint: Vec3, h: f32) {
     let c = corners.iter().fold(Vec3::ZERO, |a, p| a + Vec3::from(*p)) / 4.0;
     let n3 = Vec3::from(n);
     // two axes across the face, turned by the hash
@@ -753,7 +795,7 @@ fn leaf_fins(m: &mut MeshData, corners: [[f32; 3]; 4], n: [f32; 3], rect: [f32; 
         // the sheet's outer edge is the leaves' top
         let rect = if k == 0 { rect } else { [u1, v0, u0, v1] };
         let side = across.cross(out).normalize_or_zero();
-        m.quad(q.map(|p| p.into()), side.into(), rect, light, false);
+        m.quad_tinted(q.map(|p| p.into()), side.into(), rect, light.map(|l| rgba(tint * l)), false);
     }
 }
 
@@ -798,6 +840,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
     let mut varies = false;
     let mut layers: [MeshData; LAYERS] = Default::default();
     let o = c * CHUNK;
+    let tints = Tints::of(w.seed, IVec2::new(c.x, c.z));
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
     for y in o.y..o.y + CHUNK {
         for z in o.z..o.z + CHUNK {
@@ -921,12 +964,14 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             let corners = f.c.map(|cc| [fx + cc[0] as f32, fy + cc[1] as f32, fz + cc[2] as f32]);
                             let n = f.n.map(|v| v as f32);
                             let flip = occ[0] + occ[2] > occ[1] + occ[3];
-                            if matches!(id, LEAVES | BIRCH_LEAVES | PINE) && nb == AIR && fins {
-                                leaf_fins(&mut layers[if cover.fin_shadows { layer } else { COVER }], corners, n, rect, light, hash2(x * 3 + f.n[0], y * 5 + f.n[1], z * 7 + f.n[2]));
+                            // leaves take a little of the climate's tint
+                            let leaf = matches!(id, LEAVES | BIRCH_LEAVES | PINE).then(|| leaf_tint(tints.at(fx + 0.5, fz + 0.5)));
+                            if let (Some(t), true) = (leaf, nb == AIR && fins) {
+                                leaf_fins(&mut layers[if cover.fin_shadows { layer } else { COVER }], corners, n, rect, light, t, hash2(x * 3 + f.n[0], y * 5 + f.n[1], z * 7 + f.n[2]));
                             }
                             if id == GRASS && f.s == 0 && nb != WATER {
                                 // grass takes its colour from where it grows
-                                let tint = corners.map(|p| grass_tint(p[0], p[2]));
+                                let tint = corners.map(|p| grass_tint(tints.at(p[0], p[2]), p[0], p[2]));
                                 layers[layer].quad_tinted(corners, n, rect, [0, 1, 2, 3].map(|k| rgba(tint[k] * light[k])), flip);
                             } else if nb == WATER {
                                 // under water: the water above takes the red out first, then the green
@@ -934,12 +979,14 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                                 let t = UNDERWATER.map(|k| (-k * 2.0 * deep).exp());
                                 let layer = if layer == 0 { UNDER } else { layer };
                                 layers[layer].quad_tinted(corners, n, rect, light.map(|l| [l * t[0], l * t[1], l * t[2], 1.0]), flip);
+                            } else if let Some(t) = leaf {
+                                layers[layer].quad_tinted(corners, n, rect, light.map(|l| rgba(t * l)), flip);
                             } else {
                                 layers[layer].quad(corners, n, rect, light, flip);
                             }
                         }
                         if id == GRASS {
-                            ground_cover(&mut layers[COVER], w, atlas, x, y, z, cover, detail);
+                            ground_cover(&mut layers[COVER], w, atlas, x, y, z, cover, detail, &tints);
                         }
                         varies |= matches!(id, GRASS | LEAVES | BIRCH_LEAVES | PINE);
                     }
@@ -1012,7 +1059,7 @@ pub struct ChunkEntities {
     pub map: HashMap<IVec3, [Option<Entity>; LAYERS]>,
     /// The columns whose chunks are drawn (or waiting to be).
     pub shown: std::collections::HashSet<IVec2>,
-    /// Counts changes to `shown`, for the sea past it (`render::follow_sea`).
+    /// Counts changes to `shown`.
     pub shown_rev: u64,
     /// What `show` last looked at: the world, how many columns had come
     /// in, and the column the player was in.

@@ -1,0 +1,163 @@
+name: potluck-market
+title: Potluck market
+adopt-info: market
+base: core24
+summary: The Potluck market, and the relay for worlds shared from home
+description: |
+  Runs the market Potluck players share creations through: potluck-share
+  (the service and its web pages), Forgejo (a git repository for every
+  creation, never public itself) and Caddy (HTTPS from Let's Encrypt). It
+  also runs the relay that carries worlds shared from home when two friends'
+  games can't reach each other directly.
+
+  Players sign in through the LinuxGroove game server, which runs on its
+  own (the game-server snap).
+
+  A public market (TCP 80, 443 and 8443 and UDP 7842 must reach this
+  machine, and the domain must point at it):
+
+      sudo snap install potluck-market
+      sudo snap set potluck-market domain=potluck.example.org email=you@example.org
+      sudo potluck-market.info
+
+  Then make yourself a moderator, and invite codes while sharing to
+  Everyone is invite-only:
+
+      sudo potluck-market.admin moderator <your handle>
+      sudo potluck-market.admin invite 20
+
+  Settings: domain, email (for Let's Encrypt), nakama (the game server
+  players sign in to), invite-only (true), hide-after-reports (5),
+  email-domain (makers' git addresses), store (folder or s3, with
+  s3.endpoint, s3.bucket, s3.region, s3.public-url, s3.key and s3.secret),
+  proxy.worlds (other names Caddy serves for worlds on this machine, as
+  name=port pairs), and for the relay relay.mode (here, elsewhere or off),
+  relay.port (8443), relay.rate (KB a second each game may send through it,
+  192), relay.url and relay.token.
+
+  Docs: https://github.com/LinuxGroove/potluck/blob/main/docs/hosting.md
+license: MIT AND Apache-2.0 AND GPL-3.0-or-later
+website: https://github.com/LinuxGroove/potluck
+source-code: https://github.com/LinuxGroove/potluck
+issues: https://github.com/LinuxGroove/potluck/issues
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+# Forgejo won't run as root, and the market needs nothing root has, so both
+# drop to snapd's shared unprivileged user. Caddy (ports 80 and 443) and the
+# relay (which reads Caddy's certificate) stay root.
+system-usernames:
+  snap_daemon: shared
+
+apps:
+  forgejo:
+    command: bin/launch-forgejo
+    daemon: simple
+    restart-condition: on-failure
+    restart-delay: 5s
+    stop-timeout: 30s
+    plugs: [network, network-bind]
+
+  market:
+    command: bin/launch-market
+    daemon: simple
+    after: [forgejo]
+    restart-condition: on-failure
+    restart-delay: 5s
+    stop-timeout: 30s
+    plugs: [network, network-bind]
+
+  proxy:
+    command: bin/launch-proxy
+    daemon: simple
+    after: [market]
+    install-mode: disable
+    restart-condition: on-failure
+    # When ports 80 or 443 are taken, keep retrying instead of hitting
+    # systemd's start limit within a second and staying down.
+    restart-delay: 5s
+    plugs: [network, network-bind]
+
+  relay:
+    command: bin/launch-relay
+    daemon: simple
+    after: [market, proxy]
+    install-mode: disable
+    restart-condition: on-failure
+    restart-delay: 10s
+    plugs: [network, network-bind]
+
+  admin:
+    command: bin/admin
+    plugs: [network]
+
+  info:
+    command: bin/info
+    plugs: [network]
+
+parts:
+  market:
+    plugin: nil
+    source: .
+    build-snaps: [rustup]
+    build-packages: [git, pkg-config, clang]
+    override-build: |
+      rustup toolchain install stable --profile minimal
+      rustup default stable
+      version="$(cat VERSION 2>/dev/null || tools/version.sh)"
+      craftctl set version="$(echo "$version" | cut -c1-32)"
+      cargo build --release --locked -p potluck-share
+      install -D -m 0755 target/release/potluck-share "$CRAFT_PART_INSTALL/bin/potluck-share"
+      install -D -m 0644 deploy/market/words.txt "$CRAFT_PART_INSTALL/share/words.txt"
+      install -D -m 0644 LICENSE "$CRAFT_PART_INSTALL/usr/share/doc/potluck-market/LICENSE"
+
+  # iroh-relay at the version the game's iroh speaks (crates/potluck/Cargo.toml).
+  relay:
+    plugin: nil
+    build-snaps: [rustup]
+    build-packages: [pkg-config, cmake, clang]
+    override-build: |
+      rustup toolchain install stable --profile minimal
+      rustup default stable
+      cargo install iroh-relay@1.5.0 --features server --locked --root "$CRAFT_PART_BUILD/root"
+      install -D -m 0755 "$CRAFT_PART_BUILD/root/bin/iroh-relay" "$CRAFT_PART_INSTALL/bin/iroh-relay"
+
+  # Forgejo's own release, its signature checked against Forgejo's release
+  # key (tools/forgejo.sh, which deploy/market/test.sh uses too, so both run
+  # the same version).
+  forgejo:
+    plugin: nil
+    source: tools
+    build-packages: [curl, gnupg]
+    override-build: |
+      sh ./forgejo.sh "$CRAFT_ARCH_BUILD_FOR" "$CRAFT_PART_INSTALL/bin/forgejo"
+      v="$(sh ./forgejo.sh --version)"
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/doc/forgejo"
+      printf 'Forgejo %s, GPL-3.0-or-later: the release binary, unchanged.\nSource: https://codeberg.org/forgejo/forgejo/src/tag/v%s\n' "$v" "$v" \
+        >"$CRAFT_PART_INSTALL/usr/share/doc/forgejo/README"
+
+  caddy:
+    plugin: nil
+    build-snaps: [go/latest/stable]
+    override-build: |
+      export CGO_ENABLED=0 GOTOOLCHAIN=auto GOBIN="$CRAFT_PART_INSTALL/bin"
+      go install -trimpath -ldflags "-s -w" github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.7
+
+  # git for Forgejo and the market (remixes copy history with it), setpriv
+  # to drop to snap_daemon, curl for waiting on services and info.
+  tools:
+    plugin: nil
+    stage-packages: [git, util-linux, curl]
+    prime:
+      - -usr/share/man
+      - -usr/share/locale
+
+  scripts:
+    plugin: dump
+    source: packaging/potluck-market/snap/local
+    organize:
+      "*": bin/

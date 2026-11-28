@@ -2,8 +2,9 @@
 -- Woolly: sheep that graze the Green and nibble the tall grass.
 -- Hold wheat and they come to you; Interact with one and it follows you for
 -- a while; hit one and it runs. All that is `behaviours`, with no code.
--- In survival, Interact shears it too: you get wool, and it's a Shorn woolly
--- (self:become) until its fleece grows back.
+-- In survival, Interact shears it too: you get wool (more with shears in
+-- hand, world.held), and it's a Shorn woolly (self:become) until its fleece
+-- grows back.
 
 local world = require("@potluck/world@0.10")
 local tweak = require("@potluck/tweak")
@@ -13,6 +14,7 @@ local knobs = tweak {
 	follow = { 20, min = 5, max = 60, label = "Seconds it follows you", order = 2 },
 	flock = { 4, min = 1, max = 8, label = "How many", order = 3 },
 	shear = { 1, min = 1, max = 4, label = "Wool from shearing one", order = 4 },
+	shears = { 2, min = 0, max = 4, label = "More wool with shears", order = 6 },
 	regrow = { 3, min = 0.5, max = 20, label = "Minutes for its wool to grow back", order = 5 },
 }
 
@@ -96,7 +98,8 @@ end
 
 function Woolly:used(player)
 	-- in survival, a fleecy one gives up its wool
-	if not self.regrow and world.pockets(player) ~= nil and world.give(player, "Cream wool", math.floor(knobs.shear)) > 0 then
+	local wool = math.floor(knobs.shear) + (if world.held(player) == "Shears" then math.floor(knobs.shears) else 0)
+	if not self.regrow and world.pockets(player) ~= nil and world.give(player, "Cream wool", wool) > 0 then
 		self:become(Shorn)
 		self.regrow = knobs.regrow * 60
 		self:say("Baa! A bit chilly.")

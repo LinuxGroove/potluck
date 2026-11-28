@@ -1,0 +1,119 @@
+#!/bin/bash
+# Check settings, switch the HTTPS proxy and the relay on or off, and restart
+# what changed.
+. "$SNAP/bin/common.sh"
+
+port_ok() {
+  [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+host_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+}
+url_ok() {
+  [[ "$1" =~ ^https?://[^/[:space:]\"]+(/[^[:space:]\"]*)?$ ]]
+}
+
+domain="$(cfg domain)"
+if [ -n "$domain" ] && ! host_ok "$domain"; then
+  fail "domain must be a host name like potluck.example.org"
+fi
+email="$(cfg email)"
+if [ -n "$email" ] && ! [[ "$email" =~ ^[^[:space:]@\"]+@[^[:space:]@\"]+$ ]]; then
+  fail "email must be an address like you@example.org"
+fi
+url="$(cfg url)"
+if [ -n "$url" ] && ! url_ok "$url"; then
+  fail "url must be an http:// or https:// address"
+fi
+url_ok "$(cfg nakama https://play.linuxgroove.com)" || fail "nakama must be the game server's http:// or https:// address"
+case "$(cfg invite-only true)" in
+  true | false) ;;
+  *) fail "invite-only must be true or false" ;;
+esac
+[[ "$(cfg hide-after-reports 5)" =~ ^[0-9]{1,4}$ ]] || fail "hide-after-reports must be a whole number"
+for pair in $(cfg proxy.worlds); do
+  if ! [[ "$pair" == *=* ]] || ! host_ok "${pair%%=*}" || ! port_ok "${pair#*=}"; then
+    fail "proxy.worlds is a list of name=port, like \"w1.worlds.example.org=47201 w2.worlds.example.org=47202\""
+  fi
+done
+[ -z "$(cfg proxy.worlds)" ] || [ -n "$domain" ] || fail "proxy.worlds needs domain set: the worlds go through the market's Caddy"
+email_domain="$(cfg email-domain)"
+if [ -n "$email_domain" ] && ! host_ok "$email_domain"; then
+  fail "email-domain must be a host name"
+fi
+
+case "$(cfg store folder)" in
+  folder) ;;
+  s3)
+    url_ok "$(cfg s3.endpoint)" || fail "store=s3 needs s3.endpoint, the bucket's https:// address"
+    s3_public="$(cfg s3.public-url)"
+    if [ -n "$s3_public" ] && ! url_ok "$s3_public"; then
+      fail "s3.public-url must be an https:// address"
+    fi
+    ;;
+  *) fail "store must be folder or s3" ;;
+esac
+
+relay_port="$(cfg relay.port 8443)"
+port_ok "$relay_port" || fail "relay.port must be a port number (got '$relay_port')"
+case "$relay_port" in
+  80 | 443 | "$MARKET_PORT" | "$FORGEJO_PORT" | "$RELAY_HTTP_PORT" | "$RELAY_METRICS_PORT")
+    fail "relay.port $relay_port is taken on this machine; 8443 is the usual one" ;;
+esac
+[[ "$(cfg relay.rate 192)" =~ ^[0-9]{1,6}$ ]] && [ "$(cfg relay.rate 192)" -ge 16 ] ||
+  fail "relay.rate is KB a second for each game, 16 or more (192 is about ten friends)"
+relay_url_set="$(cfg relay.url)"
+if [ -n "$relay_url_set" ] && ! [[ "$relay_url_set" =~ ^https://[^/[:space:]\"]+/?$ ]]; then
+  fail "relay.url must be an https:// address with no path"
+fi
+case "$(cfg relay.mode here)" in
+  here | off) ;;
+  elsewhere)
+    [ -n "$relay_url_set" ] || fail "relay.mode=elsewhere needs relay.url, the other machine's https:// address"
+    ;;
+  *) fail "relay.mode must be here, elsewhere or off" ;;
+esac
+cert="$(cfg relay.cert)"
+key="$(cfg relay.key)"
+if [ -n "$cert$key" ]; then
+  [ -n "$cert" ] && [ -n "$key" ] || fail "set both relay.cert and relay.key (or neither)"
+  for f in "$(in_common "$cert")" "$(in_common "$key")"; do
+    [ -r "$f" ] || fail "can't read $f: put certificate files in $SNAP_COMMON"
+  done
+fi
+token="$(cfg relay.token)"
+if [ -z "$token" ]; then
+  snapctl set relay.token="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)"
+elif [ "${#token}" -lt 16 ]; then
+  fail "relay.token must be 16 characters or more"
+fi
+
+if [ -n "$domain" ]; then
+  snapctl start --enable "$SNAP_INSTANCE_NAME.proxy"
+else
+  snapctl stop --disable "$SNAP_INSTANCE_NAME.proxy"
+fi
+if relay_here; then
+  snapctl start --enable "$SNAP_INSTANCE_NAME.relay"
+else
+  snapctl stop --disable "$SNAP_INSTANCE_NAME.relay"
+fi
+
+# Restart a running service only when its settings changed.
+applied="$SNAP_DATA/applied"
+mkdir -p "$applied"
+is_active() {
+  [ "$(snapctl services "$SNAP_INSTANCE_NAME.$1" 2>/dev/null | awk 'NR == 2 { print $3 }')" = "active" ]
+}
+restart_if_changed() {
+  local name="$1" sum
+  shift
+  sum="$(for k in "$@"; do snapctl get -d "$k" 2>/dev/null || true; done | sha256sum | cut -d' ' -f1)"
+  if [ -f "$applied/$name" ] && [ "$(cat "$applied/$name")" != "$sum" ] && is_active "$name"; then
+    snapctl restart "$SNAP_INSTANCE_NAME.$name"
+  fi
+  echo "$sum" >"$applied/$name"
+}
+restart_if_changed market domain url nakama invite-only hide-after-reports email-domain store s3 relay
+restart_if_changed proxy domain email proxy relay.mode relay.cert
+restart_if_changed relay domain url relay

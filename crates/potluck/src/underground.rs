@@ -52,43 +52,70 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// A noise's corners round the last cell it was asked about, for each
-/// noise: a column is worked out a block at a time, and its next blocks
-/// are mostly in the same cell, so this saves most of the hashing. It
-/// only remembers, so answers are the same with or without it.
-type Corners = (u32, i32, i32, i32, [f32; 8]);
+/// How far apart each noise's cells are across the ground (x and z) and
+/// up (y), by its number. The ground noises (1 and 2) don't change with
+/// height.
+const SCALE: [(f32, f32); 7] = [(1.0, 1.0), (48.0, 0.0), (90.0, 0.0), (30.0, 20.0), (30.0, 20.0), (56.0, 26.0), (18.0, 12.0)];
+
+/// The lowest cell level kept for a column (y / 12 at the bottom of the
+/// world), and how many levels.
+const LEVEL0: i32 = -12;
+const LEVELS: usize = 24;
+
+/// One column's noise, level by level: at each level of cells, each
+/// noise's corners blended across the ground for this column, worked out
+/// the first time a block of the column needs them. Columns are worked out
+/// a block at a time, bottom to top, so this leaves only a blend up and
+/// down for each block. It only remembers, so answers are the same with or
+/// without it.
+struct Column {
+    seed: u32,
+    x: i32,
+    z: i32,
+    level: [[f32; LEVELS]; 7],
+}
 
 thread_local! {
-    static CORNERS: std::cell::RefCell<[Corners; 8]> = const { std::cell::RefCell::new([(u32::MAX, i32::MIN, 0, 0, [0.0; 8]); 8]) };
+    static COLUMN: std::cell::RefCell<Column> = const { std::cell::RefCell::new(Column { seed: u32::MAX, x: i32::MIN, z: 0, level: [[f32::NAN; LEVELS]; 7] }) };
 }
 
-/// Smooth noise in -1..1, one cell per unit. `k` (under 8) picks which.
-fn noise3(seed: u32, k: u32, x: f32, y: f32, z: f32) -> f32 {
-    let (ix, iy, iz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
-    let (fx, fy, fz) = (ease(x - ix as f32), ease(y - iy as f32), ease(z - iz as f32));
-    let c = CORNERS.with_borrow_mut(|all| {
-        let e = &mut all[k as usize & 7];
-        if (e.0, e.1, e.2, e.3) != (seed, ix, iy, iz) {
-            let mut c = [0.0; 8];
-            for (i, v) in c.iter_mut().enumerate() {
-                let (dx, dy, dz) = ((i & 1) as i32, (i >> 1 & 1) as i32, (i >> 2) as i32);
-                *v = unit(seed, ix + dx, iy + dy, iz + dz, k) * 2.0 - 1.0;
-            }
-            *e = (seed, ix, iy, iz, c);
-        }
-        e.4
-    });
+/// Noise `k` at level `iy` of cells, blended across the ground at (x, z).
+fn level(seed: u32, k: u32, x: i32, z: i32, iy: i32) -> f32 {
+    let (across, _) = SCALE[k as usize];
+    let (fx, fz) = (x as f32 / across, z as f32 / across);
+    let (ix, iz) = (fx.floor() as i32, fz.floor() as i32);
+    let (tx, tz) = (ease(fx - ix as f32), ease(fz - iz as f32));
+    let c = |dx: i32, dz: i32| unit(seed, ix + dx, iy, iz + dz, k) * 2.0 - 1.0;
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-    let x00 = lerp(c[0], c[1], fx);
-    let x10 = lerp(c[2], c[3], fx);
-    let x01 = lerp(c[4], c[5], fx);
-    let x11 = lerp(c[6], c[7], fx);
-    lerp(lerp(x00, x10, fy), lerp(x01, x11, fy), fz)
+    lerp(lerp(c(0, 0), c(1, 0), tx), lerp(c(0, 1), c(1, 1), tx), tz)
 }
 
-/// Smooth noise in -1..1 over the ground, one cell per unit.
-fn noise2(seed: u32, k: u32, x: f32, z: f32) -> f32 {
-    noise3(seed, k, x, 0.5, z)
+/// Smooth noise `k` (1 to 6) in -1..1 at a block.
+fn noise(seed: u32, k: u32, x: i32, y: i32, z: i32) -> f32 {
+    let (_, up) = SCALE[k as usize];
+    // the ground noises sit halfway between their first two levels
+    let fy = if up == 0.0 { 0.5 } else { y as f32 / up };
+    let iy = fy.floor() as i32;
+    let t = ease(fy - iy as f32);
+    let at = (iy - LEVEL0) as usize;
+    let (a, b) = if at + 1 < LEVELS {
+        COLUMN.with_borrow_mut(|c| {
+            if (c.seed, c.x, c.z) != (seed, x, z) {
+                *c = Column { seed, x, z, level: [[f32::NAN; LEVELS]; 7] };
+            }
+            let l = &mut c.level[k as usize];
+            if l[at].is_nan() {
+                l[at] = level(seed, k, x, z, iy);
+            }
+            if l[at + 1].is_nan() {
+                l[at + 1] = level(seed, k, x, z, iy + 1);
+            }
+            (l[at], l[at + 1])
+        })
+    } else {
+        (level(seed, k, x, z, iy), level(seed, k, x, z, iy + 1))
+    };
+    a + (b - a) * t
 }
 
 /// What the ground is made of that caves and workings cut through; at
@@ -103,20 +130,19 @@ pub fn cave(seed: u32, x: i32, y: i32, z: i32, ground: i32) -> bool {
         return false;
     }
     let under = ground - y;
-    let (fx, fy, fz) = (x as f32, y as f32, z as f32);
     // near the surface only where a mouth lets one out, and never by water
     if under < 7 {
-        if ground <= SEA + 6 || noise2(seed, 1, fx / 48.0, fz / 48.0) < 0.45 {
+        if ground <= SEA + 6 || noise(seed, 1, x, 0, z) < 0.45 {
             return false;
         }
     }
     // tunnels: where two noises are both close to zero, the second worked
     // out only where the first is
-    let a = noise3(seed, 3, fx / 30.0, fy / 20.0, fz / 30.0);
+    let a = noise(seed, 3, x, y, z);
     if a.abs() < 0.135 {
-        let wide = 0.085 + 0.05 * noise2(seed, 2, fx / 90.0, fz / 90.0);
+        let wide = 0.085 + 0.05 * noise(seed, 2, x, 0, z);
         if a.abs() < wide {
-            let b = noise3(seed, 4, fx / 30.0, fy / 20.0, fz / 30.0);
+            let b = noise(seed, 4, x, y, z);
             if a * a + b * b < wide * wide {
                 return true;
             }
@@ -124,10 +150,11 @@ pub fn cave(seed: u32, x: i32, y: i32, z: i32, ground: i32) -> bool {
     }
     // caverns, deep down: big rooms, flatter than they're wide
     if y < 0 && y > FLOOR + 6 {
-        let c = noise3(seed, 5, fx / 56.0, fy / 26.0, fz / 56.0) + 0.35 * noise3(seed, 6, fx / 18.0, fy / 12.0, fz / 18.0);
         // they thin out toward the bottom and toward the top of the deep
         let room = 0.62 + 0.004 * (y + 50).abs() as f32;
-        if c > room {
+        // the second noise only where it could tip the first over
+        let big = noise(seed, 5, x, y, z);
+        if big + 0.35 > room && big + 0.35 * noise(seed, 6, x, y, z) > room {
             return true;
         }
     }
@@ -160,7 +187,7 @@ type VeinAt = Option<(i32, i32, i32, f32)>;
 
 thread_local! {
     /// Each ore's vein in the last cell asked about: (seed, cell, vein),
-    /// for the same reason as `CORNERS`.
+    /// for the same reason as `Column`.
     static VEIN_CELLS: std::cell::RefCell<[(u32, i32, i32, i32, VeinAt); 6]> = const { std::cell::RefCell::new([(u32::MAX, i32::MIN, 0, 0, None); 6]) };
 }
 
@@ -181,31 +208,30 @@ fn vein(seed: u32, k: usize, cx: i32, cy: i32, cz: i32) -> VeinAt {
 
 /// The ore at this block, if a vein reaches it.
 pub fn ore(seed: u32, x: i32, y: i32, z: i32) -> Option<BlockId> {
-    for (k, v) in VEINS.iter().enumerate() {
-        if y < v.from || y > v.to {
-            continue;
-        }
-        let (cx, cy, cz) = (x.div_euclid(v.cell), y.div_euclid(v.cell), z.div_euclid(v.cell));
-        let here = VEIN_CELLS.with_borrow_mut(|all| {
+    VEIN_CELLS.with_borrow_mut(|all| {
+        for (k, v) in VEINS.iter().enumerate() {
+            if y < v.from || y > v.to {
+                continue;
+            }
+            let (cx, cy, cz) = (x.div_euclid(v.cell), y.div_euclid(v.cell), z.div_euclid(v.cell));
             let e = &mut all[k];
             if (e.0, e.1, e.2, e.3) != (seed, cx, cy, cz) {
                 *e = (seed, cx, cy, cz, vein(seed, k, cx, cy, cz));
             }
-            e.4
-        });
-        let Some((mx, my, mz, r)) = here else { continue };
-        let (dx, dy, dz) = ((mx - x) as f32, (my - y) as f32 * 1.3, (mz - z) as f32);
-        let d = dx * dx + dy * dy + dz * dz;
-        if d > r * r * 1.45 {
-            continue;
+            let Some((mx, my, mz, r)) = e.4 else { continue };
+            let (dx, dy, dz) = ((mx - x) as f32, (my - y) as f32 * 1.3, (mz - z) as f32);
+            let d = dx * dx + dy * dy + dz * dz;
+            if d > r * r * 1.45 {
+                continue;
+            }
+            // lumpy: each block a little in or out
+            let lump = 0.55 + 0.9 * unit(seed, x, y, z, 10 + k as u32 + 500);
+            if d < r * r * lump {
+                return Some(v.ore);
+            }
         }
-        // lumpy: each block a little in or out
-        let lump = 0.55 + 0.9 * unit(seed, x, y, z, 10 + k as u32 + 500);
-        if d < r * r * lump {
-            return Some(v.ore);
-        }
-    }
-    None
+        None
+    })
 }
 
 /// A crystal hollow at this block: air inside, crystal ore (or stone) in

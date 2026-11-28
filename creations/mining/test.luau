@@ -2,11 +2,13 @@
 -- Mining's own tests: `potluck-server --test=mining`.
 
 local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.14")
+local world = require("@potluck/world@0.16")
 
 -- the tools creation gives pickaxes their levels; its own tests don't run it
 world.digging("Wooden pickaxe", { hard = 2.5, level = 1 })
 world.digging("Stone pickaxe", { hard = 4, level = 2 })
+world.digging("Copper pickaxe", { hard = 5, level = 3 })
+world.digging("Iron pickaxe", { hard = 6.5, level = 4 })
 
 -- a survival player holding `tool`, and a spot beside them with `block`
 local function beside(tool: string, block: string, carrying: { [string]: number }?): (any, vector)
@@ -36,10 +38,33 @@ test.case("coal ore breaks into coal with a wooden pickaxe", function()
 	test.same(world.has(p, "Coal ore"), 0, "not the ore itself")
 end)
 
-test.case("a stone pickaxe breaks iron ore into raw iron", function()
-	local p, at = beside("Stone pickaxe", "Iron ore")
+test.case("a stone pickaxe breaks copper ore but not iron ore", function()
+	local p, at = beside("Stone pickaxe", "Copper ore")
+	test.check(test.dig(p, at), "copper breaks")
+	local copper = world.has(p, "Raw copper")
+	test.check(copper >= 1 and copper <= 3, "1 to 3 raw copper, not " .. copper)
+	world.set_block(at, "Iron ore")
+	test.check(not test.dig(p, at), "iron doesn't")
+end)
+
+test.case("a copper pickaxe breaks iron ore into raw iron", function()
+	local p, at = beside("Copper pickaxe", "Iron ore")
 	test.check(test.dig(p, at), "it breaks")
 	test.same(world.has(p, "Raw iron"), 1, "raw iron")
+	world.set_block(at, "Gold ore")
+	test.check(not test.dig(p, at), "but gold needs better")
+end)
+
+test.case("an iron pickaxe breaks gold, crystal and moonsilver", function()
+	local p, at = beside("Iron pickaxe", "Gold ore")
+	test.check(test.dig(p, at), "gold breaks")
+	world.set_block(at, "Crystal ore")
+	test.check(test.dig(p, at), "crystal breaks")
+	world.set_block(at, "Moonsilver ore")
+	test.check(test.dig(p, at), "moonsilver breaks")
+	test.same(world.has(p, "Raw gold"), 1, "raw gold")
+	test.same(world.has(p, "Raw moonsilver"), 1, "raw moonsilver")
+	test.check(world.has(p, "Crystal") >= 1, "crystal")
 end)
 
 test.case("bare hands can't break ores, but break stone as ever", function()

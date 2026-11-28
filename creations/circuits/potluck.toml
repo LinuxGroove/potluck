@@ -1,0 +1,964 @@
+name = "Circuits"
+by = "Potluck"
+kind = "mod"
+about = "Copper wire carries power from levers, buttons, pressure plates and daylight sensors, through inverters and delays, to copper lamps and copper gates. Power is on or off. Inverters and delays face the way you put them down, take power from behind and give it out in front. Make the parts at a workbench."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.15"
+tweak = "0.1"
+store = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# The blocks, each drawn in letters. Each part has an off look and an on
+# look (a live wire, a pulled lever, a lit lamp), and the creation swaps
+# one for the other. Wire's arms reach out only toward this creation's
+# own blocks (joins), and inverters and delays turn to face the way
+# they're put down (turns): their pictures are drawn facing north, the
+# top row to the front.
+
+
+[blocks.copper_wire]
+name = "Copper wire"
+kind = "hard"
+hardness = 0
+solid = false
+boxes = [
+	[6, 0, 6, 10, 1, 10],
+	{ box = [10, 0, 7, 16, 1, 9], joins = "east" },
+	{ box = [0, 0, 7, 6, 1, 9], joins = "west" },
+	{ box = [7, 0, 0, 9, 1, 6], joins = "north" },
+	{ box = [7, 0, 10, 9, 1, 16], joins = "south" },
+]
+colors = { a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874" }
+top = """
+bbbbbabcdbbbaabb
+bbbbbbbccbbbabab
+bbbbabbccabbbbab
+babaabacdbaababb
+bbabbbbccbababbb
+bbbbbbbccabbbbbb
+abaaabbcdbbbbbba
+dccdccdccdccdccd
+cccccccccccccccc
+bbabbbbcdbaababa
+bbbabbbccbbbabab
+babbbabccbbbbbbb
+abbbbbbcdbbbbbaa
+bbababaccbabbaab
+bbbabbbccbbbbaaa
+bbbbabbcdbbbabbb
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+aaaaaaaaaaaaaaaa
+bbbbbbbbbbbbbbbb
+"""
+bottom = """
+bbbbbabcdbbbaabb
+bbbbbbbccbbbabab
+bbbbabbccabbbbab
+babaabacdbaababb
+bbabbbbccbababbb
+bbbbbbbccabbbbbb
+abaaabbcdbbbbbba
+dccdccdccdccdccd
+cccccccccccccccc
+bbabbbbcdbaababa
+bbbabbbccbbbabab
+babbbabccbbbbbbb
+abbbbbbcdbbbbbaa
+bbababaccbabbaab
+bbbabbbccbbbbaaa
+bbbbabbcdbbbabbb
+"""
+
+[blocks.live_wire]
+name = "Live wire"
+kind = "hard"
+hardness = 0
+solid = false
+glow = "gh"
+boxes = [
+	[6, 0, 6, 10, 1, 10],
+	{ box = [10, 0, 7, 16, 1, 9], joins = "east" },
+	{ box = [0, 0, 7, 6, 1, 9], joins = "west" },
+	{ box = [7, 0, 0, 9, 1, 6], joins = "north" },
+	{ box = [7, 0, 10, 9, 1, 16], joins = "south" },
+]
+colors = { a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0" }
+top = """
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+gffgffghhgffgffg
+fffffffhhfffffff
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+eeeeeeeeeeeeeeee
+ffffffffffffffff
+"""
+bottom = """
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+gffgffghhgffgffg
+fffffffhhfffffff
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeeffeeeeeee
+eeeeeeefgeeeeeee
+"""
+
+[blocks.lever]
+name = "Lever"
+kind = "hard"
+hardness = 0.5
+boxes = [[4, 0, 4, 12, 2, 12], [7, 2, 9, 9, 10, 11]]
+solid = false
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+uutsutsttussttst
+sssuttststssuttu
+ttstttuttutsuutt
+suutttstutuuttss
+tuttvvvxxvvvttts
+uttsvvvxxvvvtstt
+tstuvvvxxvvvtuts
+uttsvvvxxvvvttts
+tstsvvvrrvvvttut
+utttvvvrrvvvttut
+ttusvvvrrvvvtstt
+ttttvvvrrvvvtttu
+uttuttttttuusstu
+ssutsutstsutttus
+utttutttusutttuu
+uuutstsuttuttsst
+"""
+side = """
+................
+................
+................
+................
+................
+................
+......rrrr......
+......rrrr......
+......wxxx......
+......wxxx......
+......wxxx......
+......wxxx......
+......wxxx......
+......wxxx......
+utssuttttuusutss
+suuttsuuussttsts
+"""
+bottom = """
+uutsutsttussttst
+sssuttststssuttu
+ttstttuttutsuutt
+suutttstutuuttss
+tuttvvvxxvvvttts
+uttsvvvxxvvvtstt
+tstuvvvxxvvvtuts
+uttsvvvxxvvvttts
+tstsvvvrrvvvttut
+utttvvvrrvvvttut
+ttusvvvrrvvvtstt
+ttttvvvrrvvvtttu
+uttuttttttuusstu
+ssutsutstsutttus
+utttutttusutttuu
+uuutstsuttuttsst
+"""
+
+[blocks.pulled_lever]
+name = "Pulled lever"
+kind = "hard"
+hardness = 0.5
+glow = "g"
+boxes = [[4, 0, 4, 12, 2, 12], [7, 2, 5, 9, 10, 7]]
+solid = false
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+uutsutsttussttst
+sssuttststssuttu
+ttstttuttutsuutt
+suutttstutuuttss
+tuttvvvggvvvttts
+uttsvvvggvvvtstt
+tstuvvvggvvvtuts
+uttsvvvggvvvttts
+tstsvvvxxvvvttut
+utttvvvxxvvvttut
+ttusvvvxxvvvtstt
+ttttvvvxxvvvtttu
+uttuttttttuusstu
+ssutsutstsutttus
+utttutttusutttuu
+uuutstsuttuttsst
+"""
+side = """
+................
+................
+................
+................
+................
+................
+......gggg......
+......gggg......
+......wxxx......
+......wxxx......
+......wxxx......
+......wxxx......
+......wxxx......
+......wxxx......
+utssuttttuusutss
+suuttsuuussttsts
+"""
+bottom = """
+uutsutsttussttst
+sssuttststssuttu
+ttstttuttutsuutt
+suutttstutuuttss
+tuttvvvggvvvttts
+uttsvvvggvvvtstt
+tstuvvvggvvvtuts
+uttsvvvggvvvttts
+tstsvvvxxvvvttut
+utttvvvxxvvvttut
+ttusvvvxxvvvtstt
+ttttvvvxxvvvtttu
+uttuttttttuusstu
+ssutsutstsutttus
+utttutttusutttuu
+uuutstsuttuttsst
+"""
+
+[blocks.button]
+name = "Button"
+kind = "hard"
+hardness = 0.5
+boxes = [[5, 0, 5, 11, 2, 11]]
+solid = false
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+ssssssssssssssss
+suuttuuuuttuuuus
+sttutuuuuuttttus
+stuutuutuutttuus
+suutuuuuuuuuuuts
+suuuuututttuttus
+suutuuututuuutus
+suuuuutbbtuuuuts
+stuutuubbututuus
+stuututtttuuuuts
+sttuuuuuuuuutuus
+stuuutuutuuututs
+sttttuuuutuututs
+stuuutututtuuuus
+suuuuuuuuuuuutts
+ssssssssssssssss
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+ttssstsstsstssst
+ssttstttssstsstt
+"""
+bottom = """
+ssssssssssssssss
+suuttuuuuttuuuus
+sttutuuuuuttttus
+stuutuutuutttuus
+suutuuuuuuuuuuts
+suuuuututttuttus
+suutuuututuuutus
+suuuuutbbtuuuuts
+stuutuubbututuus
+stuututtttuuuuts
+sttuuuuuuuuutuus
+stuuutuutuuututs
+sttttuuuutuututs
+stuuutututtuuuus
+suuuuuuuuuuuutts
+ssssssssssssssss
+"""
+
+[blocks.pressure_plate]
+name = "Pressure plate"
+kind = "wood"
+hardness = 0.5
+boxes = [[1, 0, 1, 15, 1, 15]]
+solid = false
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+ywyyyyyyyyyyyywy
+wwwwwwwwwwwwwwww
+ywyyyyyyyyyyyywy
+wwwwwwwwwwwwwwww
+xwxxxxxxxxxxxxwx
+xwxxxxxxxxxxxxwx
+xwxxxxxxxxxxxxwx
+wwwwwwwwwwwwwwww
+ywyyyyyyyyyyyywy
+ywyyyyyyyyyyyywy
+ywyyyyyyyyyyyywy
+wwwwwwwwwwwwwwww
+xwxxxxxxxxxxxxwx
+xwxxxxxxxxxxxxwx
+wwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwww
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+wwwwwwwwwwwwwwww
+"""
+bottom = """
+ywyyyyyyyyyyyywy
+wwwwwwwwwwwwwwww
+ywyyyyyyyyyyyywy
+wwwwwwwwwwwwwwww
+xwxxxxxxxxxxxxwx
+xwxxxxxxxxxxxxwx
+xwxxxxxxxxxxxxwx
+wwwwwwwwwwwwwwww
+ywyyyyyyyyyyyywy
+ywyyyyyyyyyyyywy
+ywyyyyyyyyyyyywy
+wwwwwwwwwwwwwwww
+xwxxxxxxxxxxxxwx
+xwxxxxxxxxxxxxwx
+wwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwww
+"""
+
+[blocks.daylight_sensor]
+name = "Daylight sensor"
+kind = "wood"
+hardness = 0.8
+boxes = [[0, 0, 0, 16, 6, 16]]
+colors = { w = "#5c3d1f", x = "#8c6034", y = "#b07c46", p = "#6fc8d6", q = "#c4f1f6", i = "#2f6f7c" }
+top = """
+wwwwwwwwwwwwwwww
+wqqqpppwwqqqpppw
+wqqippiwwqqpipiw
+wqppppiwwqpppppw
+wipppppwwpppippw
+wppiipiwwppppppw
+wiipppiwwpppipiw
+wwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwww
+wqqqpppwwqqqpipw
+wqqpippwwqqipppw
+wqppipiwwqppppiw
+wiippiiwwpppiipw
+wppiiipwwppipppw
+wppppppwwpppippw
+wwwwwwwwwwwwwwww
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+wwwwwwwwwwwwwwww
+wxxxwxxxwxxxwxxx
+wxxxwxxxwxxxwxxx
+wxxxwxxxwxxxwxxx
+wxxxwxxxwxxxwxxx
+wxxxwxxxwxxxwxxx
+"""
+bottom = """
+wwwwwwwwwwwwwwww
+wqqqpppwwqqqpppw
+wqqippiwwqqpipiw
+wqppppiwwqpppppw
+wipppppwwpppippw
+wppiipiwwppppppw
+wiipppiwwpppipiw
+wwwwwwwwwwwwwwww
+wwwwwwwwwwwwwwww
+wqqqpppwwqqqpipw
+wqqpippwwqqipppw
+wqppipiwwqppppiw
+wiippiiwwpppiipw
+wppiiipwwppipppw
+wppppppwwpppippw
+wwwwwwwwwwwwwwww
+"""
+
+[blocks.inverter]
+name = "Inverter"
+kind = "hard"
+hardness = 0.5
+boxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4]]
+turns = true
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+ssssssssssssssss
+suuttutuuuuuuuus
+suuuuuuootuuutts
+stuttuuoottutuus
+sutuuutbbuuututs
+suuuutbbbbtuuuus
+stuuubbbbbbutuus
+stuuuutbbuuuuuus
+stuuuuubbutututs
+sututuubbuuuutus
+suttuutbbuuuuuus
+sutttuubbutuuuus
+suutttubbtuuuuts
+suutuudddduuttus
+sutuutuuutuuuuus
+ssssssssssssssss
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+oooooooooooooooo
+oooooooooooooooo
+oooooooooooooooo
+oooooooooooooooo
+oooooooooooooooo
+tststststttsttss
+ssttststttssstst
+"""
+bottom = """
+ssssssssssssssss
+suuttutuuuuuuuus
+suuuuuuootuuutts
+stuttuuoottutuus
+sutuuutbbuuututs
+suuuutbbbbtuuuus
+stuuubbbbbbutuus
+stuuuutbbuuuuuus
+stuuuuubbutututs
+sututuubbuuuutus
+suttuutbbuuuuuus
+sutttuubbutuuuus
+suutttubbtuuuuts
+suutuudddduuttus
+sutuutuuutuuuuus
+ssssssssssssssss
+"""
+
+[blocks.lit_inverter]
+name = "Lit inverter"
+kind = "hard"
+hardness = 0.5
+glow = "gh"
+boxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4]]
+turns = true
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+ssssssssssssssss
+suuttutuuuuuuuus
+suuuuuuggtuuutts
+stuttuuggttutuus
+sutuuutffuuututs
+suuuutfffftuuuus
+stuuuffffffutuus
+stuuuutffuuuuuus
+stuuuuuffutututs
+sututuuffuuuutus
+suttuutffuuuuuus
+sutttuuffutuuuus
+suutttufftuuuuts
+suutuugggguuttus
+sutuutuuutuuuuus
+ssssssssssssssss
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+hhhhhhhhhhhhhhhh
+gggggggggggggggg
+gggggggggggggggg
+gggggggggggggggg
+gggggggggggggggg
+tststststttsttss
+ssttststttssstst
+"""
+bottom = """
+ssssssssssssssss
+suuttutuuuuuuuus
+suuuuuuggtuuutts
+stuttuuggttutuus
+sutuuutffuuututs
+suuuutfffftuuuus
+stuuuffffffutuus
+stuuuutffuuuuuus
+stuuuuuffutututs
+sututuuffuuuutus
+suttuutffuuuuuus
+sutttuuffutuuuus
+suutttufftuuuuts
+suutuugggguuttus
+sutuutuuutuuuuus
+ssssssssssssssss
+"""
+
+[blocks.delay]
+name = "Delay"
+kind = "hard"
+hardness = 0.5
+boxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4], [7, 2, 8, 9, 5, 10]]
+turns = true
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+ssssssssssssssss
+sttuuuuuuuututus
+suuuuuuoouuutuus
+suuuuuuoouuuuuus
+suutuuubbttuutus
+stuuutbbbbuuuuus
+suuuubbbbbbuuuus
+suuututbbuuuuuus
+stuuussoossuutus
+suttussoossuuuts
+suuuuuubbuuuuuus
+sututtubbuuttuus
+suutuutbbtutuuus
+stuutuddddutuuts
+stutuutuuuuuttus
+ssssssssssssssss
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+oooooooooooooooo
+oooooooooooooooo
+oooooooooooooooo
+oooooooooooooooo
+oooooooooooooooo
+tststststttsttss
+ssttststttssstst
+"""
+bottom = """
+ssssssssssssssss
+sttuuuuuuuututus
+suuuuuuoouuutuus
+suuuuuuoouuuuuus
+suutuuubbttuutus
+stuuutbbbbuuuuus
+suuuubbbbbbuuuus
+suuututbbuuuuuus
+stuuussoossuutus
+suttussoossuuuts
+suuuuuubbuuuuuus
+sututtubbuuttuus
+suutuutbbtutuuus
+stuutuddddutuuts
+stutuutuuuuuttus
+ssssssssssssssss
+"""
+
+[blocks.lit_delay]
+name = "Lit delay"
+kind = "hard"
+hardness = 0.5
+glow = "gh"
+boxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4], [7, 2, 8, 9, 5, 10]]
+turns = true
+colors = { s = "#55585d", t = "#76797e", u = "#9a9da1", v = "#3c3e42", w = "#5c3d1f", x = "#8c6034", y = "#b07c46", a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", e = "#b8401a", f = "#ff6a24", g = "#ffb050", h = "#fff0c0", o = "#5a2418", r = "#7c3422" }
+top = """
+ssssssssssssssss
+sttuuuuuuuututus
+suuuuuugguuutuus
+suuuuuugguuuuuus
+suutuuuffttuutus
+stuuutffffuuuuus
+suuuuffffffuuuus
+suuututffuuuuuus
+stuuussggssuutus
+suttussggssuuuts
+suuuuuuffuuuuuus
+sututtuffuuttuus
+suutuutfftutuuus
+stuutuggggutuuts
+stutuutuuuuuttus
+ssssssssssssssss
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+hhhhhhhhhhhhhhhh
+gggggggggggggggg
+gggggggggggggggg
+gggggggggggggggg
+gggggggggggggggg
+tststststttsttss
+ssttststttssstst
+"""
+bottom = """
+ssssssssssssssss
+sttuuuuuuuututus
+suuuuuugguuutuus
+suuuuuugguuuuuus
+suutuuuffttuutus
+stuuutffffuuuuus
+suuuuffffffuuuus
+suuututffuuuuuus
+stuuussggssuutus
+suttussggssuuuts
+suuuuuuffuuuuuus
+sututtuffuuttuus
+suutuutfftutuuus
+stuutuggggutuuts
+stutuutuuuuuttus
+ssssssssssssssss
+"""
+
+[blocks.copper_lamp]
+name = "Copper lamp"
+kind = "hard"
+hardness = 1
+colors = { a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", k = "#2c2824", m = "#4a3f35", l = "#ffd27a", n = "#fff4cc" }
+top = """
+aaaaaaaaaaaaaaaa
+adbbbbbbbbbbbbda
+abmkkkmccmkmkkba
+abkkkmkcckkkkkba
+abmkkmkcckkkmkba
+abkmmmkcckkmkmba
+abkkmmkcckmkkmba
+abccccccccccccba
+abccccccccccccba
+abkmmkkccmkkkkba
+abkkkkkccmkkkkba
+abmkkkkcckkkkmba
+abkkkkkccmkkkmba
+abkkkkkcckkkkkba
+adbbbbbbbbbbbbda
+aaaaaaaaaaaaaaaa
+"""
+side = """
+aaaaaaaaaaaaaaaa
+adbbbbbbbbbbbbda
+abmkkkmccmkmkkba
+abkkkmkcckkkkkba
+abmkkmkcckkkmkba
+abkmmmkcckkmkmba
+abkkmmkcckmkkmba
+abccccccccccccba
+abccccccccccccba
+abkmmkkccmkkkkba
+abkkkkkccmkkkkba
+abmkkkkcckkkkmba
+abkkkkkccmkkkmba
+abkkkkkcckkkkkba
+adbbbbbbbbbbbbda
+aaaaaaaaaaaaaaaa
+"""
+bottom = """
+aaaaaaaaaaaaaaaa
+adbbbbbbbbbbbbda
+abmkkkmccmkmkkba
+abkkkmkcckkkkkba
+abmkkmkcckkkmkba
+abkmmmkcckkmkmba
+abkkmmkcckmkkmba
+abccccccccccccba
+abccccccccccccba
+abkmmkkccmkkkkba
+abkkkkkccmkkkkba
+abmkkkkcckkkkmba
+abkkkkkccmkkkmba
+abkkkkkcckkkkkba
+adbbbbbbbbbbbbda
+aaaaaaaaaaaaaaaa
+"""
+
+[blocks.lit_copper_lamp]
+name = "Lit copper lamp"
+kind = "hard"
+hardness = 1
+light = true
+glow = "ln"
+colors = { a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874", k = "#2c2824", m = "#4a3f35", l = "#ffd27a", n = "#fff4cc" }
+top = """
+aaaaaaaaaaaaaaaa
+adbbbbbbbbbbbbda
+ablnlllcclllnlba
+ablnnllccnllnnba
+abnllnlccnlnllba
+ablllllccnlnnnba
+abnnnnlcclnlnlba
+abccccccccccccba
+abccccccccccccba
+abllllnccnlnllba
+abllllnccllnllba
+abllllncclnlnlba
+abllnllccllnnlba
+ablnlnncclllllba
+adbbbbbbbbbbbbda
+aaaaaaaaaaaaaaaa
+"""
+side = """
+aaaaaaaaaaaaaaaa
+adbbbbbbbbbbbbda
+ablnlllcclllnlba
+ablnnllccnllnnba
+abnllnlccnlnllba
+ablllllccnlnnnba
+abnnnnlcclnlnlba
+abccccccccccccba
+abccccccccccccba
+abllllnccnlnllba
+abllllnccllnllba
+abllllncclnlnlba
+abllnllccllnnlba
+ablnlnncclllllba
+adbbbbbbbbbbbbda
+aaaaaaaaaaaaaaaa
+"""
+bottom = """
+aaaaaaaaaaaaaaaa
+adbbbbbbbbbbbbda
+ablnlllcclllnlba
+ablnnllccnllnnba
+abnllnlccnlnllba
+ablllllccnlnnnba
+abnnnnlcclnlnlba
+abccccccccccccba
+abccccccccccccba
+abllllnccnlnllba
+abllllnccllnllba
+abllllncclnlnlba
+abllnllccllnnlba
+ablnlnncclllllba
+adbbbbbbbbbbbbda
+aaaaaaaaaaaaaaaa
+"""
+
+[blocks.copper_gate]
+name = "Copper gate"
+kind = "hard"
+hardness = 2
+shape = "see-through"
+colors = { a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874" }
+top = """
+db............bd
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+db............bd
+"""
+side = """
+db............bd
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+db............bd
+"""
+bottom = """
+db............bd
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+db............bd
+"""
+
+[blocks.open_copper_gate]
+name = "Open copper gate"
+kind = "hard"
+hardness = 2
+boxes = [[0, 0, 0, 2, 16, 2], [14, 0, 0, 16, 16, 2], [0, 0, 14, 2, 16, 16], [14, 0, 14, 16, 16, 16]]
+solid = false
+colors = { a = "#6e3a20", b = "#a4582f", c = "#cc7a44", d = "#eaa874" }
+top = """
+db............bd
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+db............bd
+"""
+side = """
+db............bd
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+db............bd
+"""
+bottom = """
+db............bd
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+bb...c....c...bb
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+db............bd
+"""

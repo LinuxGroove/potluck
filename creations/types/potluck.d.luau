@@ -72,7 +72,8 @@ export type World = {
 	-- 0.11: a Blockbench model (.bbmodel in the creation's folder) as a body, 16 pixels to a block times scale
 	model: (file: string, scale: number?) -> { Part },
 	block: (pos: Position) -> string,
-	set_block: (pos: Position, name: string) -> boolean,
+	set_block: (pos: Position, name: string, facing: string?) -> boolean,
+	facing: (pos: Position) -> string?,
 	top: (x: number, z: number) -> number,
 	find_block: (pos: Position, radius: number, name: string) -> vector?,
 	players: () -> { Player },
@@ -196,7 +197,7 @@ export type Test = {
 	wait: (seconds: number) -> (),
 	player: (name: string?, opts: TestPlayerOptions?) -> Player,
 	move: (player: Player, at: Position) -> Player,
-	place: (player: Player, at: Position, block: string) -> (),
+	place: (player: Player, at: Position, block: string, facing: string?) -> (),
 	dig: (player: Player, at: Position) -> boolean,
 	use_block: (player: Player, at: Position) -> (),
 	use: (player: Player, creature: Creature | number) -> (),

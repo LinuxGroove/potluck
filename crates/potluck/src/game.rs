@@ -13,7 +13,8 @@ use crate::player::Me;
 use crate::script::{KnobValue, PlayerInfo, Scripts};
 use crate::settings::Settings;
 use crate::share::{Done, ShareJobs, Who};
-use crate::ui::{Act, Acts, Focus, Labels, Screen, Toasts, WorldInfo};
+use crate::hosting::{Join, Rules};
+use crate::ui::{Act, Acts, Focus, Labels, Screen, SharedWorld, Toasts, WorldInfo};
 use crate::world::Voxels;
 use crate::KnobEdits;
 
@@ -146,7 +147,7 @@ pub fn interact(
     }
     // the middle button: the block you aim at, into your hand
     if let Some(hit) = me.target.filter(|_| c.pick && !settings.survival && me.aim_body.is_none()) {
-        acts.0.push(Act::Hold(hit.id));
+        acts.0.push(Act::Hold(crate::blocks::base(hit.id)));
     }
     let pid = net.my_id;
     // Share: what you ride or aim at, straight to a code
@@ -182,6 +183,9 @@ pub fn interact(
         }
     } else if let Some((i, _)) = me.aim_arch.as_ref().filter(|_| c.interact) {
         acts.0.push(Act::Arch(*i));
+    } else if let Some(at) = me.water.filter(|_| c.interact && crate::items::is_item(me.held(settings.survival))) {
+        // water, with an item in hand: a bucket to fill, a rod to cast
+        actions.0.push((pid, Action::UseBlock(at.to_array())));
     } else if let Some(hit) = me.target.filter(|_| c.interact) {
         // a block: creations may answer it (a table to craft at, say)
         actions.0.push((pid, Action::UseBlock(hit.block.to_array())));
@@ -551,11 +555,28 @@ pub fn do_acts(
             focus.go(Screen::Age(Box::new(act)));
             continue;
         }
+        // a younger player's new friends wait for a parent's OK
+        let (act, approved) = match act {
+            Act::Approved(a) => (*a, true),
+            a => (a, false),
+        };
+        if !approved && settings.young && settings.friends_ok && matches!(act, Act::AddFriend(_) | Act::AnswerFriend(_, true)) {
+            if settings.parent_pin.is_empty() {
+                focus.status = "New friends need a parent's OK: ask a parent to set a PIN, under Settings, Family, Parent settings.".into();
+            } else {
+                focus.fields.remove("okpin");
+                focus.status.clear();
+                focus.go(Screen::ParentOk(Box::new(act)));
+            }
+            continue;
+        }
         match act {
             Act::Resume => focus.go(Screen::Playing),
             Act::SetAge(young) => {
                 settings.age_asked = true;
                 settings.young = young;
+                // younger players' friends never see their address
+                settings.through_relay |= young;
                 settings.save();
                 let back = if info.in_world { Screen::Pause } else { Screen::Title };
                 if let Screen::Age(next) = std::mem::replace(&mut focus.screen, back) {
@@ -623,6 +644,130 @@ pub fn do_acts(
                 net.listen_lan();
                 focus.status.clear();
                 focus.go(Screen::Join);
+                // friends' worlds open now, once it's known who's playing
+                if settings.age_asked && settings.join_worlds {
+                    shares.worlds(&Who::of(&settings));
+                }
+            }
+            Act::JoinCode(code) => {
+                let code = crate::share::clean_code(&code);
+                if !settings.join_worlds {
+                    focus.status = "A parent turned off joining friends' worlds.".into();
+                } else if code.len() != 6 {
+                    focus.status = "A world code is 6 letters and numbers, like K7F-Q2M.".into();
+                } else {
+                    focus.status = format!("Asking the market for {}...", crate::ui::pretty_world_code(&code));
+                    shares.join_world(&Who::of(&settings), &code);
+                }
+            }
+            Act::OpenShareWorld => {
+                focus.status.clear();
+                focus.go(Screen::ShareWorld);
+            }
+            Act::ShareWorld => {
+                if !settings.share_worlds || info.joined || focus.shared.is_some() {
+                    continue;
+                }
+                focus.status = "Sharing...".into();
+                let secret = crate::p2p::new_key();
+                let beat = world_beat(&net, &settings, &voxels, &crate::p2p::key_text(&secret), false);
+                shares.share_world(&Who::of(&settings), beat, Some(secret));
+            }
+            Act::WorldWho => {
+                settings.world_who = if settings.world_who == "code" { "friends".into() } else { "code".into() };
+                settings.save();
+                // the market keeps who may join: tell it now
+                if let Some((_, key, _)) = net.shared() {
+                    let beat = world_beat(&net, &settings, &voxels, key, false);
+                    shares.share_world(&Who::of(&settings), beat, None);
+                }
+            }
+            Act::NewWorldCode => {
+                if let Some((_, key, _)) = net.shared() {
+                    focus.status = "Asking for a new code...".into();
+                    let beat = world_beat(&net, &settings, &voxels, key, true);
+                    shares.share_world(&Who::of(&settings), beat, None);
+                }
+            }
+            Act::StopSharing => {
+                if let Some(w) = focus.shared.take() {
+                    shares.stop_world(&Who::of(&settings), &w.code);
+                }
+                net.stop_sharing();
+                focus.status = "Your world isn't shared any more. Friends who came with its code have left.".into();
+            }
+            Act::OpenInvite => {
+                focus.status.clear();
+                focus.go(Screen::Invite);
+                shares.friends(&Who::of(&settings));
+            }
+            Act::InviteFriend(handle) => {
+                if let Some(code) = focus.shared.as_ref().map(|w| w.code.clone()) {
+                    focus.status = "Inviting...".into();
+                    shares.invite(&Who::of(&settings), &code, &handle);
+                }
+            }
+            Act::OpenFriends => {
+                focus.status.clear();
+                focus.fields.remove("friendcode");
+                focus.go(Screen::Friends);
+                shares.friends(&Who::of(&settings));
+                if settings.join_worlds {
+                    shares.worlds(&Who::of(&settings));
+                }
+            }
+            Act::AddFriend(code) => {
+                if crate::share::clean_code(&code).len() != 8 {
+                    focus.status = "A friend code is 8 letters and numbers, like N8GT-3WFA.".into();
+                    continue;
+                }
+                focus.fields.remove("friendcode");
+                focus.status = "Sending...".into();
+                shares.add_friend(&Who::of(&settings), &code);
+                if focus.screen != Screen::Friends {
+                    focus.go(Screen::Friends);
+                }
+            }
+            Act::AnswerFriend(id, yes) => {
+                shares.answer_friend(&Who::of(&settings), id, yes);
+                if focus.screen != Screen::Friends {
+                    focus.go(Screen::Friends);
+                }
+            }
+            Act::ParentOk(pin) => {
+                let now = std::time::Instant::now();
+                focus.pin_misses.retain(|t| now.duration_since(*t).as_secs() < 300);
+                focus.fields.remove("okpin");
+                if focus.pin_misses.len() >= 5 {
+                    focus.status = "That's a lot of tries: wait a few minutes.".into();
+                } else if settings.pin_matches(&pin) {
+                    focus.status.clear();
+                    if let Screen::ParentOk(next) = std::mem::replace(&mut focus.screen, Screen::Friends) {
+                        later.push(Act::Approved(next));
+                    }
+                } else {
+                    focus.pin_misses.push(now);
+                    focus.status = "That isn't the PIN.".into();
+                }
+            }
+            Act::OpenFriend(handle) => {
+                focus.status.clear();
+                focus.go(Screen::Friend(handle));
+            }
+            Act::RemoveFriend(handle) => {
+                focus.status = "Removing...".into();
+                shares.unfriend(&Who::of(&settings), &handle, false);
+                focus.go(Screen::Friends);
+            }
+            Act::BlockFriend(handle) => {
+                focus.status = "Blocking...".into();
+                shares.unfriend(&Who::of(&settings), &handle, true);
+                focus.go(Screen::Friends);
+            }
+            Act::Unblock(handle) => shares.unblock(&Who::of(&settings), &handle),
+            Act::NewFriendCode => {
+                focus.status = "Making a new code...".into();
+                shares.new_friend_code(&Who::of(&settings));
             }
             Act::JoinAddress(addr) => {
                 let addr = addr.trim().to_string();
@@ -943,7 +1088,55 @@ pub fn do_acts(
 
 /// Acts that reach other people: the first one asks who's playing.
 fn goes_online(act: &Act) -> bool {
-    matches!(act, Act::Share(_) | Act::ShareTo(..) | Act::Suggest(_) | Act::OpenServers | Act::JoinAddress(_) | Act::Market(..) | Act::OpenDevices | Act::EnterJam(_))
+    matches!(
+        act,
+        Act::Share(_) | Act::ShareTo(..) | Act::Suggest(_) | Act::OpenServers | Act::JoinAddress(_) | Act::Market(..) | Act::OpenDevices | Act::EnterJam(_) | Act::OpenShareWorld | Act::JoinCode(_) | Act::OpenFriends
+    )
+}
+
+/// Players a world shared from home takes at once: the host and eight
+/// friends, each friend about 20 KB/s of the host's upload.
+pub const HOME_PLAYERS: usize = 9;
+/// How often a world shared from home tells the market it's still open
+/// (the market forgets it after two and a half minutes).
+const BEAT_EVERY: f32 = 60.0;
+
+/// While the world's shared from home: who's here and which way they
+/// came, a heartbeat to the market every minute, and closing it on the
+/// market once it's no longer shared (the player left the world).
+pub fn share_heartbeat(time: Res<Time>, net: Res<Net>, settings: Res<Settings>, voxels: Res<Voxels>, shares: Res<ShareJobs>, mut focus: ResMut<Focus>) {
+    let Some(s) = focus.shared.as_mut() else { return };
+    let Some((_, key, addrs)) = net.shared() else {
+        shares.stop_world(&Who::of(&settings), &s.code);
+        focus.shared = None;
+        return;
+    };
+    s.players = net.remote_players().iter().map(|p| (p.name.clone(), p.link.as_ref().is_some_and(|l| l.relayed))).collect();
+    s.since_beat += time.delta_secs();
+    // the first beat goes before the game listens, so it has no addresses:
+    // tell the market as soon as there are some, or they change
+    if s.since_beat >= BEAT_EVERY || (addrs != s.sent_addrs && s.since_beat >= 2.0) {
+        s.since_beat = 0.0;
+        s.sent_addrs = addrs;
+        let key = key.to_string();
+        shares.share_world(&Who::of(&settings), world_beat(&net, &settings, &voxels, &key, false), None);
+    }
+}
+
+/// What the market hears about a world shared from home: the first time,
+/// and once a minute while it stays shared.
+pub fn world_beat(net: &Net, settings: &Settings, voxels: &Voxels, key: &str, new_code: bool) -> crate::share::WorldBeat {
+    let rules = net.shared_rules();
+    crate::share::WorldBeat {
+        slot: format!("seed {}", voxels.seed),
+        name: format!("{}'s world", settings.name),
+        who: if settings.young { "friends".into() } else { settings.world_who.clone() },
+        key: key.to_string(),
+        addrs: net.shared().map(|(_, _, a)| a).unwrap_or_default(),
+        players: net.remote_players().len() as i64 + 1,
+        max_players: rules.map(|r| r.max_players as i64).unwrap_or(HOME_PLAYERS as i64),
+        new_code,
+    }
 }
 
 /// The creations a fresh world starts with: the base game's.
@@ -1091,6 +1284,48 @@ pub fn share_results(
                 focus.status = format!("Entered in the {theme} jam. Stars it gets until the jam ends count.");
                 toasts.push(format!("Entered in the {theme} jam"));
             }
+            Done::Friends { page, said } => {
+                focus.friends = Some(page);
+                if !said.is_empty() {
+                    focus.status = said;
+                }
+            }
+            Done::WorldShared(w) => match w.secret {
+                // just opened on the market: start listening for friends
+                Some(secret) => {
+                    let key = crate::p2p::key_text(&secret);
+                    let rules = Rules { max_players: HOME_PLAYERS, join: Join::SignedIn, address: format!("p2p:{key}"), market_key: Some(w.market_key.clone()), ..Default::default() };
+                    match net.share_from_home(&settings.name, &w.code, secret, crate::p2p::Relay::parse(&w.relay), settings.through_relay, rules) {
+                        Ok(()) => {
+                            focus.status.clear();
+                            toasts.push(format!("Your world is shared as {}", crate::ui::pretty_world_code(&w.code)));
+                            focus.shared = Some(SharedWorld { code: w.code, url: w.url, who: w.who, name: w.name, ..Default::default() });
+                        }
+                        Err(e) => {
+                            shares.stop_world(&Who::of(&settings), &w.code);
+                            focus.status = format!("Couldn't share it: {e}.");
+                        }
+                    }
+                }
+                // a heartbeat, or who may come or the code changed
+                None => {
+                    if let Some(s) = focus.shared.as_mut() {
+                        if s.code != w.code {
+                            toasts.push(format!("Your world's new code is {}", crate::ui::pretty_world_code(&w.code)));
+                        }
+                        net.set_share_code(&w.code);
+                        (s.code, s.url, s.who, s.name) = (w.code, w.url, w.who, w.name);
+                    }
+                }
+            },
+            Done::WorldWay(w) => {
+                let shown = if w.name.is_empty() { "a friend's world".to_string() } else { w.name.clone() };
+                match net.join_p2p(&w.code, &shown, &w.key, &w.addrs, w.secret, crate::p2p::Relay::parse(&w.relay), settings.through_relay, &settings.name, w.pass, settings.young) {
+                    Ok(()) => focus.status = format!("Joining {shown}..."),
+                    Err(e) => focus.status = format!("Couldn't join {shown}: {e}."),
+                }
+            }
+            Done::Worlds(list) => focus.open_worlds = list,
             Done::Failed(e) => {
                 // a code fetched for an arch: say so in the world
                 if green.fetching.take().is_some() && focus.screen == Screen::Playing {

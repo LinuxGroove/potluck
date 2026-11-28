@@ -1,0 +1,78 @@
+#!/bin/bash
+# Service: iroh-relay, for worlds shared from home. It introduces two games
+# so they can find a way to each other through home routers, and carries the
+# few connections that never find one. The market says which keys may use
+# it: only games sharing or joining a world, while they do.
+#
+# HTTPS on relay.port (8443) with Caddy's certificate for `domain` (or
+# relay.cert and relay.key), and UDP 7842, where games learn the address the
+# internet sees them at.
+. "$SNAP/bin/common.sh"
+
+if ! relay_here; then
+  log "The relay isn't on this machine (relay.mode is $(cfg relay.mode here), or there's no domain or relay.cert)."
+  exit 0
+fi
+
+# Caddy fetches the certificate when it first starts: wait up to ten minutes.
+cert=""
+key=""
+for ((i = 0; i < 120; i++)); do
+  { read -r cert && read -r key; } < <(relay_cert) || true
+  if [ -n "$cert" ] && [ -r "$cert" ] && [ -r "$key" ]; then
+    break
+  fi
+  cert=""
+  sleep 5
+done
+[ -n "$cert" ] || fail "No certificate for the relay yet (Caddy's for $(cfg domain), or relay.cert); trying again shortly"
+
+# Dual stack where the machine has IPv6, IPv4 alone where it doesn't.
+any="0.0.0.0"
+[ -e /proc/net/if_inet6 ] && any="[::]"
+
+mkdir -p "$SNAP_DATA/relay"
+config="$SNAP_DATA/relay/relay.toml"
+rate_kb="$(cfg relay.rate 192)"
+burst=4194304
+[ $((rate_kb * 1024)) -le "$burst" ] || burst=$((rate_kb * 1024))
+cat >"$config" <<EOF
+# Written by the potluck-market snap from its settings at every start.
+enable_relay = true
+# only the captive portal check (Caddy sends port 80's /generate_204 here)
+http_bind_addr = "127.0.0.1:$RELAY_HTTP_PORT"
+enable_quic_addr_discovery = true
+enable_metrics = true
+# Prometheus text: relayserver bytes_sent and bytes_recv are what the monthly
+# budget is watched by (docs/hosting.md)
+metrics_bind_addr = "127.0.0.1:$RELAY_METRICS_PORT"
+
+[tls]
+# read again every day, so Caddy's renewals reach the relay
+cert_mode = "Reloading"
+manual_cert_path = $(toml_str "$cert")
+manual_key_path = $(toml_str "$key")
+https_bind_addr = "$any:$(cfg relay.port 8443)"
+quic_bind_addr = "$any:$RELAY_QUIC_PORT"
+
+[limits]
+# new connections a second, and in a burst
+accept_conn_limit = 20.0
+accept_conn_burst = 100
+
+# What one game may send through the relay: 192 KB/s is about ten friends'
+# worth of a world (each takes about 20 KB/s), with 4 MB at once so a
+# friend's first download of the world isn't held up.
+[limits.client.rx]
+bytes_per_second = $((rate_kb * 1024))
+max_burst_bytes = $burst
+
+# The market answers "true" only for keys it gave out.
+[access.http]
+url = "http://127.0.0.1:$MARKET_PORT/api/relay/allow"
+EOF
+
+IROH_RELAY_HTTP_BEARER_TOKEN="$(cfg relay.token)"
+export IROH_RELAY_HTTP_BEARER_TOKEN
+cd "$SNAP_DATA/relay"
+exec "$SNAP/bin/iroh-relay" --config-path "$config"

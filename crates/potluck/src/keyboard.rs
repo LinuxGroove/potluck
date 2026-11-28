@@ -97,6 +97,8 @@ pub fn max_len(field: &str) -> usize {
         "say" => crate::chat::MAX_LEN,
         "name" => 20,
         "waypoint" => 32,
+        "worldcode" | "friendcode" => 12,
+        "okpin" => 8,
         _ => 64,
     }
 }

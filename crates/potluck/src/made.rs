@@ -35,7 +35,11 @@ pub const FASTEST: f32 = 8.0;
 /// The longest name a made block can have.
 const LONGEST_NAME: usize = 24;
 /// The keys a block's table can have.
-const KEYS: &[&str] = &["name", "shape", "kind", "hardness", "light", "glow", "colors", "picture", "top", "side", "bottom", "boxes", "solid", "frames", "speed"];
+const KEYS: &[&str] = &["name", "shape", "kind", "hardness", "light", "glow", "colors", "picture", "top", "side", "bottom", "boxes", "solid", "frames", "speed", "turns"];
+/// The keys of a box written as a table (world 0.15).
+const BOX_KEYS: &[&str] = &["box", "joins"];
+/// The sides a box can join toward, as `blocks::SIDES` has them.
+const SIDE_NAMES: [&str; 6] = ["east", "west", "up", "down", "south", "north"];
 /// The keys each of a moving block's other pictures can have.
 const FRAME_KEYS: &[&str] = &["picture", "top", "side", "bottom"];
 
@@ -68,8 +72,10 @@ pub struct Def {
     /// What it sounds like and which tools dig it: one of `sound::DIG_KINDS`,
     /// or None to go by its name, as the game's own blocks do.
     pub kind: Option<&'static str>,
-    /// Boxes in sixteenths of a block (from, to), for a block made of boxes.
-    pub boxes: Vec<([u8; 3], [u8; 3])>,
+    /// Boxes in sixteenths of a block (from, to), for a block made of boxes,
+    /// and the side (into `blocks::SIDES`) a box shows only toward when the
+    /// block there is its creation's own (world 0.15's `joins`).
+    pub boxes: Vec<([u8; 3], [u8; 3], Option<usize>)>,
     /// Whether bodies bump into a block made of boxes.
     pub solid: bool,
     /// Top, sides and bottom; `same[i]` is the first face with the same
@@ -81,6 +87,11 @@ pub struct Def {
     /// second.
     pub frames: Vec<[Picture; 3]>,
     pub speed: f32,
+    /// Faces the way it's put down (world 0.15), and which way this one
+    /// faces (into `blocks::QUARTERS`): a world gives a block that turns
+    /// four ids, its key and `key>1` to `key>3` for the other three ways.
+    pub turns: bool,
+    pub quarter: u8,
 }
 
 impl Def {
@@ -185,8 +196,17 @@ fn picture(what: &str, v: &Value, colors: &BTreeMap<char, [u8; 3]>, glow: &[char
     Ok(Picture { size: n, rgba, glow: glows })
 }
 
-/// Reads one of a creation's blocks, saying plainly what's wrong.
+/// Reads one of a creation's blocks, saying plainly what's wrong. A key
+/// `name>q` is block `name` turned `q` quarter turns (see `Def::turns`).
 pub fn read(key: &str, spec: &Value) -> Result<Def, String> {
+    if let Some((own, q)) = key.split_once('>') {
+        let q: u8 = q.parse().ok().filter(|q| (1..4).contains(q)).ok_or_else(|| format!("blocks.{key}: no such way round"))?;
+        let def = read(own, spec)?;
+        if !def.turns {
+            return Err(format!("blocks.{own} doesn't turn"));
+        }
+        return Ok(turn(def, q));
+    }
     let what = format!("blocks.{key}");
     if !crate::sound::own_name_ok(key) {
         return Err(format!("{what}: a block's name in potluck.toml is lowercase letters, digits and _"));
@@ -216,9 +236,24 @@ pub fn read(key: &str, spec: &Value) -> Result<Def, String> {
             }
             let mut out = vec![];
             for (i, b) in a.iter().enumerate() {
-                let n: Option<Vec<u8>> = b.as_array().map(|b| b.iter().filter_map(|v| v.as_u64().filter(|v| *v <= 16).map(|v| v as u8)).collect());
+                // a box, or { box = [...], joins = "east" }
+                let (corners, joins) = match b {
+                    Value::Object(o) => {
+                        if let Some(k) = o.keys().find(|k| !BOX_KEYS.contains(&k.as_str())) {
+                            return Err(format!("{what}: box {} has no {k} (a box written as a table has box and joins)", i + 1));
+                        }
+                        let joins = match o.get("joins") {
+                            None => None,
+                            Some(Value::String(j)) => Some(SIDE_NAMES.iter().position(|n| *n == j.as_str()).ok_or_else(|| format!("{what}: box {}'s joins is one of {}", i + 1, SIDE_NAMES.join(", ")))?),
+                            Some(_) => return Err(format!("{what}: box {}'s joins is one of {}", i + 1, SIDE_NAMES.join(", "))),
+                        };
+                        (o.get("box"), joins)
+                    }
+                    other => (Some(other), None),
+                };
+                let n: Option<Vec<u8>> = corners.and_then(|b| b.as_array()).map(|b| b.iter().filter_map(|v| v.as_u64().filter(|v| *v <= 16).map(|v| v as u8)).collect());
                 match n {
-                    Some(n) if n.len() == 6 && n[0] < n[3] && n[1] < n[4] && n[2] < n[5] => out.push(([n[0], n[1], n[2]], [n[3], n[4], n[5]])),
+                    Some(n) if n.len() == 6 && n[0] < n[3] && n[1] < n[4] && n[2] < n[5] => out.push(([n[0], n[1], n[2]], [n[3], n[4], n[5]], joins)),
                     _ => return Err(format!("{what}: box {} is [x, y, z, x, y, z] in sixteenths of a block, from 0 to 16, the second corner past the first", i + 1)),
                 }
             }
@@ -342,12 +377,60 @@ pub fn read(key: &str, spec: &Value) -> Result<Def, String> {
         Some(_) if frames.is_empty() => return Err(format!("{what}: speed is for a block with frames")),
         Some(v) => v.as_f64().filter(|s| (0.5..=FASTEST as f64).contains(s)).ok_or_else(|| format!("{what}: speed is how many pictures a second it shows, 0.5 to {FASTEST}"))? as f32,
     };
+    let turns = match t.get("turns") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(format!("{what}: turns is true or false")),
+    };
     let same = [0, if texts[1] == texts[0] { 0 } else { 1 }, if texts[2] == texts[0] { 0 } else if texts[2] == texts[1] { 1 } else { 2 }];
     let faces: [Picture; 3] = faces.try_into().unwrap();
-    Ok(Def { name, shape, hardness, light, kind, boxes, solid, faces, same, frames, speed })
+    Ok(Def { name, shape, hardness, light, kind, boxes, solid, faces, same, frames, speed, turns, quarter: 0 })
 }
 
 /// Reads all of a creation's blocks.
+/// A picture turned a quarter clockwise, as many times as `q` says.
+fn turn_picture(p: &Picture, q: u8) -> Picture {
+    let n = p.size;
+    let mut out = p.clone();
+    for _ in 0..q % 4 {
+        let (rgba, glow) = (out.rgba.clone(), out.glow.clone());
+        for r in 0..n {
+            for c in 0..n {
+                // the pixel that comes here: north goes to east
+                let from = (n - 1 - c) * n + r;
+                out.rgba[r * n + c] = rgba[from];
+                out.glow[r * n + c] = glow[from];
+            }
+        }
+    }
+    out
+}
+
+/// A block that turns, facing `q` quarters clockwise from north: its top
+/// pictures and its boxes turned about the middle of the block.
+fn turn(mut def: Def, q: u8) -> Def {
+    def.faces[0] = turn_picture(&def.faces[0], q);
+    for f in &mut def.frames {
+        f[0] = turn_picture(&f[0], q);
+    }
+    for (from, to, joins) in &mut def.boxes {
+        let (mut a, mut b) = (*from, *to);
+        for _ in 0..q {
+            // (x, z) to (16 - z, x): north goes to east
+            let (ax, az, bx, bz) = (a[0], a[2], b[0], b[2]);
+            a[0] = 16 - bz;
+            b[0] = 16 - az;
+            a[2] = ax;
+            b[2] = bx;
+        }
+        *from = a;
+        *to = b;
+        *joins = joins.map(|d| blocks::turn_side(d, q));
+    }
+    def.quarter = q;
+    def
+}
+
 pub fn read_all(made: &BTreeMap<String, Value>) -> Result<Vec<(String, Def)>, String> {
     if made.len() > MOST_EACH {
         return Err(format!("a creation makes {MOST_EACH} blocks at most, and this one makes {}", made.len()));
@@ -355,12 +438,42 @@ pub fn read_all(made: &BTreeMap<String, Value>) -> Result<Vec<(String, Def)>, St
     made.iter().map(|(k, v)| Ok((k.clone(), read(k, v)?))).collect()
 }
 
-/// Puts a block in its slot and the block table.
+/// Each creation's number, for `Block::kin`, from 1 up.
+static KIN: Mutex<BTreeMap<String, u16>> = Mutex::new(BTreeMap::new());
+
+fn kin(creation: &str) -> u16 {
+    let mut k = KIN.lock().unwrap_or_else(|e| e.into_inner());
+    let n = k.len() as u16 + 1;
+    *k.entry(creation.to_string()).or_insert(n)
+}
+
+/// Puts a block in its slot and the block table. A block turned another
+/// way (`key>q`) has a top tile of its own and shares its sides and bottom
+/// with its north-facing self, whose id it needs to find in `s` (so a
+/// list puts those first).
 fn install(s: &mut [Option<Slot>], id: BlockId, entry: Entry, def: Def) {
-    let base = format!("{}/{}", entry.creation, entry.key);
+    let own = entry.key.split('>').next().unwrap_or_default();
+    let base = format!("{}/{own}", entry.creation);
     let names = [intern(format!("{base}/top")), intern(format!("{base}/side")), intern(format!("{base}/bottom"))];
-    let tiles = [names[def.same[0]], names[def.same[1]], names[def.same[2]]];
-    let model: &'static [Cuboid] = Box::leak(def.boxes.iter().map(|(from, to)| Cuboid::new(*from, *to)).collect::<Vec<_>>().into_boxed_slice());
+    let mut tiles = [names[def.same[0]], names[def.same[1]], names[def.same[2]]];
+    let turn_of = if !def.turns {
+        0
+    } else if def.quarter == 0 {
+        id
+    } else {
+        tiles[0] = intern(format!("{}/{}/top", entry.creation, entry.key));
+        s.iter().flatten().find(|x| x.entry.creation == entry.creation && x.entry.key == own).map(|x| x.entry.id).unwrap_or(id)
+    };
+    let model: &'static [Cuboid] = Box::leak(
+        def.boxes
+            .iter()
+            .map(|(from, to, joins)| match joins {
+                Some(d) => Cuboid::new(*from, *to).when(blocks::When::Kin(*d)),
+                None => Cuboid::new(*from, *to),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
     let block: &'static Block = Box::leak(Box::new(Block {
         name: intern(def.name.clone()),
         faces: tiles,
@@ -369,6 +482,9 @@ fn install(s: &mut [Option<Slot>], id: BlockId, entry: Entry, def: Def) {
         hardness: def.hardness,
         model,
         solid: def.solid,
+        kin: kin(&entry.creation),
+        turn_of,
+        quarter: def.quarter,
     }));
     blocks::set_made(id, Some(block));
     s[(id - FIRST_MADE) as usize] = Some(Slot { entry: Entry { id, ..entry }, def, tiles });
@@ -380,7 +496,12 @@ pub fn register(creation: &str, made: &BTreeMap<String, Value>) -> Result<Vec<Bl
     if made.is_empty() {
         return Ok(vec![]);
     }
-    let defs = read_all(made)?;
+    let mut defs = read_all(made)?;
+    // a block that turns is four: its own key facing north, then key>1 to
+    // key>3 for east, south and west, after every block's own
+    let turning: Vec<(String, Def)> = defs.iter().filter(|(_, d)| d.turns).flat_map(|(k, d)| (1..4).map(move |q| (format!("{k}>{q}"), turn(d.clone(), q)))).collect();
+    let own = defs.len();
+    defs.extend(turning);
     let mut s = slots();
     let mut ids = vec![];
     let mut taken: Vec<usize> = vec![];
@@ -395,7 +516,8 @@ pub fn register(creation: &str, made: &BTreeMap<String, Value>) -> Result<Vec<Bl
     }
     let mut changed = false;
     for ((key, def), &id) in defs.into_iter().zip(&ids) {
-        let entry = Entry { id, creation: creation.to_string(), key: key.clone(), spec: made[&key].clone() };
+        let spec = made[key.split('>').next().unwrap_or_default()].clone();
+        let entry = Entry { id, creation: creation.to_string(), key, spec };
         if s[(id - FIRST_MADE) as usize].as_ref().is_some_and(|x| x.entry == entry) {
             continue;
         }
@@ -405,6 +527,7 @@ pub fn register(creation: &str, made: &BTreeMap<String, Value>) -> Result<Vec<Bl
     if changed {
         GENERATION.fetch_add(1, Ordering::AcqRel);
     }
+    ids.truncate(own);
     Ok(ids)
 }
 
@@ -418,7 +541,10 @@ pub fn table() -> Vec<Entry> {
 pub fn adopt(entries: &[Entry]) {
     let mut s = slots();
     let mut changed = false;
-    for e in entries.iter().filter(|e| e.id >= FIRST_MADE) {
+    // blocks facing north before their turned selves, which look for them
+    let mut entries: Vec<&Entry> = entries.iter().collect();
+    entries.sort_by_key(|e| e.key.contains('>'));
+    for e in entries.into_iter().filter(|e| e.id >= FIRST_MADE) {
         if s[(e.id - FIRST_MADE) as usize].as_ref().is_some_and(|x| x.entry == *e) {
             continue;
         }
@@ -445,7 +571,9 @@ pub fn restore(entries: &[Entry]) -> Option<[BlockId; 256]> {
     let mut to: [BlockId; 256] = std::array::from_fn(|i| i as BlockId);
     let mut moved = false;
     let mut s = slots();
-    for e in entries.iter().filter(|e| e.id >= FIRST_MADE) {
+    let mut entries: Vec<&Entry> = entries.iter().collect();
+    entries.sort_by_key(|e| e.key.contains('>'));
+    for e in entries.into_iter().filter(|e| e.id >= FIRST_MADE) {
         let Ok(def) = read(&e.key, &e.spec) else { continue };
         let mine = |x: &Option<Slot>| x.as_ref().is_some_and(|x| x.entry.creation == e.creation && x.entry.key == e.key);
         let at = s.iter().position(mine).or_else(|| s[(e.id - FIRST_MADE) as usize].is_none().then_some((e.id - FIRST_MADE) as usize)).or_else(|| s.iter().position(|x| x.is_none()));
@@ -646,7 +774,8 @@ pub fn draw(
                 continue;
             }
             for (i, face) in x.def.faces.iter().enumerate() {
-                if x.def.same[i] != i {
+                // a turned block's sides and bottom are its north-facing self's
+                if x.def.same[i] != i || (i > 0 && x.def.quarter > 0) {
                     continue;
                 }
                 if x.def.moves(i) && moving.bytes < MOVING_BYTES {

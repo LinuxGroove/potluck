@@ -165,6 +165,41 @@ local Thing = world.creature {
 "##;
 
 #[test]
+fn a_creature_used_before_its_first_step_is_spawned_first() {
+    // spawned by a timer, and patted before its first tick: `spawned` comes
+    // first, so `used` finds the field it sets (the soak caught Gloomlings
+    // stopping over this)
+    let code = r##"
+local world = require("@potluck/world")
+local Thing = world.creature {
+    name = "Thing", count = 0, home = "paddock",
+    body = { { "box", size = { 1, 1, 1 }, at = { 0, 0.5, 0 }, color = "#ffffff" } },
+}
+function Thing:spawned() self.pats = 0 end
+function Thing:used(player) self.pats += 1; print("pats " .. self.pats) end
+world.after(0.1, function() world.spawn(Thing, world.spot("paddock")) end)
+"##;
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&creation(code), &mut herd).unwrap();
+    for _ in 0..20 {
+        scripts.tick(&mut voxels, &mut herd, 0.05);
+        if !herd.bodies.is_empty() {
+            break;
+        }
+    }
+    let id = *herd.bodies.keys().next().expect("the timer spawns one");
+    let ada = PlayerInfo { id: 1, name: "Ada".into(), pos: herd.bodies[&id].pos };
+    scripts.players = vec![ada.clone()];
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "no error");
+    assert!(vm.log.iter().any(|l| l.contains("pats 1")), "used once, after spawned: {:?}", vm.log);
+}
+
+#[test]
 fn a_creation_that_never_stops_is_stopped() {
     let mut voxels = world();
     let mut herd = Herd::default();
@@ -632,6 +667,11 @@ fn fake_game_server() -> String {
 /// (or none, for what needs no git hosting: passes, the server list,
 /// boards). It looks at servers on this machine.
 fn start_market(forgejo: Option<(&str, &str)>, run: &str) -> (String, Arc<potluck_share::market::App>) {
+    start_market_with(forgejo, run, |_| {})
+}
+
+/// A market with some of its settings changed first.
+fn start_market_with(forgejo: Option<(&str, &str)>, run: &str, edit: impl FnOnce(&mut potluck_share::config::Config) + Send + 'static) -> (String, Arc<potluck_share::market::App>) {
     let (tx, rx) = channel();
     let (seed, forgejo, token) = match forgejo {
         Some((f, t)) => (true, f.to_string(), t.to_string()),
@@ -655,6 +695,7 @@ fn start_market(forgejo: Option<(&str, &str)>, run: &str) -> (String, Arc<potluc
             cfg.forgejo.token = token;
             cfg.forgejo.email_domain = "test.invalid".into();
             cfg.private_servers = true;
+            edit(&mut cfg);
             let app = Arc::new(market::App::open(cfg, checks::Words::parse("grumbleweed\n")).unwrap());
             app.db().execute("INSERT INTO accounts (user_id, handle, name, created, beta, trusted) VALUES ('potluck', ?1, 'Potluck', 0, 1, 1)", [format!("potluck-{run}")]).unwrap();
             if seed {
@@ -875,6 +916,363 @@ fn a_listed_server_lets_in_who_the_market_vouches_for() {
     assert_eq!((scores[0]["name"].as_str(), scores[0]["server"].as_str(), scores[1]["value"].as_f64()), (Some("Cy"), Some("Riverbend"), Some(12.5)), "best first, with the server it was on: {v}");
 }
 
+/// The way under worlds shared from home, with no market: frames go both
+/// ways and come out as `Wire` events, a world shared with Always connect
+/// through LinuxGroove gives out no addresses and goes only by the relay,
+/// and with no relay at all friends on the same network still connect
+/// direct.
+#[test]
+fn frames_go_both_ways_peer_to_peer() {
+    use crate::p2p::{dial, key_text, new_key, Relay, Sharing};
+    use std::sync::mpsc::Sender;
+    let (map, url, _relay) = crate::p2p::rt().block_on(iroh::test_utils::run_relay_server()).expect("a relay");
+    let relay = Relay::testing(map, url);
+    // what one side hears: frames, which way it went, and the end
+    let hear = |rx: &Receiver<Wire>, want: &[u8], what: &str| -> (Option<Sender<Vec<u8>>>, Vec<bool>) {
+        let t = Instant::now();
+        let (mut joined, mut ways) = (None, vec![]);
+        while t.elapsed() < Duration::from_secs(30) {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Wire::Joined(_, out)) => joined = Some(out),
+                Ok(Wire::Link(_, l)) => ways.push(l.relayed),
+                Ok(Wire::Data(_, b)) if b == want => return (joined, ways),
+                Ok(Wire::Gone(_)) => panic!("{what}: gone"),
+                _ => {}
+            }
+        }
+        panic!("{what}: heard nothing");
+    };
+
+    for (through, with_relay) in [(true, true), (false, false)] {
+        let what = if through { "through the relay" } else { "with no relay" };
+        let relay = with_relay.then(|| relay.clone());
+        let secret = new_key();
+        let key = key_text(&secret);
+        let (tx, rx) = channel();
+        let sharing = Sharing::start(secret, relay.clone(), through, tx, Arc::new(Mutex::new(1))).unwrap();
+        assert_eq!(sharing.key(), key);
+        let addrs = sharing.addrs();
+        assert_eq!(addrs.is_empty(), through, "{what}: addresses {addrs:?}");
+        let (ctx, crx) = channel();
+        let out = dial(new_key(), relay, through, &key, &addrs, ctx).unwrap();
+        out.send(b"hello".to_vec()).unwrap();
+        let (back, host_ways) = hear(&rx, b"hello", what);
+        back.expect("the friend comes out as a player").send(b"welcome".to_vec()).unwrap();
+        let (_, friend_ways) = hear(&crx, b"welcome", what);
+        assert!(!host_ways.is_empty() && host_ways.iter().all(|r| *r == through), "{what}: the host's way {host_ways:?}");
+        assert!(friend_ways.iter().all(|r| *r == through), "{what}: the friend's way {friend_ways:?}");
+        // the friend leaves: the host hears they've gone
+        drop(out);
+        let t = Instant::now();
+        while !matches!(rx.recv_timeout(Duration::from_millis(100)), Ok(Wire::Gone(_))) {
+            assert!(t.elapsed() < Duration::from_secs(20), "{what}: the host never heard the friend go");
+        }
+    }
+    assert!(dial(new_key(), None, true, &key_text(&new_key()), &[], channel().0).is_err(), "through the relay with no relay can't go anywhere");
+}
+
+/// A relay for the tests that asks the market who may use it, as the
+/// real one does with `access.http`.
+#[derive(Debug)]
+struct AsksTheMarket(Arc<std::sync::OnceLock<(String, String)>>);
+
+impl iroh_relay::server::AccessControl for AsksTheMarket {
+    async fn on_connect(&self, r: &iroh_relay::server::ClientRequest) -> iroh_relay::server::Access {
+        let Some((market, token)) = self.0.get().cloned() else { return iroh_relay::server::Access::Deny { reason: None } };
+        let key = r.endpoint_id().to_string();
+        let ok = tokio::task::spawn_blocking(move || relay_asks(&market, &token, &key)).await.unwrap_or(false);
+        if ok { iroh_relay::server::Access::Allow } else { iroh_relay::server::Access::Deny { reason: None } }
+    }
+}
+
+/// What the market tells the relay about a key.
+fn relay_asks(market: &str, token: &str, key: &str) -> bool {
+    ureq::post(format!("{market}/api/relay/allow"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Iroh-Endpoint-Id", key)
+        .send_empty()
+        .ok()
+        .and_then(|mut r| r.body_mut().read_to_string().ok())
+        .is_some_and(|t| t == "true")
+}
+
+/// Sharing a world from home, peer to peer: Ada and Bo swap friend codes,
+/// Ada shares her world to Friends and Bo comes in under the name the
+/// market knows, straight to her game. Cy, who isn't a friend, is turned
+/// away, as is a pass made for another key; set to Anyone with the code,
+/// Cy comes in. A younger friend joins only while it's set to Friends, and
+/// Always connect through LinuxGroove goes by the relay, which lets in only
+/// the keys the market gave out. Invites put the world at the top of a
+/// friend's list, and once Ada stops sharing nobody gets in.
+#[test]
+fn a_world_shared_from_home_lets_friends_in_peer_to_peer() {
+    use crate::net::{self, Event, Msg, Net};
+    use crate::share::{Done, ShareJobs, Who, WorldWay};
+    use crate::ui::Focus;
+    home();
+    let run = crate::settings::random_hex(5);
+    let token = format!("relay-{run}");
+    let asks = Arc::new(std::sync::OnceLock::new());
+    let (map, relay_url, _relay) = crate::p2p::rt().block_on(iroh::test_utils::run_relay_server_with_access(true, Arc::new(AsksTheMarket(asks.clone())))).expect("a relay");
+    let relay = crate::p2p::Relay::testing(map, relay_url);
+    let (relay_text, token2) = (relay.url(), token.clone());
+    let (market, _mkt) = start_market_with(None, &run, move |cfg| {
+        cfg.relay = relay_text;
+        cfg.relay_token = token2;
+    });
+    asks.set((market.clone(), token.clone())).unwrap();
+    let server = fake_game_server();
+    let who = |name: &str, young: bool| Who { server: server.clone(), market: market.clone(), device: format!("{}-{run}", name.to_lowercase()), name: format!("{name} {run}"), young };
+    let (ada, bo, cy, dee) = (who("Ada", false), who("Bo", false), who("Cy", false), who("Dee", true));
+    // each player's game signs in on its own
+    let jobs: std::collections::HashMap<String, ShareJobs> = [&ada, &bo, &cy, &dee].iter().map(|w| (w.device.clone(), ShareJobs::default())).collect();
+    let j = |w: &Who| &jobs[&w.device];
+    let page = |w: &Who| {
+        j(w).friends(w);
+        match done(j(w), "a friends page") {
+            Done::Friends { page, .. } => page,
+            _ => panic!("not a friends page"),
+        }
+    };
+    let said = |w: &Who, what: &str| match done(j(w), what) {
+        Done::Friends { said, page } => (said, page),
+        _ => panic!("{what}: not a friends page"),
+    };
+
+    // Ada's friend code, typed by Bo the way people type them
+    let code = page(&ada).code;
+    assert_eq!(code.len(), 8, "{code}");
+    j(&bo).add_friend(&bo, &format!("{}-{}", &code[..4], &code[4..]).to_lowercase());
+    let (s, bo_page) = said(&bo, "Bo asks");
+    assert!(s.starts_with("Sent"), "{s}");
+    assert_eq!(bo_page.asked.len(), 1, "Bo sees his request waiting");
+    let asking = page(&ada).asking;
+    assert_eq!(asking.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), vec![bo.name.as_str()], "Ada sees Bo asking");
+    j(&ada).answer_friend(&ada, asking[0].id, true);
+    let (s, ada_page) = said(&ada, "Ada says yes");
+    assert!(s.contains("friends now"), "{s}");
+    let bo_handle = ada_page.friends.iter().find(|f| f.name == bo.name).expect("Bo is Ada's friend").handle.clone();
+    assert!(page(&bo).friends.iter().any(|f| f.name == ada.name), "and Ada is Bo's");
+
+    // Cy asks, Ada blocks him, and her code looks like nobody's to him after
+    j(&cy).add_friend(&cy, &code);
+    said(&cy, "Cy asks");
+    let cy_handle = page(&ada).asking.iter().find(|a| a.name == cy.name).expect("Cy asking").handle.clone();
+    j(&ada).unfriend(&ada, &cy_handle, true);
+    let (s, ada_page) = said(&ada, "Ada blocks Cy");
+    assert!(s.starts_with("Blocked") && ada_page.blocked.len() == 1 && ada_page.asking.is_empty(), "{s} {ada_page:?}");
+    j(&cy).add_friend(&cy, &code);
+    let (s, _) = said(&cy, "Cy asks again");
+    assert!(s.contains("isn't anyone's friend code"), "a block looks like a wrong code: {s}");
+    j(&ada).unblock(&ada, &cy_handle);
+    said(&ada, "Ada unblocks Cy");
+
+    // Dee, who is under 13, becomes Ada's friend too
+    j(&dee).add_friend(&dee, &code);
+    said(&dee, "Dee asks");
+    let dee_asks = page(&ada).asking.into_iter().find(|a| a.name == dee.name).expect("Dee asking");
+    assert!(dee_asks.young, "Ada's game knows Dee is younger");
+    j(&ada).answer_friend(&ada, dee_asks.id, true);
+    said(&ada, "Ada says yes to Dee");
+
+    // Ada shares her world, to Friends
+    let mut host = App::new();
+    host.add_plugins(MinimalPlugins);
+    crate::sim(&mut host, crate::SEED);
+    host.insert_resource(crate::settings::Settings { name: ada.name.clone(), server: server.clone(), market: market.clone(), device: ada.device.clone(), ..Default::default() });
+    host.update();
+    let secret = crate::p2p::new_key();
+    let ada_key = crate::p2p::key_text(&secret);
+    let beat = |host: &App, key: &str| {
+        let w = host.world();
+        crate::game::world_beat(w.resource::<Net>(), w.resource::<crate::settings::Settings>(), w.resource::<Voxels>(), key, false)
+    };
+    host.world().resource::<ShareJobs>().share_world(&ada, beat(&host, &ada_key), Some(secret));
+    let t = Instant::now();
+    let world_code = loop {
+        host.update();
+        if let Some(s) = &host.world().resource::<Focus>().shared {
+            break s.code.clone();
+        }
+        assert!(t.elapsed() < Duration::from_secs(30), "Ada's world was never shared: {}", host.world().resource::<Focus>().status);
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(world_code.len(), 6, "{world_code}");
+    // the game tells the market where it listens once it knows
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.sent_addrs.is_empty()) {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(20), "Ada's game never said where it listens");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(host.world().resource::<Net>().shared().map(|(c, k, _)| (c.to_string(), k.to_string())), Some((world_code.clone(), ada_key.clone())));
+    assert_eq!(host.world().resource::<Focus>().shared.as_ref().map(|s| s.who.as_str()), Some("friends"));
+    assert!(relay_asks(&market, &token, &ada_key), "the relay may carry Ada's world");
+    assert!(!relay_asks(&market, &token, &crate::p2p::key_text(&crate::p2p::new_key())), "and nobody else");
+    assert!(!relay_asks(&market, "not-the-token", &ada_key), "when it's really the relay asking");
+    let mut r = ureq::get(format!("{market}/w/{}", world_code.to_lowercase())).call().expect("the world's page");
+    let html = r.body_mut().read_to_string().unwrap();
+    assert!(html.contains(&crate::ui::pretty_world_code(&world_code)), "the QR code's page shows the code");
+
+    // a friend's game dials Ada's: the name it's welcomed under, whether it
+    // went by the relay (as both games see it) and its connection, or why not
+    let knock = |host: &mut App, w: WorldWay, through: bool, hello: &str, young: bool, key: Option<iroh::SecretKey>| -> Result<(String, bool, std::sync::mpsc::Sender<Vec<u8>>), String> {
+        let (tx, rx) = channel();
+        let out = crate::p2p::dial(key.unwrap_or(w.secret), crate::p2p::Relay::parse(&w.relay), through, &w.key, &w.addrs, tx).unwrap();
+        out.send(net::frame_msg(&Msg::Hello { name: hello.into(), protocol: net::PROTOCOL, pass: Some(w.pass), young })).unwrap();
+        let t = Instant::now();
+        let (mut name, mut relayed) = (None, vec![]);
+        while t.elapsed() < Duration::from_secs(40) {
+            host.update();
+            std::thread::sleep(Duration::from_millis(10));
+            for e in rx.try_iter() {
+                match net::decode(e) {
+                    Some(Event::Link(_, l)) => relayed.push(l.relayed),
+                    Some(Event::Msg(_, Msg::Refused(why))) => return Err(why),
+                    Some(Event::Msg(_, Msg::Roster(all))) if name.is_none() => name = all.last().cloned(),
+                    Some(Event::Gone(_)) => return Err(format!("gone (heard {name:?})")),
+                    _ => {}
+                }
+            }
+            // through the relay: every look at the way says so; direct: it
+            // gets there once the two games find each other
+            let Some(n) = &name else { continue };
+            let host_sees = host.world().resource::<Net>().remote_players().iter().find(|p| &p.name == n).and_then(|p| p.link.as_ref().map(|l| l.relayed));
+            if through && !relayed.is_empty() && t.elapsed() > Duration::from_secs(3) && host_sees == Some(true) {
+                return Ok((n.clone(), relayed.iter().all(|r| *r), out));
+            }
+            if !through && relayed.last() == Some(&false) && host_sees == Some(false) {
+                return Ok((n.clone(), false, out));
+            }
+        }
+        panic!("{hello} heard nothing back (welcomed as {name:?}, ways {relayed:?})");
+    };
+    let way = |w: &Who, code: &str| {
+        j(w).join_world(w, code);
+        match done(j(w), "the way in") {
+            Done::WorldWay(w) => w,
+            _ => panic!("not a way in"),
+        }
+    };
+
+    let mut w = way(&bo, &world_code.to_lowercase());
+    let t = Instant::now();
+    while w.addrs.is_empty() {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(20), "the market never heard where Ada's game listens");
+        std::thread::sleep(Duration::from_millis(100));
+        w = way(&bo, &world_code);
+    }
+    assert_eq!((w.code.as_str(), w.key.as_str(), w.name.clone()), (world_code.as_str(), ada_key.as_str(), format!("{}'s world", ada.name)));
+    let came = knock(&mut host, w, false, "bo the impostor", false, None);
+    assert_eq!(came.as_ref().map(|(n, r, _)| (n.as_str(), *r)), Ok((bo.name.as_str(), false)), "Bo comes in under the name the market knows, straight to Ada's game");
+    let bo_there = host.world().resource::<Net>().remote_players().iter().map(|p| p.handle.clone()).collect::<Vec<_>>();
+    assert_eq!(bo_there, vec![Some(bo_handle.clone())], "Ada's game knows who Bo is");
+    drop(came);
+
+    // a pass made for another game's key doesn't open it
+    let w = way(&bo, &world_code);
+    let why = knock(&mut host, w, false, "Bo", false, Some(crate::p2p::new_key())).expect_err("a pass for another key");
+    assert!(why.contains("another world"), "{why}");
+
+    // Cy isn't Ada's friend: the market says so, and won't give him a way in
+    j(&cy).join_world(&cy, &world_code);
+    let why = failed(j(&cy), "Cy joining a friends' world");
+    assert!(why.contains("friends"), "{why}");
+
+    // Anyone with the code: Cy comes in, and Dee can't while it's that way
+    host.world_mut().resource_mut::<crate::settings::Settings>().world_who = "code".into();
+    host.world().resource::<ShareJobs>().share_world(&ada, beat(&host, &ada_key), None);
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.who != "code") {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(30), "who may come never changed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let w = way(&cy, &world_code);
+    assert_eq!(knock(&mut host, w, false, "Cy", false, None).map(|(n, _, _)| n), Ok(cy.name.clone()), "anyone with the code comes in");
+    j(&dee).join_world(&dee, &world_code);
+    let why = failed(j(&dee), "Dee joining a world open to anyone");
+    assert!(why.contains("younger players"), "{why}");
+
+    // back to Friends: Dee comes in, always through LinuxGroove
+    host.world_mut().resource_mut::<crate::settings::Settings>().world_who = "friends".into();
+    host.world().resource::<ShareJobs>().share_world(&ada, beat(&host, &ada_key), None);
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.who != "friends") {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(30), "who may come never changed back");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let w = way(&dee, &world_code);
+    assert!(relay_asks(&market, &token, &crate::p2p::key_text(&w.secret)), "the relay may carry Dee's connection");
+    assert_eq!(knock(&mut host, w, true, "Dee", true, None).map(|(n, r, _)| (n, r)), Ok((dee.name.clone(), true)), "Dee comes in by the relay, and only by it");
+
+    // an invite puts Ada's world first on Bo's list
+    j(&ada).invite(&ada, &world_code, &bo_handle);
+    let Done::Said(s) = done(j(&ada), "Ada invites Bo") else { panic!("not said") };
+    assert!(s.starts_with("Invited"), "{s}");
+    j(&bo).worlds(&bo);
+    let Done::Worlds(list) = done(j(&bo), "Bo's friends' worlds") else { panic!("not worlds") };
+    assert_eq!(list.first().map(|o| (o.code.as_str(), o.invited)), Some((world_code.as_str(), true)), "{list:?}");
+    j(&cy).worlds(&cy);
+    let Done::Worlds(list) = done(j(&cy), "Cy's friends' worlds") else { panic!("not worlds") };
+    assert!(list.is_empty(), "Cy isn't Ada's friend, so her world isn't on his list: {list:?}");
+
+    // Bo's own game joins by the code, the way Join a friend's world does
+    let mut guest = App::new();
+    guest.add_plugins(MinimalPlugins);
+    crate::sim(&mut guest, crate::SEED);
+    guest.init_resource::<crate::player::Me>().init_resource::<crate::mesh::ChunkEntities>().add_systems(Update, net::client_net);
+    guest.insert_resource(crate::settings::Settings { name: "Bo".into(), server: server.clone(), market: market.clone(), device: bo.device.clone(), ..Default::default() });
+    guest.update();
+    guest.world().resource::<ShareJobs>().join_world(&bo, &world_code);
+    let t = Instant::now();
+    while guest.world().resource::<Net>().relayed() != Some(false) || !host.world().resource::<Net>().remote_players().iter().any(|p| p.name == bo.name) {
+        host.update();
+        guest.update();
+        assert!(t.elapsed() < Duration::from_secs(30), "Bo's game never got in: {}", guest.world().resource::<Focus>().status);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(guest.world().resource::<crate::ui::WorldInfo>().line.ends_with("direct"), "Bo's game says which way it went: {}", guest.world().resource::<crate::ui::WorldInfo>().line);
+    assert!(host.world().resource::<Focus>().shared.as_ref().is_some_and(|s| s.players.iter().any(|(n, relayed)| n == &bo.name && !relayed)), "Share this world lists Bo, direct");
+    drop(guest);
+
+    // Ada stops sharing: her game closes it on the market
+    host.world_mut().resource_mut::<Net>().stop_sharing();
+    let t = Instant::now();
+    while host.world().resource::<Focus>().shared.is_some() {
+        host.update();
+        assert!(t.elapsed() < Duration::from_secs(10), "sharing never stopped");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let t = Instant::now();
+    loop {
+        host.update();
+        j(&bo).join_world(&bo, &world_code);
+        match jobs_wait(j(&bo)) {
+            Done::Failed(why) => {
+                assert!(why.contains("isn't open"), "{why}");
+                break;
+            }
+            _ => assert!(t.elapsed() < Duration::from_secs(10), "the market still offers a way into a world that stopped"),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The next thing a job finished with, failures included.
+fn jobs_wait(jobs: &crate::share::ShareJobs) -> crate::share::Done {
+    let start = Instant::now();
+    loop {
+        if let Some(d) = jobs.poll().into_iter().next() {
+            return d;
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "a job took too long");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn failed(jobs: &crate::share::ShareJobs, what: &str) -> String {
     let start = Instant::now();
     loop {
@@ -1043,6 +1441,65 @@ fn younger_players_share_with_friends_and_play_where_its_for_all_ages() {
     focus.go(Screen::Parents);
     focus.parents_open = false;
     assert!(acts(&focus, &settings).iter().any(|a| matches!(a, Act::UnlockParents(_))), "locked until the PIN");
+}
+
+/// A younger player's new friends wait for a parent: with no PIN the game
+/// says to ask for one, with one it asks for it, and only the right PIN
+/// sends the request. Their world is always for their friends, Always
+/// connect through LinuxGroove turns on with the age answer, and a parent
+/// can turn sharing and joining worlds off.
+#[test]
+fn a_younger_players_friends_and_worlds_wait_for_a_parent() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{menu_items, Act, Acts, Focus, Kind, Screen, SharedWorld, WorldInfo};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    let offline = Settings { market: "http://127.0.0.1:9".into(), server: "http://127.0.0.1:9".into(), ..Default::default() };
+    app.insert_resource(offline.clone()).insert_resource(crate::player::Me::default());
+    let run = |app: &mut App, act: Act| {
+        app.world_mut().resource_mut::<Acts>().0.push(act);
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+        app.world_mut().run_system_once(crate::game::do_acts).unwrap();
+    };
+    run(&mut app, Act::SetAge(true));
+    assert!(app.world().resource::<Settings>().through_relay, "a younger player's friends never see their address");
+
+    run(&mut app, Act::AddFriend("N8GT-3WFA".into()));
+    assert!(app.world().resource::<Focus>().status.contains("parent"), "{}", app.world().resource::<Focus>().status);
+    app.world_mut().resource_mut::<Settings>().parent_pin = offline.pin_hash("2468");
+    run(&mut app, Act::AddFriend("N8GT-3WFA".into()));
+    assert!(matches!(&app.world().resource::<Focus>().screen, Screen::ParentOk(a) if **a == Act::AddFriend("N8GT-3WFA".into())), "the PIN first");
+    run(&mut app, Act::ParentOk("1357".into()));
+    assert!(matches!(app.world().resource::<Focus>().screen, Screen::ParentOk(_)), "not with the wrong PIN");
+    run(&mut app, Act::ParentOk("2468".into()));
+    let focus = app.world().resource::<Focus>();
+    assert_eq!((&focus.screen, focus.status.as_str()), (&Screen::Friends, "Sending..."), "the right PIN sends it");
+    app.world_mut().resource_mut::<Settings>().friends_ok = false;
+    run(&mut app, Act::AnswerFriend(7, true));
+    assert_eq!(app.world().resource::<Focus>().screen, Screen::Friends, "a parent can let them make friends on their own");
+
+    // Share this world: friends only, and a parent can turn it off
+    let (lib, scripts, info) = (app.world().resource::<Library>(), app.world().resource::<Scripts>(), WorldInfo::default());
+    let mut settings = app.world().resource::<Settings>().clone();
+    let mut focus = Focus::default();
+    focus.go(Screen::ShareWorld);
+    let items = |focus: &Focus, settings: &Settings| menu_items(focus, lib, scripts, settings, &info).1;
+    let shown = items(&focus, &settings);
+    assert!(!shown.iter().any(|i| matches!(&i.kind, Kind::Choice { act: Act::WorldWho, .. })), "younger players don't choose who joins");
+    assert!(shown.iter().any(|i| i.kind == Kind::Button(Act::ShareWorld)));
+    focus.shared = Some(SharedWorld { code: "K7FQ2M".into(), url: "https://market.example/w/K7FQ2M".into(), who: "friends".into(), name: "Kid's world".into(), players: vec![("Ada".into(), true)], ..Default::default() });
+    let shown = items(&focus, &settings);
+    assert!(shown.iter().any(|i| i.label == "K7F-Q2M" && i.kind == Kind::Big), "the code, big");
+    assert!(shown.iter().any(|i| i.kind == Kind::Qr), "and its QR code");
+    assert!(shown.iter().any(|i| i.label.contains("Ada") && i.label.contains("through LinuxGroove")), "who's here, and which way");
+    settings.share_worlds = false;
+    assert!(!items(&focus, &settings).iter().any(|i| i.kind == Kind::Button(Act::StopSharing) || i.kind == Kind::Button(Act::ShareWorld)), "a parent turned sharing off");
+    settings.join_worlds = false;
+    focus.go(Screen::Join);
+    assert!(!items(&focus, &settings).iter().any(|i| matches!(i.kind, Kind::Button(Act::JoinCode(_)))), "or joining friends' worlds");
 }
 
 /// The first time anything would go online, the game asks who's playing,
@@ -2929,7 +3386,14 @@ fn creations_hear_players_place_break_and_use_blocks() {
 fn a_table_is_a_workbench_for_survival_players() {
     use crate::blocks::{by_name, PLANKS, STONE};
     home();
-    let bench = Library::load().list.remove("workbench").expect("the base game has the workbench");
+    let mut lib = Library::load().list;
+    let bench = lib.remove("workbench").expect("the base game has the workbench");
+    // the circuit parts are there when the Circuits creation's blocks are
+    let circuits = lib.remove("circuits").expect("the base game has circuits");
+    crate::made::register(&circuits.id, &circuits.manifest.blocks).unwrap();
+    // and the anvil when the Tools creation's is
+    let tools = lib.remove("tools").expect("the base game has tools");
+    crate::made::register(&tools.id, &tools.manifest.blocks).unwrap();
     let b = |n: &str| by_name(n).unwrap();
     let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
     let mut voxels = world();
@@ -2954,7 +3418,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     scripts.use_block(7, at, table);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let panel = asked(&scripts, 7).expect("the table asks what to make");
-    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel"]);
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel", "Circuits"]);
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
     assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
     // it asks again with how it went, so making several is quick
@@ -2988,13 +3452,14 @@ fn a_table_is_a_workbench_for_survival_players() {
     // every recipe makes what it says, with enough to hand
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
-        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone"],
+        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot"],
         vec!["Planks"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
-        vec!["Planks", "Dirt", "Wheat"],
-        vec!["Planks", "Cobblestone", "Flint", "Iron ingot"],
-        vec!["Planks", "Cobblestone"],
+        vec!["Planks", "Dirt", "Wheat", "Copper ingot"],
+        vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool"],
+        vec!["Planks", "Cobblestone", "Copper ingot"],
         vec!["Cream wool", "Planks", "Lantern"],
+        vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
@@ -3002,11 +3467,24 @@ fn a_table_is_a_workbench_for_survival_players() {
         scripts.carry(7, true, &carry, 1000);
         scripts.use_block(7, at, table);
         run(&mut scripts, &mut voxels, &mut herd, 0.2);
-        let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
-        assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
-        for i in 0..panel.choices.len() {
-            let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap_or_else(|| panic!("{} {i}: {:?} {:?}", panel.title, scripts.vms["workbench"].error, scripts.vms["workbench"].log));
-            assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
+        let mut panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
+        // a long list comes in pages, with More last, back round to the first
+        loop {
+            assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
+            assert!(panel.choices.len() <= 8 && panel.title.chars().count() <= 40, "{}: {:?}", panel.title, panel.choices);
+            let mut next = None;
+            for i in 0..panel.choices.len() {
+                let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap_or_else(|| panic!("{} {i}: {:?} {:?}", panel.title, scripts.vms["workbench"].error, scripts.vms["workbench"].log));
+                if panel.choices[i] == "More" {
+                    next = Some(after);
+                    break;
+                }
+                assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
+            }
+            match next {
+                Some(p) if !p.title.contains("(1 of") => panel = p,
+                _ => break,
+            }
         }
         answer(&mut scripts, &mut voxels, &mut herd, None);
     }
@@ -3266,6 +3744,26 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
 }
 
+/// world 0.17: Interact looks through water to the block behind it, but
+/// with an item in hand it uses the water (a bucket, a rod).
+#[test]
+fn a_ray_finds_water_before_the_block_behind_it() {
+    use crate::blocks::{AIR, STONE, WATER};
+    use crate::player::{raycast, water_ahead};
+    let mut w = world();
+    let (eye, dir) = (Vec3::new(100.5, 110.5, 100.5), Vec3::X);
+    for x in 101..106 {
+        w.set(IVec3::new(x, 110, 100), AIR);
+    }
+    w.set(IVec3::new(102, 110, 100), WATER);
+    w.set(IVec3::new(104, 110, 100), STONE);
+    assert_eq!(raycast(&w, eye, dir, 6.0).map(|h| h.block), Some(IVec3::new(104, 110, 100)), "the block behind the water");
+    assert_eq!(water_ahead(&w, eye, dir, 6.0), Some(IVec3::new(102, 110, 100)), "the water in front of it");
+    w.set(IVec3::new(102, 110, 100), AIR);
+    w.set(IVec3::new(105, 110, 100), WATER);
+    assert_eq!(water_ahead(&w, eye, dir, 6.0), None, "water behind a block isn't reached");
+}
+
 /// world 0.8 and the Tools creation: a tool in hand digs its kind of block
 /// faster on the player's own game, wears with every block it breaks, and
 /// breaks when it's worn out; items can't be put down.
@@ -3288,7 +3786,7 @@ fn tools_dig_faster_wear_out_and_break() {
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&tools, &mut herd).unwrap();
     let digging = scripts.digging_changes().expect("the tools say how they dig");
-    assert_eq!(digging.len(), 6, "{digging:?}");
+    assert_eq!(digging.len(), 21, "five materials, three kinds each, three hoes, shears, a sickle and a hammer: {digging:?}");
     let speeds = |b| digging.iter().find(|d| d.0 == b).map(|d| d.1).unwrap();
     assert_eq!(speeds(pick), crate::items::Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 }, "a wooden pickaxe digs stone faster");
     assert_eq!((speeds(axe).speeds[2], speeds(axe).level), (4.0, 2), "a stone axe chops faster, and reaches further");
@@ -4929,6 +5427,90 @@ fn made_blocks_are_drawn_into_the_atlas() {
     assert!(n > 40, "room for plenty of made blocks: {n}");
 }
 
+/// world 0.15: a made block that turns is four blocks, one for each way it
+/// can face, carried and named as the one facing north; boxes can reach
+/// toward their creation's other blocks.
+#[test]
+fn made_blocks_turn_and_join() {
+    use crate::blocks::{self, When};
+    use crate::made;
+    let spec = |t: &str| -> serde_json::Value { serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()).unwrap() };
+    // a slab with a knob at the front (north), and an arrow on top
+    let mut rows = vec!["aaaaaaaa".to_string(); 8];
+    rows[0] = "aaaabaaa".into();
+    let top = format!("[{}]", rows.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(", "));
+    let side = format!("[{}]", vec!["\"cccccccc\""; 8].join(", "));
+    let gadget = format!("turns = true\nboxes = [[0, 0, 0, 16, 2, 16], [7, 2, 2, 9, 7, 4]]\ncolors = {{ a = \"#888\", b = \"#f00\", c = \"#444\" }}\ntop = {top}\nside = {side}\nbottom = {side}\n");
+    let plug = format!("boxes = [[6, 0, 6, 10, 1, 10], {{ box = [10, 0, 7, 16, 1, 9], joins = \"east\" }}]\ncolors = {{ c = \"#444\" }}\npicture = {side}\n");
+    // what's wrong is said plainly
+    for (bad, says) in [
+        (gadget.replace("turns = true", "turns = 1"), "turns is true or false"),
+        (plug.replace("\"east\"", "\"sideways\""), "joins is one of"),
+        (plug.replace("joins =", "reaches ="), "has no reaches"),
+        (plug.replace("box = [10", "box = [16"), "box 2"),
+    ] {
+        let e = made::read("gadget", &spec(&bad)).err().unwrap_or_else(|| panic!("{bad} should be refused"));
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    assert!(made::read("plug>1", &spec(&plug)).is_err(), "a block that doesn't turn has no other ways");
+    let def = made::read("gadget", &spec(&gadget)).unwrap();
+    assert!(def.turns && def.quarter == 0);
+    let east = made::read("gadget>1", &spec(&gadget)).unwrap();
+    assert_eq!(east.quarter, 1);
+    assert_eq!((east.boxes[1].0, east.boxes[1].1), ([12, 2, 7], [14, 7, 9]), "the knob goes round to the east");
+    assert_eq!((east.boxes[0].0, east.boxes[0].1), ([0, 0, 0], [16, 2, 16]), "the slab stays");
+    assert_eq!(east.faces[0].rgba[4 * 8 + 7], [255, 0, 0, 255], "the arrow's tip at the east edge");
+    assert_eq!(def.faces[0].rgba[4], [255, 0, 0, 255], "facing north it's on the top row");
+    assert_eq!(east.faces[1], def.faces[1], "the sides don't change");
+    let west = made::read("gadget>3", &spec(&gadget)).unwrap();
+    assert_eq!((west.boxes[1].0, west.boxes[1].1), ([2, 2, 7], [4, 7, 9]));
+
+    // a world gives it four ids, and names and carries the one facing north
+    let mut blocks_of = BTreeMap::new();
+    blocks_of.insert("gadget".to_string(), spec(&gadget));
+    blocks_of.insert("plug".to_string(), spec(&plug));
+    let ids = made::register("turn-test", &blocks_of).unwrap();
+    assert_eq!(ids.len(), 2, "one id for each block it makes");
+    let (north, plug_id) = (ids[0], ids[1]);
+    assert_eq!(made::table().iter().filter(|e| e.creation == "turn-test").count(), 5, "and three more for the ways a gadget faces");
+    assert_eq!(blocks::by_name("gadget"), Some(north));
+    let turned: Vec<_> = (0..4).map(|q| blocks::turned(north, q)).collect();
+    assert_eq!(turned[0], north);
+    assert_eq!(turned.iter().collect::<std::collections::BTreeSet<_>>().len(), 4, "{turned:?}");
+    for (q, &id) in turned.iter().enumerate() {
+        assert_eq!((blocks::base(id), blocks::facing(id)), (north, Some(q as u8)));
+        assert_eq!(blocks::block(id).name, "Gadget");
+        assert_eq!(blocks::turned(id, 2), turned[2], "from any way round");
+    }
+    assert_eq!((blocks::facing(plug_id), blocks::turned(plug_id, 1), blocks::base(plug_id)), (None, plug_id, plug_id), "a plug doesn't turn");
+    let (b0, b1) = (blocks::block(north), blocks::block(turned[1]));
+    assert_ne!(b0.faces[0], b1.faces[0], "a top of its own");
+    assert_eq!(b0.faces[1..], b1.faces[1..], "the same sides and bottom");
+    assert_eq!((b1.model[1].from, b1.model[1].to), ([12, 2, 7], [14, 7, 9]));
+    let rules = crate::items::Rules::default();
+    assert_eq!(rules.gives(turned[3], 0.5), Some((crate::items::of_block(north), 1)), "it breaks into the one facing north");
+
+    // a plug's arm reaches only toward its creation's own blocks
+    let arm = blocks::block(plug_id).model[1].when;
+    assert!(arm == When::Kin(0));
+    assert!(arm.holds(plug_id, |d| if d == 0 { turned[2] } else { blocks::AIR }), "a gadget to the east");
+    assert!(arm.holds(plug_id, |d| if d == 0 { plug_id } else { blocks::AIR }), "another plug");
+    assert!(!arm.holds(plug_id, |d| if d == 0 { blocks::STONE } else { blocks::AIR }), "not stone");
+    assert!(!arm.holds(plug_id, |_| blocks::AIR));
+    assert_eq!(When::Kin(5).turned(1), When::Kin(0), "north goes to east");
+    assert_eq!(When::Same(2).turned(3), When::Same(2), "up stays up");
+
+    // a player looking one way puts it down facing that way
+    assert_eq!([(0.0, -1.0), (1.0, 0.1), (0.2, 1.0), (-1.0, 0.0)].map(|(x, z)| blocks::quarter_looking(x, z)), [0, 1, 2, 3]);
+    assert_eq!((0..4).map(|q| blocks::turn_side(5, q)).collect::<Vec<_>>(), [5, 0, 4, 1], "north, east, south, west");
+
+    // a guest's world takes the host's ids, turned ones and all
+    let entries: Vec<_> = made::table().into_iter().filter(|e| e.creation == "turn-test").collect();
+    made::adopt(&entries);
+    assert_eq!(blocks::turned(north, 1), turned[1]);
+    assert_eq!(blocks::base(turned[1]), north);
+}
+
 /// world 0.14: a made block's frames, read and checked like its picture,
 /// and drawn once each so the game only sends the frame it shows.
 #[test]
@@ -5308,7 +5890,7 @@ fn the_type_checker_says_only_what_its_sure_of() {
             "main.luau line 11: math has no flor (did you mean math.floor?)",
             "main.luau line 12: this should be one of \"bottom\", \"left\" or \"right\", not \"middle\"",
             "main.luau line 13: this call takes 1 to 2 values, and it's given none",
-            "main.luau line 14: this call takes 2 values, and it's given 1",
+            "main.luau line 14: this call takes 2 to 3 values, and it's given 1",
             "main.luau line 16: this should be a number, not some text",
         ]
     );
@@ -5357,9 +5939,10 @@ fn island_print(v: &Voxels) -> u64 {
 #[test]
 fn the_island_is_made_as_it_always_was() {
     // checked block for block against the island maker before the world
-    // went on past it
-    assert_eq!(island_print(&world::generate(26)), 0x8a20f6f4779acd69);
-    assert_eq!(island_print(&world::generate(7)), 0x794aaccb72e4082d);
+    // went on past it, then again when caves and ores came (world::GEN 2):
+    // they change only what's under the ground and cave mouths inland
+    assert_eq!(island_print(&world::generate(26)), 0x7d426827b76f8aec);
+    assert_eq!(island_print(&world::generate(7)), 0xc04af4975cbce73c);
 }
 
 #[test]
@@ -5674,4 +6257,266 @@ fn caves_keep_away_from_the_sea_and_mostly_from_the_surface() {
         }
     }
     assert!(mouths > 0 && mouths < 256 * 256 / 50, "{mouths} holes in the grass");
+}
+
+/// The pup, as its creation makes it.
+fn pup() -> crate::script::KindDef {
+    home();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&Library::load().list.remove("pup").expect("the base game has pups"), &mut herd).unwrap();
+    scripts.vms["pup"].kinds[0].clone()
+}
+
+#[test]
+fn creatures_step_up_a_block_and_stand_where_their_feet_are() {
+    use crate::blocks::{FENCE, GRASS};
+    let k = pup();
+    assert!(k.half.x < 0.45, "a pup bumps into things about as wide as its legs stand, not as long as it is: {:?}", k.half);
+    // flat ground with its top at 21; east of x 24 a step one block up, a
+    // wall three high to the north, and a fence to the south
+    let mut w = Voxels::empty(1);
+    for x in 0..48 {
+        for z in 0..48 {
+            for y in 0..=20 {
+                w.set(IVec3::new(x, y, z), GRASS);
+            }
+            if x >= 24 {
+                w.set(IVec3::new(x, 21, z), GRASS);
+            }
+            if z == 10 && x < 24 {
+                for y in 21..24 {
+                    w.set(IVec3::new(x, y, z), GRASS);
+                }
+            }
+            if z == 38 && x < 24 {
+                w.set(IVec3::new(x, 21, z), FENCE);
+            }
+        }
+    }
+    let mut rng = Rng::new(1);
+    let mut herd = Herd::default();
+    let run = |herd: &mut Herd, rng: &mut Rng, secs: f32, each: &mut dyn FnMut(&creatures::Body)| {
+        for _ in 0..(secs * 60.0) as usize {
+            creatures::step(herd, &w, 1.0 / 60.0, rng);
+            each(herd.bodies.values().next().unwrap());
+        }
+    };
+    let id = herd.spawn("pup", &k, Vec3::new(18.5, 21.0, 24.5));
+    let walk = |herd: &mut Herd, to: Vec3| {
+        let b = herd.bodies.get_mut(&id).unwrap();
+        b.goal = Some(to);
+        b.wander = false;
+    };
+    // up the step, with no hop
+    walk(&mut herd, Vec3::new(30.5, 22.0, 24.5));
+    let mut rose = 0.0f32;
+    run(&mut herd, &mut rng, 5.0, &mut |b| rose = rose.max(b.vel.y));
+    let b = &herd.bodies[&id];
+    assert_eq!(b.pos.y, 22.0, "it walked up onto the step: {:?}", b.pos);
+    assert!(b.pos.x > 29.0, "and on to where it was going: {:?}", b.pos);
+    assert!(rose <= 0.0, "without a hop: it rose at {rose}");
+    // and back down
+    walk(&mut herd, Vec3::new(18.5, 21.0, 24.5));
+    run(&mut herd, &mut rng, 5.0, &mut |_| {});
+    assert_eq!(herd.bodies[&id].pos.y, 21.0);
+    // a wall it can't climb stops it where it stands, still on the ground
+    walk(&mut herd, Vec3::new(18.5, 21.0, 4.5));
+    let mut highest = 0.0f32;
+    run(&mut herd, &mut rng, 5.0, &mut |b| highest = highest.max(b.pos.y));
+    assert_eq!(highest, 21.0, "it never left the ground at the wall");
+    assert!((herd.bodies[&id].pos.z - 11.0 - k.half.z).abs() < 0.01, "it's up against the wall: {:?}", herd.bodies[&id].pos);
+    // nor does it step over a fence
+    walk(&mut herd, Vec3::new(18.5, 21.0, 44.5));
+    run(&mut herd, &mut rng, 8.0, &mut |b| highest = highest.max(b.pos.y));
+    assert_eq!(highest, 21.0, "a fence keeps it in");
+    assert!(herd.bodies[&id].pos.z < 38.0);
+    // dropped beside the step, it stands on the ground under its feet, not
+    // on the block beside it
+    let b = herd.bodies.get_mut(&id).unwrap();
+    b.pos = Vec3::new(24.0 - 0.45, 23.5, 24.5);
+    b.goal = None;
+    b.yaw = 0.0;
+    b.vel = Vec3::ZERO;
+    run(&mut herd, &mut rng, 2.0, &mut |_| {});
+    assert_eq!(herd.bodies[&id].pos.y, 21.0, "it stands where its feet are: {:?}", herd.bodies[&id].pos);
+    // a step up shows as a climb, a few frames long, not a pop
+    let mut shown = Vec3::new(10.0, 21.0, 10.0);
+    let mut frames = 0;
+    while shown.y < 21.99 && frames < 60 {
+        shown = creatures::shown_at(shown, Vec3::new(10.0, 22.0, 10.0), 1.0 / 60.0);
+        frames += 1;
+    }
+    assert!((8..30).contains(&frames), "{frames} frames to show a step");
+}
+
+#[test]
+fn creatures_are_picked_anywhere_on_their_bodies() {
+    let k = pup();
+    let mut herd = Herd::default();
+    let id = herd.spawn("pup", &k, Vec3::ZERO);
+    for yaw in [0.0f32, 1.0, 2.5, 4.0] {
+        let b = herd.bodies.get_mut(&id).unwrap();
+        b.yaw = yaw;
+        let b = &herd.bodies[&id];
+        let nose = Quat::from_rotation_y(yaw) * Vec3::new(0.0, 0.85, -0.84);
+        let side = Quat::from_rotation_y(yaw) * Vec3::X;
+        // aimed down at its nose from above and in front
+        let eye = nose + Vec3::new(0.0, 1.5, 0.0) - side * 0.01;
+        assert!(b.ray(eye, Vec3::NEG_Y).is_some(), "its nose is part of it, facing {yaw}");
+        // beside it, a hand's width off its flank, misses
+        let flank = side * 0.5 + Vec3::Y * 2.0;
+        assert!(b.ray(flank, Vec3::NEG_Y).is_none(), "beside it misses, facing {yaw}");
+    }
+}
+
+#[test]
+fn creatures_near_the_start_neither_hop_by_themselves_nor_float() {
+    home();
+    let lib = Library::load();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    // these only hop when someone rides, uses or hits them
+    for id in ["pup", "woolly", "hedgehog", "mossback", "villagers"] {
+        scripts.start(&lib.list[id], &mut herd).unwrap();
+    }
+    let start = crate::script::spot("start").unwrap();
+    let ground = |v: &Voxels, p: Vec3| {
+        let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
+        let mut y = p.y.floor() as i32;
+        while y > 0 && !crate::blocks::is_solid(v.get(x, y, z)) {
+            y -= 1;
+        }
+        y as f32 + 1.0
+    };
+    let mut rng = Rng::new(1);
+    // each body's creation, hops, frames on the ground, frames held up
+    // with no foot on the ground, and whether it was on the ground last frame
+    let mut seen: BTreeMap<u64, (String, u32, u32, u32, bool)> = BTreeMap::new();
+    let dt = 1.0 / 60.0;
+    for i in 0..(60.0 / dt) as usize {
+        // a player walks round the start, so the pups follow
+        let a = i as f32 * dt / 20.0 * std::f32::consts::TAU;
+        let mut p = start + Vec3::new(a.cos() * 6.0, 0.0, a.sin() * 6.0);
+        p.y = voxels.top(p.x.floor() as i32, p.z.floor() as i32) as f32 + 1.0;
+        scripts.players = vec![PlayerInfo { id: 1, name: "Ken".into(), pos: p }];
+        creatures::step(&mut herd, &voxels, dt, &mut rng);
+        scripts.tick(&mut voxels, &mut herd, dt);
+        for b in herd.bodies.values() {
+            let s = seen.entry(b.id).or_insert((b.creation.clone(), 0, 0, 0, false));
+            // (a body that walks into water floats up, which isn't a hop)
+            let wet = voxels.at(b.pos.floor().as_ivec3()) == crate::blocks::WATER;
+            if s.4 && !b.on_ground && b.vel.y > 0.0 && !wet {
+                s.1 += 1;
+            }
+            if b.on_ground {
+                s.2 += 1;
+                // held up in the air: no leg (or, with none, not its middle)
+                // over the block it stands on
+                let turn = Quat::from_rotation_y(b.yaw);
+                let mut feet: Vec<Vec3> = b.parts.iter().filter(|p| p.leg).map(|p| b.pos + turn * Vec3::new(p.at.x, 0.0, p.at.z)).collect();
+                if feet.is_empty() {
+                    feet.push(b.pos);
+                }
+                if feet.iter().all(|f| ground(&voxels, *f) < b.pos.y - 0.5) {
+                    s.3 += 1;
+                }
+            }
+            s.4 = b.on_ground;
+        }
+    }
+    for (creation, hops, grounded, held_up, _) in seen.values() {
+        assert_eq!(*hops, 0, "a {creation} hopped by itself");
+        let held = *held_up as f32 / (*grounded).max(1) as f32;
+        println!("{creation}: on the ground {grounded} frames, held up by the block beside it {:.1}% of them", held * 100.0);
+        if creation == "pup" {
+            assert!(held < 0.05, "a pup stood a block up in the air {:.0}% of the time", held * 100.0);
+        }
+    }
+}
+
+/// The climate's tint leaves the island and the lands near it exactly as
+/// they were, and shifts grass and leaves further out.
+#[test]
+fn climate_tints_spare_the_island() {
+    use crate::mesh::{climate_tint, leaf_tint, Tints};
+    for seed in [crate::SEED, 7, 99_991] {
+        for z in (-140..520).step_by(23) {
+            for x in (-140..520).step_by(29) {
+                let t = climate_tint(world::climate(seed, x as f32, z as f32));
+                assert_eq!(t, Vec3::ONE, "tint at {x}, {z} with seed {seed}");
+                assert_eq!(leaf_tint(t), Vec3::ONE);
+            }
+        }
+        for k in [IVec2::ZERO, IVec2::new(5, 7), IVec2::new(-3, 14)] {
+            let t = Tints::of(seed, k);
+            for (dx, dz) in [(0.0, 0.0), (7.5, 31.0), (16.0, 16.0)] {
+                assert_eq!(t.at(k.x as f32 * 32.0 + dx, k.y as f32 * 32.0 + dz), Vec3::ONE, "column {k}");
+            }
+        }
+    }
+    // far out, somewhere is yellower (warm and dry) and somewhere cooler
+    let (mut dry, mut cold) = (false, false);
+    for i in 0..60 {
+        for j in 0..60 {
+            let t = climate_tint(world::climate(crate::SEED, -9000.0 + i as f32 * 300.0, -9000.0 + j as f32 * 300.0));
+            dry |= t.z < 0.85 && t.x > 1.05;
+            cold |= t.x < 0.9 && t.z >= 0.95;
+        }
+    }
+    assert!(dry && cold, "dry {dry}, cold {cold}");
+}
+
+/// The far land fills every column in reach that isn't drawn, with holes
+/// where columns are, ground where the seed puts it, the sea over what's
+/// under it, and the open sea on past.
+#[test]
+fn far_land_fills_what_isnt_drawn() {
+    use crate::render::far::{Job, Spot, STEP};
+    let seed = crate::SEED;
+    let palette = crate::map::Palette::default();
+    let at = Vec2::new(190.0, 190.0);
+    let drawn: std::collections::HashSet<IVec2> = (4..8).flat_map(|z| (4..8).map(move |x| IVec2::new(x, z))).collect();
+    let job = |spots| Job { seed, at, reach: 300.0, sea: 2000.0, drawn: drawn.clone(), spots, colours: crate::render::far::Colours::from_palette(&palette) };
+    let built = job(Default::default()).build();
+    let pos = |m: &Mesh| match m.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) => p.clone(),
+        _ => vec![],
+    };
+    let land = pos(&built.land);
+    assert!(!land.is_empty());
+    // nothing inside a drawn column (its edges are shared with skirts)
+    for p in &land {
+        let k = IVec2::new((p[0] / 32.0).floor() as i32, (p[2] / 32.0).floor() as i32);
+        let inside = p[0] % 32.0 != 0.0 && p[2] % 32.0 != 0.0;
+        assert!(!(inside && drawn.contains(&k)), "far land at {p:?} in a drawn column");
+    }
+    // the ground where the seed puts it (the canopy over it where there are
+    // trees), short of where it starts sinking toward the far end
+    let mut matched = 0;
+    for p in land.iter().filter(|p| Vec2::new(p[0], p[2]).distance(at) < 240.0 && p[0] as i32 % STEP == 0 && p[2] as i32 % STEP == 0) {
+        let s = Spot::at(seed, p[0] as i32, p[2] as i32);
+        if s.trees.0 <= 0.0 && (p[1] - s.ground).abs() < 0.01 {
+            matched += 1;
+        }
+        assert!(p[1] >= s.ground - crate::render::far::SKIRT - 0.01, "far land at {p:?} under the ground at {}", s.ground);
+    }
+    assert!(matched > 20, "only {matched} points at the seed's ground");
+    // the water: over the sea round the island, and on out past the land
+    let water = pos(&built.water);
+    assert!(water.iter().all(|p| (p[1] - (world::SEA as f32 + 0.88)).abs() < 1e-4));
+    assert!(water.iter().any(|p| Vec2::new(p[0], p[2]).distance(at) > 1500.0), "the open sea goes on");
+    // what was worked out is kept: a second go round the same spot needs nothing new
+    let n = built.spots.len();
+    let again = job(built.spots).build();
+    assert_eq!(again.spots.len(), n);
+}
+
+/// Under water it's darker the deeper you go, and dark at night.
+#[test]
+fn under_water_darkens() {
+    use crate::render::under_water_colour as c;
+    assert!(c(1.0, 0.0).length() > c(1.0, 20.0).length());
+    assert!(c(1.0, 0.0).length() > 4.0 * c(0.0, 0.0).length());
 }

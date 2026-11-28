@@ -1,6 +1,6 @@
 //! What players carry: every block, and items, things that are only carried
-//! and held (tools and swords, what ores give, ingots, charcoal and flint,
-//! and cooked food; armour later).
+//! and held (tools, swords and hoes, what ores give, ingots, charcoal and
+//! flint, and cooked food; armour later).
 //!
 //! A `Thing` is either. Ids under `FIRST_ITEM` are blocks, by their block
 //! id; ids from `FIRST_ITEM` up are the game's own items, listed in `ITEMS`.
@@ -44,6 +44,13 @@ pub const MOONSILVER_INGOT: Thing = 275;
 pub const FLINT_AND_STEEL: Thing = 276;
 pub const BREAD: Thing = 277;
 pub const ROASTED_CARROTS: Thing = 278;
+/// The first of the metal tools (copper, iron and moonsilver pickaxes,
+/// axes, shovels, swords and hoes, 279 to 293).
+pub const COPPER_PICKAXE: Thing = 279;
+pub const MOONSILVER_HOE: Thing = 293;
+/// The tools for the land and water (294 to 300), and fish (301, 302).
+pub const SHEARS: Thing = 294;
+pub const COOKED_FISH: Thing = 302;
 
 /// How many of a block go in one slot.
 pub const BLOCK_STACK: u32 = 99;
@@ -99,6 +106,36 @@ pub static ITEMS: &[Item] = &[
     tool("Flint and steel", "flint_and_steel"),
     stuff("Bread", "bread"),
     stuff("Roasted carrots", "roasted_carrots"),
+    // metal tools: the workbench makes copper ones and the tools
+    // creation's anvil iron and moonsilver; hoes till for the farming
+    // creation
+    tool("Copper pickaxe", "pickaxe_copper"),
+    tool("Iron pickaxe", "pickaxe_iron"),
+    tool("Moonsilver pickaxe", "pickaxe_moonsilver"),
+    tool("Copper axe", "axe_copper"),
+    tool("Iron axe", "axe_iron"),
+    tool("Moonsilver axe", "axe_moonsilver"),
+    tool("Copper shovel", "shovel_copper"),
+    tool("Iron shovel", "shovel_iron"),
+    tool("Moonsilver shovel", "shovel_moonsilver"),
+    tool("Copper sword", "sword_copper"),
+    tool("Iron sword", "sword_iron"),
+    tool("Moonsilver sword", "sword_moonsilver"),
+    tool("Copper hoe", "hoe_copper"),
+    tool("Iron hoe", "hoe_iron"),
+    tool("Moonsilver hoe", "hoe_moonsilver"),
+    // shears and the hammer (the tools creation), a bucket and a fishing
+    // rod (the water creation), a watering can and a sickle (farming), and
+    // what the rod catches, cooked in a furnace or on a campfire
+    tool("Shears", "shears"),
+    tool("Bucket", "bucket"),
+    tool("Water bucket", "bucket_water"),
+    tool("Fishing rod", "fishing_rod"),
+    tool("Watering can", "watering_can"),
+    tool("Sickle", "sickle"),
+    tool("Hammer", "hammer"),
+    stuff("Raw fish", "fish_raw"),
+    stuff("Cooked fish", "fish_cooked"),
 ];
 
 /// A block as a thing to carry.
@@ -386,7 +423,7 @@ impl Rules {
 
     /// The level a block needs before it breaks.
     pub fn needs(&self, b: BlockId) -> u8 {
-        self.drops.get(&b).map(|d| d.level).unwrap_or(0)
+        self.drops.get(&crate::blocks::base(b)).map(|d| d.level).unwrap_or(0)
     }
 
     pub fn can_break(&self, held: Thing, b: BlockId) -> bool {
@@ -406,6 +443,8 @@ impl Rules {
     /// (0 to 1) picks between least and most, or the block itself; None
     /// for nothing.
     pub fn gives(&self, b: BlockId, roll: f32) -> Option<(Thing, u32)> {
+        // a block that turns is carried facing north
+        let b = crate::blocks::base(b);
         match self.drops.get(&b) {
             None => Some((of_block(b), 1)),
             Some(d) if d.gives == 0 => None,

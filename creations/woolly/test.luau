@@ -79,3 +79,11 @@ test.case("sheared in survival, its wool grows back and the flock stays the same
 	test.same(test.creature(s.id).kind, "Woolly", "what it is once it's grown back")
 	test.same(#sheep(), 4, "sheep once it's grown back")
 end)
+
+test.case("shears get more wool", function()
+	local p = test.player("Ada", { survival = true, carrying = { Shears = 1 } })
+	test.hold(p, "Shears")
+	local s = sheep("Woolly")[1]
+	test.use(p, s)
+	test.same(world.pockets(p)["Cream wool"], 3, "wool from shearing with shears")
+end)

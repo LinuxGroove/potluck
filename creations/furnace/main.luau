@@ -44,6 +44,7 @@ local SMELTS: { Recipe } = {
 -- A furnace or a campfire cooks these.
 local COOKS: { Recipe } = {
 	{ from = "Carrots", n = 1, gives = "Roasted carrots", count = 1 },
+	{ from = "Raw fish", n = 1, gives = "Cooked fish", count = 1 },
 	{ from = "Wheat", n = 3, gives = "Bread", count = 1 },
 }
 
