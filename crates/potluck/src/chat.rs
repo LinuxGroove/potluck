@@ -10,6 +10,9 @@
 //! says whether it may go out of the world, and `Chat::inbox` takes lines
 //! from outside. Nothing crosses to or from a younger player: their lines
 //! stay in the world, and bridged lines never reach their games.
+//!
+//! A line that starts with a slash is a command (`commands.rs`): a private
+//! message, going somewhere, switching to survival or creative.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
@@ -60,6 +63,13 @@ pub struct Place {
     pub at: [i32; 3],
 }
 
+/// Who a private line is for (`/msg`), as the host knows them.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct To {
+    pub id: u32,
+    pub name: String,
+}
+
 /// Who a line is from.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Source {
@@ -85,20 +95,30 @@ pub struct Line {
     /// Said by a younger player: it stays in the world.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub young: bool,
+    /// For one player only (`/msg`): only they and whoever sent it see it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<To>,
     /// Unix seconds.
     pub at: i64,
 }
 
 impl Line {
-    /// Whether it may go out of the world, to a bridge: players' own lines,
-    /// never a younger player's.
+    /// Whether it may go out of the world, to a bridge: players' own lines
+    /// to everyone, never a younger player's.
     pub fn may_leave(&self) -> bool {
-        matches!(self.from, Source::Player(_)) && !self.young
+        matches!(self.from, Source::Player(_)) && !self.young && self.to.is_none()
     }
 
-    /// Whether a younger player's game may show it: anything but a bridge's.
+    /// Whether a younger player's game may show it: anything but a bridge's
+    /// or a private line.
     pub fn for_young(&self) -> bool {
-        !matches!(self.from, Source::Bridge(_))
+        !matches!(self.from, Source::Bridge(_)) && self.to.is_none()
+    }
+
+    /// Whether this player sees it: lines to everyone, and private lines
+    /// they sent or got.
+    pub fn shown_to(&self, me: u32) -> bool {
+        self.to.as_ref().is_none_or(|t| t.id == me || self.from == Source::Player(me))
     }
 
     /// The name as chat shows it.
@@ -107,6 +127,17 @@ impl Line {
             Source::Creation(_) => format!("{} (a creation)", self.name),
             Source::Bridge(on) => format!("{} on {on}", self.name),
             _ => self.name.clone(),
+        }
+    }
+
+    /// The name as this player's chat shows it: private lines say who
+    /// they're between.
+    pub fn who_for(&self, me: u32) -> String {
+        match &self.to {
+            Some(t) if self.from == Source::Player(me) => format!("You to {}", t.name),
+            Some(_) if self.from == Source::World => self.name.clone(),
+            Some(_) => format!("{} to you", self.name),
+            None => self.who(),
         }
     }
 
@@ -244,11 +275,38 @@ pub struct Chat {
     pub young: bool,
     /// A parent turned chat off on this game: nothing shows.
     pub muted: bool,
+    /// This game's player, by their id in the world, for private lines.
+    pub me: u32,
+    /// Who last sent each player a private line (the host's), for `/r`.
+    pub replies: HashMap<u32, u32>,
+    /// This player asked the host where someone is (`/tp NAME`), and the
+    /// answers: (their name, where they are).
+    pub asked: bool,
+    pub found: Vec<(String, Vec3)>,
+    /// The next number for a line only this game shows (`note`).
+    local: u64,
 }
 
 impl Default for Chat {
     fn default() -> Self {
-        Chat { lines: VecDeque::new(), out: vec![], inbox: vec![], outbox: VecDeque::new(), log: None, next: 1, said: HashMap::new(), words: Words::default(), world: 0, young: false, muted: false }
+        Chat {
+            lines: VecDeque::new(),
+            out: vec![],
+            inbox: vec![],
+            outbox: VecDeque::new(),
+            log: None,
+            next: 1,
+            said: HashMap::new(),
+            words: Words::default(),
+            world: 0,
+            young: false,
+            muted: false,
+            me: 1,
+            replies: HashMap::new(),
+            asked: false,
+            found: vec![],
+            local: 1 << 62,
+        }
     }
 }
 
@@ -284,7 +342,15 @@ impl Chat {
         if who.young && !text.is_empty() && !QUICK.contains(&text.as_str()) {
             return Err("Younger players chat with quick lines.".into());
         }
-        let times = self.said.entry(who.id).or_default();
+        self.slow(who.id, now)?;
+        text = self.words.mask(&text);
+        let line = Line { id: self.take_id(), name: who.name.chars().take(20).collect(), from: Source::Player(who.id), text, place, young: who.young, to: None, at: crate::hosting::now() };
+        Ok(line)
+    }
+
+    /// Keeps anyone from flooding chat (or commands): a few at a time.
+    pub fn slow(&mut self, id: u32, now: f64) -> Result<(), String> {
+        let times = self.said.entry(id).or_default();
         while times.front().is_some_and(|t| now - t > RATE.1) {
             times.pop_front();
         }
@@ -292,19 +358,38 @@ impl Chat {
             return Err("Slow down a little: a few lines at a time.".into());
         }
         times.push_back(now);
-        text = self.words.mask(&text);
-        let line = Line { id: self.next, name: who.name.chars().take(20).collect(), from: Source::Player(who.id), text, place, young: who.young, at: crate::hosting::now() };
+        Ok(())
+    }
+
+    /// The host's next number for a line.
+    pub fn take_id(&mut self) -> u64 {
         self.next += 1;
-        Ok(line)
+        self.next - 1
+    }
+
+    /// The words with listed ones starred out.
+    pub fn mask(&self, text: &str) -> String {
+        self.words.mask(text)
+    }
+
+    /// A line only this game's player sees, from the game itself: what
+    /// `/help` says.
+    pub fn note(&mut self, who: &str, words: &str, now: f64) {
+        self.local += 1;
+        let line = Line { id: self.local, name: who.into(), from: Source::World, text: words.into(), place: None, young: false, to: Some(To { id: self.me, name: String::new() }), at: crate::hosting::now() };
+        self.lines.push_back((line, now));
+        if self.lines.len() > KEEP {
+            self.lines.pop_front();
+        }
     }
 
     /// A line from outside the world, numbered by this host.
     pub fn bridged(&mut self, mut line: Line) -> Line {
-        line.id = self.next;
-        self.next += 1;
+        line.id = self.take_id();
         line.text = self.words.mask(&tidy(&line.text));
         line.young = false;
         line.place = None;
+        line.to = None;
         line
     }
 
@@ -328,10 +413,10 @@ impl Chat {
         }
     }
 
-    /// The last lines, for someone joining: younger players don't get a
-    /// bridge's.
+    /// The last lines, for someone joining: never private ones, and
+    /// younger players don't get a bridge's.
     pub fn history(&self, young: bool) -> Vec<Line> {
-        let shown: Vec<&Line> = self.lines.iter().map(|(l, _)| l).filter(|l| !young || l.for_young()).collect();
+        let shown: Vec<&Line> = self.lines.iter().map(|(l, _)| l).filter(|l| l.to.is_none() && (!young || l.for_young())).collect();
         shown[shown.len().saturating_sub(HISTORY)..].iter().map(|l| (*l).clone()).collect()
     }
 
@@ -342,7 +427,7 @@ impl Chat {
 
     /// The lines this game's player sees, oldest first.
     pub fn seen(&self) -> impl DoubleEndedIterator<Item = &(Line, f64)> {
-        self.lines.iter().filter(|(l, _)| !self.muted && (!self.young || l.for_young()))
+        self.lines.iter().filter(|(l, _)| !self.muted && l.shown_to(self.me) && (!self.young || l.for_young() || l.from == Source::World))
     }
 
     /// Places others shared lately, newest first: (line id, who, place).
@@ -384,7 +469,7 @@ pub fn run(
     }
     let young = settings.as_ref().is_some_and(|s| s.young);
     let muted = settings.as_ref().is_some_and(|s| !s.chat);
-    (chat.young, chat.muted) = (young, muted);
+    (chat.young, chat.muted, chat.me) = (young, muted, net.my_id);
     let name = settings.as_ref().map(|s| s.name.clone()).unwrap_or_default();
     let before = chat.lines.back().map(|(l, _)| l.id);
     match &net.role {
@@ -400,21 +485,56 @@ pub fn run(
                 }
                 chat.keep(line, now);
             }
+            let found = net.take_found();
+            chat.found.extend(found);
         }
         _ => {
             let allowed = net.rules().is_none_or(|r| r.chat);
             let mine = std::mem::take(&mut chat.out);
             let mut says: Vec<(u32, Say)> = if me.is_some() && !muted { mine.into_iter().map(|s| (net.my_id, s)).collect() } else { vec![] };
             says.extend(net.take_says());
+            let owner = me.as_ref().map(|_| net.my_id);
+            // everyone here, for commands that name someone
+            let here: Vec<crate::commands::Player> = if says.iter().any(|(_, s)| s.text.trim_start().starts_with('/')) {
+                let mut all: Vec<_> = net.remote_players().iter().map(|p| crate::commands::Player { id: p.id, name: p.name.clone(), young: p.young, pos: p.pos }).collect();
+                if let Some(me) = &me {
+                    all.push(crate::commands::Player { id: net.my_id, name: name.chars().take(20).collect(), young, pos: me.pos });
+                }
+                all
+            } else {
+                vec![]
+            };
             let mut lines = vec![];
+            let mut private = vec![];
             for (pid, say) in says {
-                let (who, is_young) = if pid == net.my_id && me.is_some() { (name.clone(), young) } else { (net.name_of(pid).unwrap_or_default(), net.young_of(pid)) };
-                match chat.hear(Speaker { id: pid, name: &who, young: is_young }, say, allowed, now) {
-                    Ok(line) => lines.push(line),
+                let own = owner == Some(pid);
+                let (who, is_young) = if own { (name.clone(), young) } else { (net.name_of(pid).unwrap_or_default(), net.young_of(pid)) };
+                let who = Speaker { id: pid, name: &who, young: is_young };
+                let said = if say.text.trim_start().starts_with('/') {
+                    use crate::commands::Answer;
+                    crate::commands::host(&mut chat, who, &say.text, &here, owner, allowed, now).map(|answer| match answer {
+                        Answer::Private(line) => private.push(line),
+                        Answer::Found { name, at } if own => chat.found.push((name, at)),
+                        Answer::Found { name, at } => net.send_to(pid, crate::net::Msg::Found { name, at: at.to_array() }),
+                    })
+                } else {
+                    chat.hear(who, say, allowed, now).map(|line| lines.push(line))
+                };
+                match said {
+                    Ok(()) => {}
                     Err(why) if why.is_empty() => {}
-                    Err(why) if pid == net.my_id && me.is_some() => toasts.push(why),
+                    Err(why) if own => toasts.push(why),
                     Err(why) => net.tell(pid, &why),
                 }
+            }
+            // a private line goes to the one it's for and back to who sent it;
+            // the host keeps it too, for a server's log, never for joiners
+            for line in private {
+                let ends = [if let Source::Player(id) = line.from { Some(id) } else { None }, line.to.as_ref().map(|t| t.id)];
+                for pid in ends.into_iter().flatten().filter(|p| Some(*p) != owner) {
+                    net.send_chat_to(pid, vec![line.clone()]);
+                }
+                chat.keep(line, now);
             }
             for line in std::mem::take(&mut chat.inbox) {
                 let line = chat.bridged(line);
@@ -434,13 +554,18 @@ pub fn run(
         }
     }
     // a soft sound for a line from someone else
-    let fresh = chat.lines.back().is_some_and(|(l, _)| Some(l.id) != before && l.from != Source::Player(net.my_id) && (!young || l.for_young()));
-    if fresh && me.is_some() && !muted {
-        heard.0.push(crate::sound::Play { name: "pop".into(), at: None, volume: 0.12, pitch: 1.4, caption: Some(String::new()) });
+    let fresh = chat.lines.back().filter(|(l, _)| Some(l.id) != before && l.from != Source::Player(net.my_id) && l.shown_to(net.my_id) && (!young || l.for_young()));
+    if let Some((l, _)) = fresh.filter(|_| me.is_some() && !muted) {
+        // a little higher for a private line
+        let pitch = if l.to.is_some() { 1.7 } else { 1.4 };
+        heard.0.push(crate::sound::Play { name: "pop".into(), at: None, volume: 0.12, pitch, caption: Some(String::new()) });
     }
 }
 
 // ---------- on the screen ----------
+
+/// The words of a private line, over the world.
+const WHISPER: Color = Color::srgb(1.0, 0.7, 0.86);
 
 /// A name's colour in chat: the same hue as the player's shirt.
 pub fn name_color(line: &Line) -> Color {
@@ -507,8 +632,8 @@ pub fn draw_feed(
                 ))
                 .with_children(|r| {
                     let name = name_color(line);
-                    let words = if line.place.is_some() { MINT } else { INK };
-                    r.spawn((Text::new(format!("{}  ", line.who())), TextFont { font: fonts.ui.clone().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(name), FeedSpan(name)))
+                    let words = if line.place.is_some() { MINT } else if line.to.is_some() { WHISPER } else { INK };
+                    r.spawn((Text::new(format!("{}  ", line.who_for(chat.me))), TextFont { font: fonts.ui.clone().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(name), FeedSpan(name)))
                         .with_child((TextSpan::new(line.words()), TextFont { font: fonts.ui.clone().into(), font_size: FontSize::Px(15.0), ..default() }, TextColor(words), FeedSpan(words)));
                 })
                 .id();
@@ -547,7 +672,7 @@ pub fn screen_lines(chat: &Chat, n: usize) -> Vec<(String, [u8; 3], String)> {
         .iter()
         .map(|(l, _)| {
             let c = name_color(l).to_srgba();
-            (l.who(), [(c.red * 255.0) as u8, (c.green * 255.0) as u8, (c.blue * 255.0) as u8], l.words())
+            (l.who_for(chat.me), [(c.red * 255.0) as u8, (c.green * 255.0) as u8, (c.blue * 255.0) as u8], l.words())
         })
         .collect()
 }
@@ -565,10 +690,14 @@ pub fn open(focus: &mut Focus, settings: &Settings, toasts: &mut crate::ui::Toas
     focus.go(Screen::Chat);
 }
 
-/// T or Enter (D-pad up on a pad) opens chat while playing.
+/// T or Enter (D-pad up on a pad) opens chat while playing, and a slash
+/// opens it with one typed, for a command.
 pub fn keys(c: Res<crate::input::Controls>, mut focus: ResMut<Focus>, info: Res<WorldInfo>, settings: Res<Settings>, mut toasts: ResMut<crate::ui::Toasts>) {
-    if c.chat && focus.playing() && info.in_world {
+    if (c.chat || c.slash) && focus.playing() && info.in_world {
         open(&mut focus, &settings, &mut toasts);
+        if c.slash && focus.screen == Screen::Chat && !settings.young {
+            focus.fields.insert("say".into(), "/".into());
+        }
     }
 }
 
@@ -594,7 +723,7 @@ pub fn fill(mut focus: ResMut<Focus>, chat: Res<Chat>, net: Res<Net>, settings: 
         }
         if !settings.young {
             let typed = focus.fields.get("say").cloned().unwrap_or_default();
-            v.push(field("Say something", "say", typed.clone()));
+            v.push(field("Say something, or /help", "say", typed.clone()));
             v.push(button("Send", Act::Say(typed)));
             v.push(note("Or a quick line"));
         } else {
@@ -612,29 +741,40 @@ pub fn fill(mut focus: ResMut<Focus>, chat: Res<Chat>, net: Res<Net>, settings: 
     focus.made = ("Chat".into(), v);
 }
 
-/// What chat's buttons do: saying something, and sharing where you are.
+/// What chat's buttons do: saying something (or a command), and sharing
+/// where you are; and going to whoever the host found for `/tp NAME`.
 #[allow(clippy::too_many_arguments)]
 pub fn acts(
+    time: Res<Time>,
     mut acts: ResMut<crate::ui::Acts>,
     mut focus: ResMut<Focus>,
     mut chat: ResMut<Chat>,
     me: Res<crate::player::Me>,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
     info: Res<WorldInfo>,
+    mut travel: ResMut<crate::waypoints::Travel>,
+    net: Res<Net>,
     mut toasts: ResMut<crate::ui::Toasts>,
 ) {
     use crate::ui::Act;
+    let teleport = net.teleport_allowed();
+    if !chat.found.is_empty() {
+        crate::commands::found(&mut chat, &settings, &me, &mut travel, teleport, &mut toasts);
+    }
     let mut rest = vec![];
     for act in std::mem::take(&mut acts.0) {
         match act {
             Act::OpenChat if info.in_world => open(&mut focus, &settings, &mut toasts),
             Act::Say(text) => {
                 let text = tidy(&text);
-                if !text.is_empty() {
-                    chat.out.push(Say { text, place: None });
-                }
                 focus.fields.remove("say");
                 focus.go(Screen::Playing);
+                if let Some(cmd) = crate::commands::parse(&text) {
+                    let here = crate::commands::Here { chat: &mut chat, settings: &mut settings, me: &me, travel: &mut travel, toasts: &mut toasts, teleport, now: time.elapsed_secs_f64() };
+                    crate::commands::local(cmd, &text, here);
+                } else if !text.is_empty() {
+                    chat.out.push(Say { text, place: None });
+                }
             }
             Act::SharePlace => {
                 let at = me.pos.floor().as_ivec3();

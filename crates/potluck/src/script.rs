@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 22), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 23), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -234,6 +234,9 @@ pub struct KindDef {
     pub home_here: bool,
     /// What it does by itself, before any code (world 0.10).
     pub behaviours: Option<crate::behaviours::Behaviours>,
+    /// Whether a rider steers it (world 0.23): `steer = false` for a cart,
+    /// which goes where its code says however its rider pushes.
+    pub steer: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1428,6 +1431,7 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
         rideable: def.get::<Option<bool>>("rideable")?.unwrap_or(false),
         seat: def.get::<Option<f32>>("seat")?.unwrap_or(half.y).clamp(0.2, 5.0),
         flies: def.get::<Option<bool>>("flies")?.unwrap_or(false),
+        steer: def.get::<Option<bool>>("steer")?.unwrap_or(true),
         count: def.get::<Option<u32>>("count")?.unwrap_or(1).min(32),
         home,
         home_here,
@@ -2452,7 +2456,9 @@ impl Vm {
                 }
                 let _ = &kt;
                 let mut p = p;
-                if ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::AIR && ctx.voxels.at(p.floor().as_ivec3()) != crate::blocks::WATER {
+                // inside something solid, it's put on top; in grass, on a
+                // rail or in water, it stays where it was put
+                if crate::blocks::is_solid(ctx.voxels.at(p.floor().as_ivec3())) {
                     p.y = ctx.voxels.top(p.x.floor() as i32, p.z.floor() as i32) as f32 + 1.2;
                 }
                 // one wider than a block, put down beside a wall, starts just
@@ -2489,6 +2495,8 @@ impl Vm {
                 if let Some(b) = c.borrow_mut().herd.bodies.get_mut(&id) {
                     b.goal = Some(p);
                     b.wander = false;
+                    // walking ends a path (world 0.23)
+                    b.path.clear();
                     if let Some(s) = speed {
                         b.speed = s.clamp(0.0, 20.0);
                     }
@@ -2499,6 +2507,7 @@ impl Vm {
                 let id = id_of(&me)?;
                 if let Some(b) = c.borrow_mut().herd.bodies.get_mut(&id) {
                     b.wander = true;
+                    b.path.clear();
                     if let Some(s) = speed {
                         b.speed = s.clamp(0.0, 20.0);
                     }
@@ -2510,6 +2519,7 @@ impl Vm {
                 if let Some(b) = c.borrow_mut().herd.bodies.get_mut(&id) {
                     b.goal = None;
                     b.wander = false;
+                    b.path.clear();
                 }
                 Ok(())
             })?)?;
@@ -2535,6 +2545,44 @@ impl Vm {
                 }
                 b.climb = speed.clamp(-crate::creatures::MAX_CLIMB, crate::creatures::MAX_CLIMB);
                 Ok(true)
+            })?)?;
+            // world 0.23: along a path, as a cart on rails
+            base.set("follow", s.create_function(move |_, (me, points, speed, more): (Table, Option<Table>, Option<f32>, Option<bool>)| {
+                use crate::creatures::{MAX_PATH, MAX_PATH_SPEED};
+                let id = id_of(&me)?;
+                let mut ctx = c.borrow_mut();
+                let Some(b) = ctx.herd.bodies.get_mut(&id) else { return Ok(()) };
+                if let Some(s) = speed {
+                    if !s.is_finite() {
+                        return Err(bad("follow's speed is in blocks a second"));
+                    }
+                    b.path_speed = s.clamp(0.0, MAX_PATH_SPEED);
+                }
+                if let Some(points) = points {
+                    let mut add = Vec::new();
+                    for v in points.sequence_values::<Value>() {
+                        add.push(vec_of(&v?).filter(|p| p.is_finite()).ok_or_else(|| bad("follow takes a list of positions"))?);
+                    }
+                    let keep = if more.unwrap_or(false) { b.path.len() } else { 0 };
+                    if keep + add.len() > MAX_PATH {
+                        return Err(bad(format!("a path holds at most {MAX_PATH} points")));
+                    }
+                    b.path.truncate(keep);
+                    b.path.extend(add);
+                    if b.path.is_empty() {
+                        // stopped where it is
+                        b.along = 0.0;
+                        b.vel = Vec3::ZERO;
+                    }
+                    b.goal = None;
+                    b.wander = false;
+                }
+                Ok(())
+            })?)?;
+            base.set("following", s.create_function(move |_, me: Table| {
+                let id = id_of(&me)?;
+                let ctx = c.borrow();
+                Ok(ctx.herd.bodies.get(&id).map(|b| (crate::creatures::path_left(b), b.along, b.path.len())).unwrap_or((0.0, 0.0, 0)))
             })?)?;
             base.set("on_ground", s.create_function(move |_, me: Table| {
                 let id = id_of(&me)?;

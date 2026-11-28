@@ -20,7 +20,7 @@ use serde_json::Value;
 use crate::blocks::{self, Block, BlockId, Cuboid, Shape, FIRST_MADE};
 
 /// How many blocks one creation can make.
-pub const MOST_EACH: usize = 16;
+pub const MOST_EACH: usize = 32;
 /// How many colours one block's pictures can use.
 pub const MOST_COLORS: usize = 24;
 /// How many boxes a block made of boxes can have.

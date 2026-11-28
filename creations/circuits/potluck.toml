@@ -1,13 +1,13 @@
 name = "Circuits"
 by = "Potluck"
 kind = "mod"
-about = "Copper wire carries power from levers, buttons, pressure plates and daylight sensors, through inverters and delays, to copper lamps and copper gates. Power is on or off. Inverters and delays face the way you put them down, take power from behind and give it out in front. Make the parts at a workbench."
+about = "Copper wire carries power from levers, buttons, pressure plates and daylight sensors, through inverters and delays, to copper lamps and copper gates. Power is on or off. Inverters and delays face the way you put them down, take power from behind and give it out in front. Power a piston and it pushes what's in front of it, or an up piston what's on it; power a note block and it plays, a step higher each time you use it. Make the parts at a workbench."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.15"
+world = "0.23"
 tweak = "0.1"
 store = "0.1"
 ui = "0.2"
@@ -962,3 +962,369 @@ cccccccccccccccc
 aaaaaaaaaaaaaaaa
 db............bd
 """
+
+# Machines: a piston pushes what's in front of it when power reaches it, and
+# a note block plays a note.
+
+[sounds.push]
+caption = "A piston pushes"
+wave = "noise"
+pitch = 500
+length = 0.25
+attack = 0.01
+lowpass = 900
+
+[sounds.pull]
+caption = "A piston pulls back"
+wave = "noise"
+pitch = 380
+length = 0.22
+attack = 0.01
+lowpass = 700
+
+# A note block's voices, all at F#4: the block plays them higher or lower.
+[sounds.harp]
+caption = "A note"
+wave = "triangle"
+pitch = 370
+length = 0.9
+attack = 0.005
+decay = 0.3
+lowpass = 3000
+
+[sounds.bass]
+caption = "A low note"
+wave = "saw"
+pitch = 185
+length = 0.7
+attack = 0.01
+decay = 0.25
+lowpass = 700
+
+[sounds.bell]
+caption = "A bell note"
+wave = "sine"
+pitch = 740
+length = 1.4
+attack = 0.003
+decay = 0.6
+
+[[sounds.bell.layers]]
+wave = "sine"
+pitch = 1850
+length = 0.6
+gain = 0.3
+
+[sounds.chime]
+caption = "A chime"
+wave = "sine"
+pitch = 1480
+length = 1.0
+attack = 0.003
+decay = 0.4
+wobble = [6, 6]
+
+[blocks.piston]
+name = "Piston"
+kind = "hard"
+hardness = 1.5
+turns = true
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+jpppppppppprpppj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+iiiiiiiiiiiiiiii
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+"""
+side = """
+rpppppppppprpppp
+pppppprppppppppp
+prpppppppppprppp
+qqqqqqqqqqqqqqqq
+iiiiiiiiiiiiiiii
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+"""
+bottom = """
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+"""
+
+[blocks.piston_head]
+name = "Piston head"
+kind = "hard"
+hardness = 1.5
+turns = true
+boxes = [[0, 0, 0, 16, 16, 4], [6, 6, 4, 10, 10, 16]]
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppppprppppppj
+jpprpppppppppprj
+jqqqqqqqqqqqqqqj
+jppprppppppppppj
+jppppppppprppppj
+jpppprpppppppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+side = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppppprppppppj
+jpprpppppppppprj
+jqqqqqqqqqqqqqqj
+jppprppppppppppj
+jppppppppprppppj
+jpppprpppppppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+bottom = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppppprppppppj
+jpprpppppppppprj
+jqqqqqqqqqqqqqqj
+jppprppppppppppj
+jppppppppprppppj
+jpppprpppppppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+
+[blocks.up_piston]
+name = "Up piston"
+kind = "hard"
+hardness = 1.5
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppjjjjjjppppj
+jpprpjiiiijppprj
+jqqqqjiiiijqqqqj
+jppprjiiiijppppj
+jppppjiiiijppppj
+jppppjjjjjjppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+side = """
+rpppppppppprpppp
+pppppprppppppppp
+prpppppppppprppp
+qqqqqqqqqqqqqqqq
+iiiiiiiiiiiiiiii
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+"""
+bottom = """
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+cccccccccccccccc
+aaabcaaabcaaabca
+abaacabaacabaaca
+aabacaabacaabaca
+baaacbaaacbaaacb
+"""
+
+[blocks.up_piston_head]
+name = "Up piston head"
+kind = "hard"
+hardness = 1.5
+boxes = [[0, 12, 0, 16, 16, 16], [6, 0, 6, 10, 12, 10]]
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppppprppppppj
+jpprpppppppppprj
+jqqqqqqqqqqqqqqj
+jppprppppppppppj
+jppppppppprppppj
+jpppprpppppppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+side = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppppprppppppj
+jpprpppppppppprj
+jqqqqqqqqqqqqqqj
+jppprppppppppppj
+jppppppppprppppj
+jpppprpppppppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+bottom = """
+jjjjjjjjjjjjjjjj
+jppppprppppppppj
+jrpppppppppprppj
+jqqqqqqqqqqqqqqj
+jprpppppppppprpj
+jppppppprppppppj
+jpprpppppppppprj
+jqqqqqqqqqqqqqqj
+jppprppppppppppj
+jppppppppprppppj
+jpppprpppppppppj
+jqqqqqqqqqqqqqqj
+jppppprppppppppj
+jrpppppppppprppj
+jpppppprpppppppj
+jjjjjjjjjjjjjjjj
+"""
+
+[blocks.note_block]
+name = "Note block"
+kind = "wood"
+hardness = 0.8
+colors = { a = "#6f7175", b = "#5d5f63", c = "#86888c", p = "#a8763e", q = "#8a5f30", r = "#c08c50", i = "#b4b9bf", j = "#80868d", d = "#2c2b2a", e = "#45403a", n = "#e8d27a", m = "#c9a94a", g = "#7e776e", k = "#646059" }
+top = """
+qqqqqqqqqqqqqqqq
+qppppprppppppppq
+qrpppppppppprppq
+qqqeqeqeqeqeqqqq
+qprpepepepeperpq
+qppepeperepepppq
+qpprepepepepeprq
+qqqeqeqeqeqeqqqq
+qpppepepepepeppq
+qppepepeperepppq
+qppperepepepeppq
+qqqeqeqeqeqeqqqq
+qpppepepepepeppq
+qrpppppppppprppq
+qpppppprpppppppq
+qqqqqqqqqqqqqqqq
+"""
+side = """
+qqqqqqqqqqqqqqqq
+qppppprppppppppq
+qrpppppppppprppq
+qqqqqqqqqdddqqqq
+qprppppppdddprpq
+qppppppprdpppppq
+qpprpppppdpppprq
+qqqqqqqqqdqqqqqq
+qppprppppdpppppq
+qppppppppdrppppq
+qpppprpdddpppppq
+qqqqqqddddqqqqqq
+qppppprddppppppq
+qrpppppppppprppq
+qpppppprpppppppq
+qqqqqqqqqqqqqqqq
+"""
+bottom = """
+qqqqqqqqqqqqqqqq
+qppppprppppppppq
+qrpppppppppprppq
+qqqeqeqeqeqeqqqq
+qprpepepepeperpq
+qppepeperepepppq
+qpprepepepepeprq
+qqqeqeqeqeqeqqqq
+qpppepepepepeppq
+qppepepeperepppq
+qppperepepepeppq
+qqqeqeqeqeqeqqqq
+qpppepepepepeppq
+qrpppppppppprppq
+qpppppprpppppppq
+qqqqqqqqqqqqqqqq
+"""
+

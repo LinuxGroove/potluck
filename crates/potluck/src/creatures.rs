@@ -1,7 +1,7 @@
 //! Creatures: bodies made of boxes that creations define, walking, hopping
 //! and being ridden. The host moves them; everyone draws them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use bevy::prelude::*;
 
@@ -79,6 +79,15 @@ pub struct Body {
     /// Bumped when the look changes, so views rebuild.
     pub rev: u32,
     pub phase: f32,
+    /// Points it goes through in turn (`creature:follow`, world 0.23), with
+    /// no gravity, as a cart on rails.
+    pub path: VecDeque<Vec3>,
+    /// The speed it was told to go along its path, and the speed it's
+    /// going, which eases toward it.
+    pub path_speed: f32,
+    pub along: f32,
+    /// Whether a rider steers it (a kind's `steer`, world 0.23).
+    pub steer: bool,
 }
 
 impl Body {
@@ -92,6 +101,7 @@ impl Body {
         self.rideable = k.rideable;
         self.seat = k.seat;
         self.flies = k.flies;
+        self.steer = k.steer;
         if !k.home_here {
             self.home = k.home;
         }
@@ -181,6 +191,10 @@ impl Herd {
             parts: vec![],
             rev: 0,
             phase: 0.0,
+            path: VecDeque::new(),
+            path_speed: 0.0,
+            along: 0.0,
+            steer: true,
         };
         b.restyle(k);
         if k.home_here {
@@ -219,6 +233,62 @@ const FLIER_EASE: f32 = 0.8;
 pub const FLY_ABOVE: f32 = 24.0;
 /// The fastest a flier climbs or sinks (`creature:climb`).
 pub const MAX_CLIMB: f32 = 4.0;
+/// The most points a creature's path holds (`creature:follow`, world 0.23).
+pub const MAX_PATH: usize = 128;
+/// The fastest a creature goes along a path, in blocks a second.
+pub const MAX_PATH_SPEED: f32 = 12.0;
+/// How quickly it gathers or loses speed along one, in blocks a second each
+/// second: gently, for whoever rides it.
+pub const PATH_EASE: f32 = 2.5;
+/// How quickly it slows to stop at the end of one: a little gentler, so it
+/// can keep to it exactly.
+const PATH_STOP: f32 = 2.0;
+
+/// How far a body has still to go along its path.
+pub fn path_left(b: &Body) -> f32 {
+    let mut at = b.pos;
+    let mut left = 0.0;
+    for p in &b.path {
+        left += at.distance(*p);
+        at = *p;
+    }
+    left
+}
+
+/// Moves a body along its path (world 0.23): at the speed it was told,
+/// gathering and losing speed gently and slowing to stop at the end, with
+/// no gravity and nothing in its way, as a cart on rails. It rests on the
+/// path's last point until it's given more, or let go (`follow({})`).
+fn follow(b: &mut Body, dt: f32) {
+    let from = b.pos;
+    let ease = PATH_EASE * dt;
+    b.along = (b.along + (b.path_speed - b.along).clamp(-ease, ease)).max(0.0);
+    // never faster than it can stop in before the end
+    b.along = b.along.min((2.0 * PATH_STOP * path_left(b)).sqrt());
+    let mut go = b.along * dt;
+    while go > 0.0 {
+        let Some(&next) = b.path.front() else { break };
+        let d = next.distance(b.pos);
+        if d <= go {
+            b.pos = next;
+            go -= d;
+            if b.path.len() == 1 {
+                b.along = 0.0;
+                break;
+            }
+            b.path.pop_front();
+        } else {
+            b.pos += (next - b.pos) / d * go;
+            go = 0.0;
+        }
+    }
+    b.vel = (b.pos - from) / dt.max(1e-4);
+    b.on_ground = true;
+    let flat = Vec2::new(b.vel.x, b.vel.z);
+    if flat.length() > 0.3 {
+        b.yaw = turn_toward(b.yaw, (-flat.x).atan2(-flat.y), dt * 12.0);
+    }
+}
 
 /// How high a walking creature steps up onto what's in its way.
 pub const STEP_UP: f32 = 1.0;
@@ -259,8 +329,20 @@ pub fn step(herd: &mut Herd, voxels: &Voxels, dt: f32, rng: &mut Rng) {
         if !voxels.loaded(b.pos.x.floor() as i32, b.pos.z.floor() as i32) {
             continue;
         }
+        // on a path: along it, and nothing else moves it
+        if !b.path.is_empty() {
+            follow(b, dt);
+            b.phase += Vec2::new(b.vel.x, b.vel.z).length() * dt * 3.5;
+            if let Some((_, t)) = &mut b.says {
+                *t -= dt;
+                if *t <= 0.0 {
+                    b.says = None;
+                }
+            }
+            continue;
+        }
         let mut want = Vec3::ZERO;
-        if let Some(r) = b.rider {
+        if let Some(r) = b.rider.filter(|_| b.steer) {
             // a flier is steered in the air; on the ground it stays put
             if let Some((mv, yaw)) = riders.get(&r).filter(|_| !(b.flies && b.on_ground)) {
                 let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());

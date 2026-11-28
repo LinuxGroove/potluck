@@ -1581,6 +1581,7 @@ pub fn menu_owns(focus: Res<Focus>, mut c: ResMut<Controls>) {
     c.mark = false;
     c.minimap = false;
     c.chat = false;
+    c.slash = false;
 }
 
 fn set_value(focus: &Focus, key: &str, v: KnobValue, settings: &mut Settings, edits: &mut crate::KnobEdits) {

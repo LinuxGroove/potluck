@@ -3662,6 +3662,11 @@ fn a_table_is_a_workbench_for_survival_players() {
     // and the charm table when the Charms creation's is
     let charms = lib.remove("charms").expect("the base game has charms");
     crate::made::register(&charms.id, &charms.manifest.blocks).unwrap();
+    // and rails, carts, dispensers and chutes when Rails' and Storage's are
+    for id in ["rails", "storage"] {
+        let c = lib.remove(id).expect("a base creation");
+        crate::made::register(&c.id, &c.manifest.blocks).unwrap();
+    }
     let b = |n: &str| by_name(n).unwrap();
     let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
     let mut voxels = world();
@@ -3726,8 +3731,8 @@ fn a_table_is_a_workbench_for_survival_players() {
         vec!["Planks", "Dirt", "Wheat", "Copper ingot", "Hay"],
         vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool", "Silk"],
         vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint", "Feather", "Silk", "Bristles", "Leather"],
-        vec!["Cream wool", "Planks", "Lantern"],
-        vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
+        vec!["Cream wool", "Planks", "Lantern", "Iron ingot", "Gold ingot", "Copper wire"],
+        vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal", "Iron ingot", "Crate"],
     ];
     for (kind, want) in inputs.iter().enumerate() {
         scripts.pocket_changes();
@@ -5116,7 +5121,7 @@ fn chat_goes_through_the_host_to_everyone_and_nothing_from_outside_reaches_young
     assert_eq!(texts(&cy), ["Drew: hello everyone", "Cy: Hi!"]);
     assert!(cy.toasts.iter().any(|t| t.contains("quick lines")), "{:?}", cy.toasts);
     // a line from outside the world (a bridge, later) reaches Drew but not Cy
-    app.world_mut().resource_mut::<Chat>().inbox.push(Line { id: 0, name: "Kaden".into(), from: Source::Bridge("Fluxer".into()), text: "hi from outside".into(), place: None, young: false, at: 0 });
+    app.world_mut().resource_mut::<Chat>().inbox.push(Line { id: 0, name: "Kaden".into(), from: Source::Bridge("Fluxer".into()), text: "hi from outside".into(), place: None, young: false, to: None, at: 0 });
     pump(&mut app, &mut [&mut drew, &mut cy], &|g| g[0].lines.len() >= 3);
     assert_eq!(drew.lines[2].who(), "Kaden on Fluxer");
     for _ in 0..20 {
@@ -5136,6 +5141,210 @@ fn chat_goes_through_the_host_to_everyone_and_nothing_from_outside_reaches_young
     pump(&mut app, &mut [&mut kaden, &mut dot], &|g| g[0].lines.len() >= 3 && g[1].lines.len() >= 2);
     assert_eq!(kaden.lines.len(), 3);
     assert!(dot.lines.iter().all(|l| !matches!(l.from, Source::Bridge(_))), "{:?}", texts(&dot));
+}
+
+#[test]
+fn slash_commands_read_what_players_type() {
+    use crate::commands::{parse, Command, Coord};
+    let ok = |t: &str| parse(t).unwrap().unwrap();
+    let err = |t: &str| parse(t).unwrap().unwrap_err();
+    assert!(parse("hello / goodbye").is_none(), "a line, not a command");
+    assert_eq!(ok("/msg Kaden come and see"), Command::Msg("Kaden come and see".into()));
+    assert_eq!(ok("/TELL Kaden hi"), Command::Msg("Kaden hi".into()));
+    assert_eq!(ok("/w Kaden hi"), Command::Msg("Kaden hi".into()));
+    assert!(err("/msg").contains("/msg NAME"));
+    assert_eq!(ok("/r on my way"), Command::Reply("on my way".into()));
+    assert_eq!(ok("/tp 10 40 -20.5"), Command::Tp(Coord::At(10.0), Some(Coord::At(40.0)), Coord::At(-20.5)));
+    assert_eq!(ok("/tp ~ ~10 ~-3"), Command::Tp(Coord::On(0.0), Some(Coord::On(10.0)), Coord::On(-3.0)));
+    assert_eq!(ok("/tp 100 -200"), Command::Tp(Coord::At(100.0), None, Coord::At(-200.0)), "on the ground there");
+    assert_eq!(ok("/tp Ken V"), Command::TpTo("Ken V".into()), "names may have spaces");
+    assert_eq!(ok("/tp 7"), Command::TpTo("7".into()), "one word is a name");
+    assert_eq!(ok("/tp inf 1 nan"), Command::TpTo("inf 1 nan".into()), "and nowhere is not a place");
+    assert!(err("/tp 1 2 3 4").contains("/tp X Y Z"));
+    assert!(err("/tp").contains("/tp NAME"));
+    assert_eq!(ok("/gamemode survival"), Command::Mode { survival: true });
+    assert_eq!(ok("/gamemode Creative"), Command::Mode { survival: false });
+    assert_eq!(ok("/gamemode c"), Command::Mode { survival: false });
+    assert!(err("/gamemode spectator").contains("survival and creative"));
+    assert_eq!(ok("/help"), Command::Help);
+    assert!(err("/fly").contains("There's no /fly"));
+    assert!(err("/").contains("after the slash"));
+    assert_eq!(Coord::On(-3.0).of(10.0), 7.0);
+    // names, longest first, in any case
+    let here = |id: u32, name: &str| crate::commands::Player { id, name: name.into(), young: false, pos: Vec3::ZERO };
+    let all = [here(2, "Ken"), here(3, "Ken V"), here(4, "Bo"), here(5, "bo")];
+    let (p, rest) = crate::commands::named(&all, "ken v hello there").unwrap();
+    assert_eq!((p.id, rest), (3, "hello there"));
+    let (p, rest) = crate::commands::named(&all, "KEN hi").unwrap();
+    assert_eq!((p.id, rest), (2, "hi"));
+    assert!(crate::commands::named(&all, "Bo hi").unwrap_err().contains("2 players"));
+    assert!(crate::commands::named(&all, "Kenny hi").unwrap_err().contains("Nobody called Kenny"));
+}
+
+#[test]
+fn private_messages_reach_only_whoever_theyre_for_and_never_younger_players() {
+    use crate::chat::{Chat, Line, Say};
+    use crate::net::{self, Event, Msg};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken's world".into(), ..Default::default() });
+    app.update();
+    let port = free_port();
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
+    struct Guest {
+        to: std::sync::mpsc::Sender<Vec<u8>>,
+        from: Receiver<Wire>,
+        lines: Vec<Line>,
+        toasts: Vec<String>,
+        found: Vec<(String, [f32; 3])>,
+        id: Option<u32>,
+    }
+    let join = |name: &str, young: bool| {
+        let (tx, rx) = channel();
+        let to = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
+        to.send(net::frame_msg(&Msg::Hello { name: name.into(), protocol: net::PROTOCOL, pass: None, young })).unwrap();
+        Guest { to, from: rx, lines: vec![], toasts: vec![], found: vec![], id: None }
+    };
+    let pump = |app: &mut App, guests: &mut [&mut Guest], until: &dyn Fn(&[&mut Guest]) -> bool| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(20) && !until(guests) {
+            app.update();
+            std::thread::sleep(Duration::from_millis(5));
+            for g in guests.iter_mut() {
+                for w in g.from.try_iter() {
+                    match net::decode(w) {
+                        Some(Event::Msg(_, Msg::Welcome { id, .. })) => g.id = Some(id),
+                        Some(Event::Msg(_, Msg::Chat(l))) => g.lines.extend(l),
+                        Some(Event::Msg(_, Msg::Toast(t))) => g.toasts.push(t),
+                        Some(Event::Msg(_, Msg::Found { name, at })) => g.found.push((name, at)),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+    let say = |g: &Guest, t: &str| g.to.send(net::frame_msg(&Msg::Say(Say { text: t.into(), place: None }))).unwrap();
+    let mut drew = join("Drew", false);
+    let mut kaden = join("Kaden", false);
+    let mut cy = join("Cy", true);
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| g.iter().all(|g| g.id.is_some()));
+    kaden.to.send(net::frame_msg(&Msg::Me { pos: [10.5, 40.0, -20.5], yaw: 0.0 })).unwrap();
+    say(&drew, "/msg kaden come and see my fucking farm");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| !g[0].lines.is_empty() && !g[1].lines.is_empty());
+    let (kid, did) = (kaden.id.unwrap(), drew.id.unwrap());
+    let l = &kaden.lines[0];
+    assert_eq!((l.text.as_str(), l.to.as_ref().map(|t| t.id)), ("come and see my ******* farm", Some(kid)), "filtered, and for Kaden");
+    assert_eq!(l.who_for(kid), "Drew to you");
+    assert_eq!(drew.lines[0].who_for(did), "You to Kaden", "and back to Drew");
+    assert!(!l.may_leave() && !l.for_young());
+    // answering with /r
+    say(&kaden, "/r on my way");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| g[0].lines.len() >= 2);
+    assert_eq!(drew.lines[1].text, "on my way");
+    assert_eq!(drew.lines[1].who_for(did), "Kaden to you");
+    // nothing private for younger players, either way
+    say(&drew, "/msg Cy hi");
+    say(&cy, "/msg Drew Hi!");
+    // and commands that aren't, or that name nobody, go to nobody
+    say(&drew, "/fly");
+    say(&drew, "/msg Kenny hi");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| g[0].toasts.len() >= 3 && !g[2].toasts.is_empty());
+    assert!(drew.toasts.iter().any(|t| t == "Cy can't get private messages."), "{:?}", drew.toasts);
+    assert!(drew.toasts.iter().any(|t| t.contains("There's no /fly")), "{:?}", drew.toasts);
+    assert!(drew.toasts.iter().any(|t| t.contains("Nobody called Kenny")), "{:?}", drew.toasts);
+    assert!(cy.toasts.iter().any(|t| t.contains("quick lines")), "{:?}", cy.toasts);
+    // where someone is, for /tp NAME, but never a younger player
+    say(&drew, "/tp Kaden");
+    say(&drew, "/tp Cy");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| !g[0].found.is_empty() && g[0].toasts.len() >= 4);
+    assert_eq!(drew.found, [("Kaden".to_string(), [10.5, 40.0, -20.5])]);
+    assert!(drew.toasts.iter().any(|t| t == "You can't teleport to Cy."), "{:?}", drew.toasts);
+    for _ in 0..20 {
+        app.update();
+    }
+    for w in cy.from.try_iter() {
+        if let Some(Event::Msg(_, Msg::Chat(l))) = net::decode(w) {
+            cy.lines.extend(l);
+        }
+    }
+    assert!(cy.lines.is_empty(), "Cy saw none of it: {:?}", cy.lines);
+    let chat = app.world().resource::<Chat>();
+    assert!(chat.outbox.is_empty(), "private lines never leave the world");
+    assert!(chat.history(false).is_empty(), "nor go to whoever joins");
+    assert_eq!(chat.seen().count(), 0, "nor show to the host's own player");
+}
+
+#[test]
+fn slash_commands_switch_modes_and_go_places_on_your_own_game() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{Act, Acts, Toasts};
+    use crate::waypoints::Travel;
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    let mut me = crate::player::Me::default();
+    me.pos = Vec3::new(5.5, 30.0, 5.5);
+    app.insert_resource(Settings::default()).insert_resource(me).insert_resource(crate::KnobEdits::default()).init_resource::<Travel>();
+    app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+    let run = |app: &mut App, text: &str| {
+        app.world_mut().resource_mut::<Acts>().0.push(Act::Say(text.into()));
+        app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    };
+    let toasts = |app: &mut App| std::mem::take(&mut app.world_mut().resource_mut::<Toasts>().0).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+    // building, a place on the map is a moment away
+    run(&mut app, "/tp 100 40 -20");
+    let trip = app.world().resource::<Travel>().trip.clone().expect("going");
+    assert_eq!((trip.to, trip.exact, trip.name.as_str()), (Vec3::new(100.0, 40.0, -20.0), true, "100, 40, -20"));
+    app.world_mut().resource_mut::<Travel>().trip = None;
+    run(&mut app, "/tp ~10 ~-5");
+    let trip = app.world().resource::<Travel>().trip.clone().expect("going");
+    assert_eq!((trip.to.x, trip.to.z, trip.exact), (15.5, 0.5, false), "on from here, on the ground");
+    app.world_mut().resource_mut::<Travel>().trip = None;
+    run(&mut app, "/tp 40000 1 1");
+    assert!(toasts(&mut app).iter().any(|t| t.contains("edge of the world")));
+    // survival, as Settings switches it, and then no going anywhere
+    run(&mut app, "/gamemode survival");
+    assert!(app.world().resource::<Settings>().survival);
+    run(&mut app, "/gamemode s");
+    assert!(toasts(&mut app).iter().any(|t| t.contains("already")));
+    run(&mut app, "/tp 100 40 -20");
+    assert!(app.world().resource::<Travel>().trip.is_none());
+    assert!(toasts(&mut app).iter().any(|t| t.contains("In survival")));
+    run(&mut app, "/gamemode creative");
+    assert!(!app.world().resource::<Settings>().survival);
+    // a world that doesn't let players teleport
+    app.world_mut().resource_mut::<crate::net::Net>().host_with(crate::net::HostOptions { name: "x".into(), port: free_port(), tls: None, beacon: false, rules: crate::hosting::Rules { teleport: false, ..Default::default() } }).unwrap();
+    run(&mut app, "/tp 1 2 3");
+    assert!(app.world().resource::<Travel>().trip.is_none());
+    assert!(toasts(&mut app).iter().any(|t| t.contains("doesn't let players teleport")));
+    app.world_mut().resource_mut::<crate::net::Net>().leave();
+    // the host's commands go to it as lines would, and /tp NAME waits for its answer
+    run(&mut app, "/msg Kaden hi");
+    run(&mut app, "/tp Kaden");
+    let out: Vec<String> = app.world().resource::<crate::chat::Chat>().out.iter().map(|s| s.text.clone()).collect();
+    assert_eq!(out, ["/msg Kaden hi", "/tp Kaden"]);
+    app.world_mut().resource_mut::<crate::chat::Chat>().found.push(("Kaden".into(), Vec3::new(50.0, 20.0, 50.0)));
+    app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    let trip = app.world().resource::<Travel>().trip.clone().expect("off to Kaden");
+    assert_eq!((trip.to, trip.name.as_str()), (Vec3::new(50.0, 20.0, 50.0), "Kaden"));
+    app.world_mut().resource_mut::<Travel>().trip = None;
+    // an answer nobody asked for goes nowhere
+    app.world_mut().resource_mut::<crate::chat::Chat>().found.push(("Kaden".into(), Vec3::ZERO));
+    app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    assert!(app.world().resource::<Travel>().trip.is_none());
+    // /help, for this player only; typos say so
+    run(&mut app, "/help");
+    let chat = app.world().resource::<crate::chat::Chat>();
+    let shown: Vec<String> = chat.seen().map(|(l, _)| l.who_for(chat.me)).collect();
+    assert_eq!(shown.len(), crate::commands::HELP.len());
+    assert!(shown[0].starts_with("/msg"), "{shown:?}");
+    assert!(chat.history(false).is_empty(), "nobody else gets it");
+    run(&mut app, "/gamemod creative");
+    assert!(toasts(&mut app).iter().any(|t| t.contains("There's no /gamemod")));
 }
 
 #[test]
@@ -5195,7 +5404,7 @@ fn a_pad_opens_the_keyboard_on_a_field_and_esc_from_a_menu_goes_back_to_playing(
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     crate::sim(&mut app, crate::SEED);
-    app.insert_resource(crate::settings::Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.insert_resource(crate::settings::Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default()).init_resource::<crate::waypoints::Travel>();
     app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
     // chat with a pad: A on the field brings up the keyboard
     app.world_mut().resource_mut::<Focus>().go(Screen::Chat);
@@ -5600,7 +5809,7 @@ fn creations_make_blocks_of_their_own() {
     assert!(glow.faces[1].glow[9] && !glow.faces[1].glow[0], "the letters in glow glow");
     assert_eq!(glow.faces[0].rgba[9][3], 0, "and . is see-through");
     assert_eq!(made::color(marble).map(|c| c[0] > 200), Some(true), "the map's colour from the top");
-    assert!(made::register("too-many", &(0..17).map(|i| (format!("b{i}"), spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}")))).collect()).is_err());
+    assert!(made::register("too-many", &(0..33).map(|i| (format!("b{i}"), spec(&format!("colors = {{ a = \"#fff\" }}\n{eight}")))).collect()).is_err());
 
     // its code uses them by name, as soon as it starts
     let mut voxels = world();
@@ -6861,6 +7070,194 @@ fn the_block_atlas_leaves_room_for_creations_blocks() {
     let atlas = crate::textures::build(&mut images);
     // the base game's creations alone made more than 66 tiles fill it (#59)
     assert!(atlas.room() >= 300, "room for {} more tiles", atlas.room());
+}
+
+/// Storage's dispensers and Rails' powered rails take power from the
+/// Circuits creation's blocks beside them, by name: their own tests can't
+/// put down a lever (only the tested creation's blocks are there), so
+/// these play with Circuits' blocks registered.
+#[test]
+fn dispensers_and_powered_rails_run_off_circuits() {
+    home();
+    let mut lib = Library::load().list;
+    let circuits = lib.remove("circuits").expect("the base game has circuits");
+    crate::made::register(&circuits.id, &circuits.manifest.blocks).unwrap();
+    for (id, script) in [("storage", DISPENSERS), ("rails", POWERED_RAILS)] {
+        let mut c = lib.remove(id).expect("a base creation");
+        c.files.insert(crate::testing::FILE.into(), script.into());
+        let report = crate::testing::run(&c, &world());
+        println!("{}", report.text());
+        assert!(report.passed(), "{}", report.text());
+    }
+}
+
+const DISPENSERS: &str = r##"
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.15")
+local store = require("@potluck/store@0.1")
+local EAST, SOUTH = vector.create(1, 0, 0), vector.create(0, 0, 1)
+
+local function held(at)
+	return (store.get("boxes") or {})[math.floor(at.x) .. "," .. math.floor(at.y) .. "," .. math.floor(at.z)] or {}
+end
+local function put(p, at, thing)
+	test.hold(p, thing)
+	test.use_block(p, at)
+	test.answer(p, 1)
+end
+-- a dispenser facing east, with a lever beside it, and the player near
+local function dispenser(name, carrying)
+	carrying.Dispenser = 1
+	local p = test.player(name, { survival = true, carrying = carrying })
+	local x, z = math.floor(p.position.x) + 2, math.floor(p.position.z)
+	local d = vector.create(x, world.top(x, z) + 1, z)
+	for _, c in { d, d + EAST, d + EAST * 2, d + SOUTH } do
+		world.set_block(c, "Air")
+	end
+	test.place(p, d, "Dispenser", "east")
+	test.move(p, d + vector.create(1.5, 0, 2.5))
+	return p, d
+end
+local function pulse(lever)
+	world.set_block(lever, "Pulled lever")
+	test.wait(0.3)
+	world.set_block(lever, "Lever")
+	test.wait(0.3)
+end
+
+test.case("power gives out a thing at a time: a block is put down, the rest handed over", function()
+	local p, d = dispenser("Ada", { Stone = 2, Bread = 1 })
+	put(p, d, "Stone")
+	put(p, d, "Bread")
+	test.same(world.has(p, "Bread"), 0, "the bread's in")
+	pulse(d + SOUTH)
+	test.same(world.has(p, "Bread"), 1, "bread first, by name, handed over")
+	pulse(d + SOUTH)
+	test.same(world.block(d + EAST), "Stone", "a block put down in front")
+	pulse(d + SOUTH)
+	test.same(world.has(p, "Stone"), 1, "with no room in front, handed over")
+	test.wait(2.1)
+	test.same(next(held(d)), nil, "it's empty")
+	test.check(test.heard("click") >= 3, "it clicks")
+end)
+
+test.case("a lit inverter facing it powers it, and it pours water and fills the bucket again", function()
+	local p, d = dispenser("Bo", { ["Water bucket"] = 1 })
+	put(p, d, "Water bucket")
+	world.set_block(d - EAST, "Lit inverter", "east")
+	test.wait(0.3)
+	test.same(world.block(d + EAST), "Water", "poured")
+	test.wait(2.1)
+	test.same(held(d).Bucket, 1, "the bucket's kept")
+	world.set_block(d - EAST, "Inverter", "east")
+	test.wait(0.3)
+	world.set_block(d - EAST, "Lit inverter", "east")
+	test.wait(2.4)
+	test.same(held(d)["Water bucket"], 1, "filled again from the water in front")
+end)
+"##;
+
+const POWERED_RAILS: &str = r##"
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.23")
+
+local function floor()
+	local g = world.spot("green")
+	local x0, z0, y = math.floor(g.x) + 60, math.floor(g.z) - 12, 90
+	for dz = 0, 23 do
+		for dx = 0, 11 do
+			world.set_block(vector.create(x0 + dx, y, z0 + dz), "Stone")
+		end
+		test.wait(0)
+	end
+	return vector.create(x0, y + 1, z0)
+end
+local function at(o, x, y, z)
+	return o + vector.create(x, y, z)
+end
+local function cart_on(c, from)
+	local p = test.player("Ada", { survival = true, carrying = { Cart = 1 }, at = from })
+	test.place(p, c + vector.create(0, 1, 0), "Cart")
+	test.wait(0.2)
+	local list = world.creatures(test.kind("Cart"))
+	test.same(#list, 1, "a cart")
+	return p, list[1]
+end
+local function where(id)
+	return (test.creature(id) :: any).position
+end
+
+test.case("a powered rail with live wire beside it sends a cart on fast", function()
+	local o = floor()
+	for z = 2, 22 do
+		world.set_block(at(o, 4, 0, z), if z == 6 then "Powered rail" else "Rail", "north")
+	end
+	world.set_block(at(o, 5, 0, 6), "Live wire")
+	local p, id = cart_on(at(o, 4, 0, 3), at(o, 4, 0, 1))
+	test.ride(p, test.creature(id))
+	test.press(p, "push")
+	test.wait(0.2)
+	test.release(p, "push")
+	local before, after, last = 0, 0, where(id)
+	for _ = 1, 40 do
+		test.wait(0.1)
+		local now = where(id)
+		local speed = vector.magnitude(now - last) * 10
+		if now.z < o.z + 6 then
+			before = math.max(before, speed)
+		elseif now.z > o.z + 9 then
+			after = math.max(after, speed)
+		end
+		last = now
+	end
+	test.check(after > before + 2, "faster after it: " .. before .. " then " .. after)
+end)
+
+test.case("a cart resting on a powered rail sets off when power reaches it", function()
+	local o = floor()
+	for z = 2, 22 do
+		world.set_block(at(o, 4, 0, z), if z == 12 then "Powered rail" else "Rail", "north")
+	end
+	local _, id = cart_on(at(o, 4, 0, 12), at(o, 6, 0, 12))
+	test.wait(1)
+	local rest = where(id)
+	world.set_block(at(o, 5, 0, 12), "Pulled lever")
+	test.wait(2)
+	test.check(vector.magnitude(where(id) - rest) > 3, "it went: " .. tostring(where(id) - rest))
+end)
+"##;
+
+/// Every base creation's blocks fit in the block atlas and a world's ids
+/// for made blocks, with room to spare for players' own creations.
+#[test]
+fn the_base_games_blocks_leave_room_for_players_own() {
+    home();
+    let mut images = Assets::<Image>::default();
+    let mut atlas = crate::textures::build(&mut images);
+    let (mut ids, mut used) = (0, 0);
+    for c in Library::load().list.values().filter(|c| c.origin == Origin::Base) {
+        for (key, def) in crate::made::read_all(&c.manifest.blocks).unwrap() {
+            ids += if def.turns { 4 } else { 1 };
+            // a picture each, but faces with the same picture share, and a
+            // block that turns has a top for each way it faces
+            for i in (0..3).filter(|&i| def.same[i] == i) {
+                for q in 0..if i == 0 && def.turns { 4 } else { 1 } {
+                    let name: &'static str = Box::leak(format!("base/{}/{key}/{i}/{q}", c.id).into_boxed_str());
+                    let f = &def.faces[i];
+                    assert!(atlas.put(&mut images, name, &f.rgba, f.size, &f.glow).is_some(), "room in the atlas for {}'s {key}", c.id);
+                    used += 1;
+                }
+            }
+        }
+    }
+    let plain = vec![[200u8, 40, 40, 255]; 16 * 16];
+    let mut left = 0;
+    while atlas.put(&mut images, Box::leak(format!("test/spare{left}").into_boxed_str()), &plain, 16, &vec![false; 256]).is_some() {
+        left += 1;
+    }
+    println!("the base game's own blocks take {ids} ids and {used} pictures, leaving {left} pictures");
+    assert!(left >= 64, "room in the atlas for players' blocks: {left} pictures");
+    assert!(ids <= 128 - 24, "ids for players' blocks: the base game takes {ids} of 128");
 }
 
 #[test]

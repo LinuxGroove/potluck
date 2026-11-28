@@ -35,6 +35,8 @@ export type CreatureDef = {
 	rideable: boolean?,
 	seat: number?,
 	flies: boolean?,
+	-- 0.23: false so a rider doesn't steer it
+	steer: boolean?,
 	behaviours: Behaviours?,
 }
 
@@ -67,6 +69,10 @@ export type Creature = {
 	remove: (self: Creature) -> (),
 	on_ground: (self: Creature) -> boolean,
 	climb: (self: Creature, speed: number) -> boolean,
+	-- 0.23: along a path of points, gently; and how far is left, how fast
+	-- it's going and how many points are left
+	follow: (self: Creature, points: { Position }?, speed: number?, more: boolean?) -> (),
+	following: (self: Creature) -> (number, number, number),
 	become: (self: Creature, kind: any) -> (),
 	[string]: any,
 }
