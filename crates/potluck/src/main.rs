@@ -176,7 +176,7 @@ fn main() {
     #[cfg(feature = "raytracing")]
     if render::Tier::of(&settings.lighting) == render::Tier::Ultra {
         // checks the graphics card itself, and stays idle on one that can't ray trace
-        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, render::raytrace_meshes);
+        app.add_plugins(bevy::solari::SolariPlugins).add_systems(PostUpdate, (render::raytrace_meshes, render::untrace_hidden).chain());
         // the ray tracer binds each vertex slab whole, and some cards bind at most 128 MiB
         use bevy::render::{mesh::allocator::MeshAllocatorSettings, slab_allocator::SlabAllocatorSettings};
         let slabs = SlabAllocatorSettings { max_slab_size: 64 << 20, large_threshold: 32 << 20, ..default() };
@@ -193,6 +193,7 @@ fn main() {
         .init_resource::<mesh::View>()
         .init_resource::<creatures::PartMaterials>()
         .init_resource::<held::HeldLooks>()
+        .init_resource::<worn::WornLooks>()
         .init_resource::<ui::Labels>()
         .insert_resource(waypoints::Waypoints::load())
         .init_resource::<waypoints::Travel>()
@@ -229,7 +230,7 @@ fn main() {
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
                 (focus_mesh, view_distance, mesh::show, mesh::remesh, mesh::cull::cull, render::far::follow, mesh::wind).chain(),
-                ((render::sky, render::cave_air, render::murk::follow).chain(), render::clouds::drift, render::dome::follow, (render::lanterns, held::hand_light, render::flicker).chain(), render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people, held::mine, held::hands).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
+                ((render::sky, render::cave_air, render::murk::follow).chain(), render::clouds::drift, render::dome::follow, (render::lanterns, held::hand_light, render::flicker).chain(), render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people, held::mine, held::hands, worn::wear).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
                 (map::refresh, map::draw_hud, map::make_room, map::draw_map, chat::draw_feed, keyboard::draw),
             )
                 .chain()
@@ -268,6 +269,14 @@ fn main() {
         let exact = args.iter().any(|a| a == "--exact");
         // --hold=Torch puts a thing in hand (and the --person's)
         let hold = opt("hold").and_then(|n| items::by_name(&n));
+        // --wear="Iron helmet,Iron coat,Iron leggings,Iron boots,Shield" dresses the --person
+        let wear = opt("wear").map(|list| {
+            let mut w = [0; 5];
+            for (i, n) in list.split(',').enumerate().take(5) {
+                w[i] = items::by_name(n.trim()).unwrap_or(0);
+            }
+            w
+        });
         // --put=x,y,z,Torch;x,y,z,Glowcap puts blocks down first (lights in a cave)
         if let Some(list) = opt("put") {
             let puts: Vec<(IVec3, blocks::BlockId)> = list
@@ -281,7 +290,7 @@ fn main() {
             app.insert_resource(Puts(puts));
             app.add_systems(Update, put_blocks.before(Sim));
         }
-        app.insert_resource(Shot { path, after, at, exact, tod, screen, creature, person, hold, lines, done: false, frames: 0 });
+        app.insert_resource(Shot { path, after, at, exact, tod, screen, creature, person, hold, wear, lines, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
         // no outline round the block in the crosshair
         app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
@@ -319,6 +328,8 @@ struct Shot {
     /// A player to stand in view, by their shirt's hue, until it's placed.
     person: Option<f32>,
     hold: Option<items::Thing>,
+    /// What the person wears: head, body, legs, feet and arm.
+    wear: Option<[items::Thing; 5]>,
     /// Lines of chat to show.
     lines: bool,
     done: bool,
@@ -406,7 +417,7 @@ fn shot(
         let fwd = Vec3::new(-me.yaw.sin(), 0.0, -me.yaw.cos());
         let mut at = me.pos + fwd * 2.4;
         at.y = voxels.top(at.x.floor() as i32, at.z.floor() as i32) as f32 + 1.0;
-        commands.spawn((Transform::from_translation(at).with_rotation(Quat::from_rotation_y(me.yaw + std::f32::consts::PI)), Visibility::default(), creatures::Person::new(hue), held::Holds(s.hold.unwrap_or(0))));
+        commands.spawn((Transform::from_translation(at).with_rotation(Quat::from_rotation_y(me.yaw + std::f32::consts::PI)), Visibility::default(), creatures::Person::new(hue), held::Holds(s.hold.unwrap_or(0)), worn::Wears(s.wear.unwrap_or_default())));
     }
     let t = time.elapsed_secs();
     if t > 1.0 && focus.screen == ui::Screen::Title {

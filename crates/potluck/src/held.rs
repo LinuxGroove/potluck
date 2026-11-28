@@ -72,7 +72,20 @@ enum Kind {
 pub struct HeldLooks {
     looks: HashMap<Thing, Option<Look>>,
     mats: HashMap<(Kind, bool), Handle<StandardMaterial>>,
+    /// The first person view's own copies of a flame's materials
+    /// (`Making::for_view`).
+    view: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
 }
+
+/// How bright a flame in the view's hand lights its own stick (or the
+/// lantern's frame), on the screen: the view's thing is drawn small and
+/// close (`CLOSE`), too close for the light round the hand to light it as
+/// it would at arm's length.
+const FLAME_FILL: f32 = 0.3;
+
+/// How bright a flame in the view's hand burns, as much as one set down:
+/// up at the eye it would fill the view with white.
+const VIEW_GLOW: f32 = 0.4;
 
 /// What making how a thing in hand looks needs.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -82,6 +95,7 @@ pub struct Making<'w> {
     meshes: ResMut<'w, Assets<Mesh>>,
     mats: ResMut<'w, Assets<StandardMaterial>>,
     blocks: Option<Res<'w, crate::mesh::BlockMaterials>>,
+    rt: Option<Res<'w, crate::render::Raytraced>>,
 }
 
 impl Making<'_> {
@@ -146,6 +160,41 @@ impl Making<'_> {
         let mesh = sprite(outline, BlockAtlas::uv(atlas.tile(name)));
         let kind = lit(Kind::Cut);
         Some(Look { parts: vec![(self.meshes.add(mesh), self.material(kind, true))], cube: false, stamp })
+    }
+
+    /// How `look` is drawn in the first person view: a flame's stick (or
+    /// frame) lit by its flame, and the flame no brighter than the eye can
+    /// take so near. Anything else is as it is.
+    pub fn for_view(&mut self, look: &Look) -> Look {
+        let glows: Vec<AssetId<StandardMaterial>> = self.looks.mats.iter().filter(|((k, _), _)| *k == Kind::Glow).map(|(_, h)| h.id()).collect();
+        if !look.parts.iter().any(|(_, m)| glows.contains(&m.id())) {
+            return look.clone();
+        }
+        let rt = self.rt.as_ref().is_some_and(|r| r.0);
+        let mut l = look.clone();
+        for (_, m) in &mut l.parts {
+            if let Some(v) = self.looks.view.get(&m.id()) {
+                *m = v.clone();
+                continue;
+            }
+            let Some(mut copy) = self.mats.get(&*m).cloned() else { continue };
+            if glows.contains(&m.id()) {
+                // ray traced, the eye's exposure takes care of it
+                if !rt {
+                    copy.emissive = copy.emissive * VIEW_GLOW;
+                }
+            } else {
+                // warm light on its own colours: on the screen drawn
+                // normally, and ray traced as bright at night as that
+                // (the tracer's glow goes through the eye's exposure)
+                copy.emissive_texture = copy.base_color_texture.clone();
+                copy.emissive = LinearRgba::rgb(1.0, 0.72, 0.42) * FLAME_FILL * if rt { 290.0 } else { 1.0 };
+            }
+            let h = self.mats.add(copy);
+            self.looks.view.insert(m.id(), h.clone());
+            *m = h;
+        }
+        l
     }
 
     /// The chunks' own material for `kind` (so flames are as bright as
@@ -349,6 +398,7 @@ pub fn mine(
             }
             v.shown = held;
             if let Some(l) = making.look(held) {
+                let l = making.for_view(&l);
                 let thing = commands.spawn((in_view(l.cube), Visibility::Inherited, InHand(held), ChildOf(e))).id();
                 draw(&mut commands, thing, &l, true);
             }

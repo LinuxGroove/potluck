@@ -138,6 +138,38 @@ pub fn raytrace_meshes(rt: Res<Raytraced>, added: Query<(Entity, &Mesh3d), (Adde
     }
 }
 
+/// Your own body leaves the ray traced scene while it's hidden (in first
+/// person), since the tracer doesn't look at what's hidden: it would stand
+/// round the eye in the dark, putting what's in hand in its shade and
+/// keeping the torch in hand's light in.
+#[cfg(feature = "raytracing")]
+pub fn untrace_hidden(
+    rt: Res<Raytraced>,
+    me: Query<(Entity, &Visibility), With<crate::net::MyView>>,
+    kids: Query<&Children>,
+    meshes: Query<(&Mesh3d, Has<bevy::solari::prelude::RaytracingMesh3d>), Without<NotRaytraced>>,
+    mut commands: Commands,
+) {
+    use bevy::solari::prelude::RaytracingMesh3d;
+    if !rt.0 {
+        return;
+    }
+    for (e, vis) in &me {
+        let hidden = *vis == Visibility::Hidden;
+        for c in kids.iter_descendants(e) {
+            match meshes.get(c) {
+                Ok((_, true)) if hidden => {
+                    commands.entity(c).remove::<RaytracingMesh3d>();
+                }
+                Ok((m, false)) if !hidden => {
+                    commands.entity(c).insert(RaytracingMesh3d(m.0.clone()));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct Sun;
 
@@ -260,11 +292,13 @@ pub fn make_materials(atlas: &BlockAtlas, images: &mut Assets<Image>, mats: &mut
     BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under), mats.add(faint)], canopy, water: own, lamps }
 }
 
-/// How wide a lantern's stand-in for the ray tracer is (`mesh::stand_in`).
-pub const STAND_IN: f32 = 0.25;
+/// How wide a lantern's stand-in for the ray tracer is (`mesh::stand_in`):
+/// wide enough that its light is spread over a box that can't be missed,
+/// which keeps the tracer's speckle down, and still inside its block.
+pub const STAND_IN: f32 = 0.4;
 
 /// How much light a lantern gives at night, or deep underground.
-const LAMP_LUMENS: f32 = 300_000.0;
+const LAMP_LUMENS: f32 = 450_000.0;
 
 /// Each block's lamp colour (`lamp`), by id along a row: what the flames'
 /// stand-ins glow in.
@@ -684,10 +718,12 @@ pub fn sky(
         // shade truly dark; deep underground, as far as it does at night
         let open = night_open(night_eye(day)) + day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
         ex.ev100 = 13.7 - open.max(night_open(below));
-        // the sky's reflections don't reach down into caves either (the
-        // sky's share each face sees only dims the fill, not reflections)
+        // the sky's reflections and fill don't reach down into caves either
+        // (the sky's share each face sees only dims some of it): deep
+        // underground there's a little of the night sky's, never the day's,
+        // so a cave is as dark at noon as at midnight
         if let Some(mut env) = env {
-            env.intensity = 1.0 - 0.97 * below;
+            env.intensity = 1.0 - below * (1.0 - 0.03 * (1.0 - day));
         }
         let f = fog_colour(day, low);
         fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });

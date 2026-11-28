@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::creations::{Creation, Library, Origin, Payload};
 use crate::creatures::{Body, Herd, Part};
 use crate::game::{throw, Action, Actions};
+use crate::items::Thing;
 use crate::mesh::ChunkEntities;
 use crate::player::{Me, MAX_HEALTH};
 use crate::render::Clock;
@@ -45,6 +46,14 @@ pub struct PlayerSnap {
     pub name: String,
     pub pos: [f32; 3],
     pub yaw: f32,
+    /// What they hold (`items::Thing`, 0 for nothing), sent when it
+    /// changes: none means as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Thing>,
+    /// What they wear on their head, body, legs and feet and on their arm
+    /// (`world.wear`), sent when it changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worn: Option<[Thing; 5]>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -100,8 +109,14 @@ pub enum Msg {
     MadeItems(Vec<crate::made::items::Entry>),
     Blocks(Vec<(i32, i32, i32, u8)>),
     Me { pos: [f32; 3], yaw: f32 },
-    /// Players near you that moved, and those gone from view.
-    People { list: Vec<PlayerSnap>, gone: Vec<u32> },
+    /// Players near you that moved (or changed what they hold or wear),
+    /// those gone from view, and what you wear yourself when that changes.
+    People {
+        list: Vec<PlayerSnap>,
+        gone: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wear: Option<[Thing; 5]>,
+    },
     /// Creatures near you that changed, and those gone from view.
     Bodies { list: Vec<BodySnap>, gone: Vec<u64> },
     /// Everyone in the world, by name, now and then.
@@ -211,6 +226,10 @@ pub struct Remote {
     pub handle: Option<String>,
     pub pos: Vec3,
     pub yaw: f32,
+    /// What they hold and wear, for drawing them (`held::Holds`,
+    /// `worn::Wears`).
+    pub held: Thing,
+    pub worn: [Thing; 5],
     /// Under 13, as the player said when they joined.
     pub young: bool,
     /// Came peer to peer: their key, and whether through the relay now.
@@ -222,10 +241,12 @@ pub struct Remote {
 }
 
 #[derive(Default)]
-struct Seen {
+pub(crate) struct Seen {
     bodies: HashMap<u64, BodySnap>,
     revs: HashMap<u64, u32>,
     players: HashMap<u32, PlayerSnap>,
+    /// What they were last told they wear themselves.
+    wear: [Thing; 5],
     /// sends so far, for sending far things less often
     tick: u32,
 }
@@ -240,7 +261,7 @@ fn r2v(v: Vec3) -> [f32; 3] {
 }
 
 fn remote(id: u32, name: String, out: Option<Sender<Vec<u8>>>) -> Remote {
-    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, young: false, link: None, out, welcomed: false, seen: Seen::default() }
+    Remote { id, name, handle: None, pos: Vec3::ZERO, yaw: 0.0, held: 0, worn: [0; 5], young: false, link: None, out, welcomed: false, seen: Seen::default() }
 }
 
 pub struct HostNet {
@@ -314,11 +335,13 @@ pub struct Net {
     since_send: f32,
     /// Messages to send at the next chance (host: to everyone).
     pending: Vec<Msg>,
+    /// What this player wears (`world.wear`), for drawing them from behind.
+    pub worn: [Thing; 5],
 }
 
 impl Default for Net {
     fn default() -> Self {
-        Self { role: Role::Solo, my_id: 1, lan: None, since_send: 0.0, pending: vec![] }
+        Self { role: Role::Solo, my_id: 1, lan: None, since_send: 0.0, pending: vec![], worn: [0; 5] }
     }
 }
 
@@ -678,6 +701,10 @@ pub fn host_net(
 ) {
     let pending = std::mem::take(&mut net.pending);
     info.joined = matches!(net.role, Role::Client(_));
+    if !info.joined {
+        // alone or hosting, what you wear is what creations say
+        net.worn = scripts.worn(net.my_id);
+    }
     let Role::Host(_) = &net.role else {
         voxels.changes.clear();
         if !matches!(net.role, Role::Client(_)) {
@@ -891,17 +918,26 @@ pub fn host_net(
     }
     if net.since_send >= 0.05 {
         net.since_send = 0.0;
+        // what everyone holds and wears, as their games and creations say
+        // (the host's own straight from its hand)
+        if let Role::Host(h) = &mut net.role {
+            for p in h.players.values_mut() {
+                p.held = scripts.held_by(p.id);
+                p.worn = scripts.worn(p.id);
+            }
+        }
         let mut everyone = vec![];
         if let Some(me) = &me {
-            everyone.push(PlayerSnap { id: 1, name: settings.name.clone(), pos: r2v(me.pos), yaw: r2(me.yaw) });
+            let (held, worn) = (Some(me.held(settings.survival)), Some(net.worn));
+            everyone.push(PlayerSnap { id: 1, name: settings.name.clone(), pos: r2v(me.pos), yaw: r2(me.yaw), held, worn });
         }
-        everyone.extend(net.remote_players().iter().map(|p| PlayerSnap { id: p.id, name: p.name.clone(), pos: r2v(p.pos), yaw: r2(p.yaw) }));
+        everyone.extend(net.remote_players().iter().map(|p| PlayerSnap { id: p.id, name: p.name.clone(), pos: r2v(p.pos), yaw: r2(p.yaw), held: Some(p.held), worn: Some(p.worn) }));
         let bodies = snap_bodies(&herd);
         if let Role::Host(h) = &mut net.role {
             let mut sent = 0;
             for p in h.players.values_mut().filter(|p| p.welcomed) {
                 let Some(out) = &p.out else { continue };
-                for m in news_for(p.id, p.pos, &mut p.seen, &everyone, &bodies, &herd) {
+                for m in news_for(p.id, p.pos, p.worn, &mut p.seen, &everyone, &bodies, &herd) {
                     let f = frame_msg(&m);
                     sent += f.len();
                     let _ = out.send(f);
@@ -1167,9 +1203,11 @@ fn near(a: Vec3, b: [f32; 3]) -> bool {
 }
 
 /// What one player needs to hear: players and creatures near them that
-/// changed since they were last told, those gone from view, and the look
-/// of any creature they haven't seen in its current look.
-fn news_for(me: u32, at: Vec3, seen: &mut Seen, everyone: &[PlayerSnap], bodies: &[BodySnap], herd: &Herd) -> Vec<Msg> {
+/// changed since they were last told, those gone from view, the look of
+/// any creature they haven't seen in its current look, and what they wear
+/// (`wear`) when it changes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn news_for(me: u32, at: Vec3, wear: [Thing; 5], seen: &mut Seen, everyone: &[PlayerSnap], bodies: &[BodySnap], herd: &Herd) -> Vec<Msg> {
     seen.tick = seen.tick.wrapping_add(1);
     let turn = seen.tick;
     // far things move on a quarter of the sends, spread over them
@@ -1186,10 +1224,19 @@ fn news_for(me: u32, at: Vec3, seen: &mut Seen, everyone: &[PlayerSnap], bodies:
         if old.is_some() && later(p.id as u64, p.pos) {
             continue;
         }
-        if old.is_none_or(|old| moved(old.pos, p.pos) || (old.yaw - p.yaw).abs() > 0.01 || old.name != p.name) {
+        if old.is_none_or(|old| moved(old.pos, p.pos) || (old.yaw - p.yaw).abs() > 0.01 || old.name != p.name || old.held != p.held || old.worn != p.worn) {
             let mut snap = p.clone();
-            if old.is_some_and(|o| o.name == p.name) {
-                snap.name.clear();
+            if let Some(o) = old {
+                // only what changed goes again
+                if o.name == p.name {
+                    snap.name.clear();
+                }
+                if o.held == p.held {
+                    snap.held = None;
+                }
+                if o.worn == p.worn {
+                    snap.worn = None;
+                }
             }
             seen.players.insert(p.id, p.clone());
             list.push(snap);
@@ -1199,8 +1246,12 @@ fn news_for(me: u32, at: Vec3, seen: &mut Seen, everyone: &[PlayerSnap], bodies:
     for id in &gone {
         seen.players.remove(id);
     }
-    if !list.is_empty() || !gone.is_empty() {
-        out.push(Msg::People { list, gone });
+    let wear = (seen.wear != wear).then(|| {
+        seen.wear = wear;
+        wear
+    });
+    if !list.is_empty() || !gone.is_empty() || wear.is_some() {
+        out.push(Msg::People { list, gone, wear });
     }
     let mut list = vec![];
     let mut looks = vec![];
@@ -1370,8 +1421,11 @@ pub fn client_net(
                         voxels.apply(p, b);
                     }
                 }
-                Msg::People { list, gone } => {
+                Msg::People { list, gone, wear } => {
                     let my = net.my_id;
+                    if let Some(w) = wear {
+                        net.worn = w;
+                    }
                     if let Role::Client(c) = &mut net.role {
                         for id in gone {
                             c.players.remove(&id);
@@ -1383,6 +1437,12 @@ pub fn client_net(
                             }
                             r.pos = Vec3::from_array(p.pos);
                             r.yaw = p.yaw;
+                            if let Some(h) = p.held {
+                                r.held = h;
+                            }
+                            if let Some(w) = p.worn {
+                                r.worn = w;
+                            }
                         }
                     }
                 }
@@ -1564,22 +1624,25 @@ pub struct PlayerView(u32);
 /// A person made of painted boxes (`creatures::Person`), for other players
 /// and for yourself seen from behind.
 fn spawn_person<'a>(commands: &'a mut Commands, hue: f32, pos: Vec3) -> EntityCommands<'a> {
-    commands.spawn((Transform::from_translation(pos), Visibility::default(), crate::creatures::Person::new(hue), crate::held::Holds::default()))
+    commands.spawn((Transform::from_translation(pos), Visibility::default(), crate::creatures::Person::new(hue), crate::held::Holds::default(), crate::worn::Wears::default()))
 }
 
+/// Other players' bodies where they are, holding and wearing what they do.
 pub fn draw_players(
     mut commands: Commands,
     net: Res<Net>,
-    mut views: Query<(Entity, &PlayerView, &mut Transform)>,
+    mut views: Query<(Entity, &PlayerView, &mut Transform, &mut crate::held::Holds, &mut crate::worn::Wears)>,
 ) {
     let players = net.remote_players();
     let mut seen = std::collections::HashSet::new();
-    for (e, v, mut t) in &mut views {
+    for (e, v, mut t, mut holds, mut wears) in &mut views {
         match players.iter().find(|p| p.id == v.0) {
             Some(p) => {
                 seen.insert(p.id);
                 t.translation = t.translation.lerp(p.pos, 0.4);
                 t.rotation = Quat::from_rotation_y(p.yaw);
+                holds.set_if_neq(crate::held::Holds(p.held));
+                wears.set_if_neq(crate::worn::Wears(p.worn));
             }
             None => commands.entity(e).despawn(),
         }
@@ -1596,16 +1659,18 @@ pub fn draw_players(
 #[derive(Component)]
 pub struct MyView;
 
-/// You, when the camera is behind you.
+/// You, when the camera is behind you, wearing what you wear.
 pub fn draw_me(
     mut commands: Commands,
     me: Res<Me>,
-    mut view: Query<(&mut Transform, &mut Visibility), With<MyView>>,
+    net: Res<Net>,
+    mut view: Query<(&mut Transform, &mut Visibility, &mut crate::worn::Wears), With<MyView>>,
 ) {
-    let Ok((mut t, mut vis)) = view.single_mut() else {
+    let Ok((mut t, mut vis, mut wears)) = view.single_mut() else {
         spawn_person(&mut commands, 200.0, me.pos).insert((MyView, Visibility::Hidden));
         return;
     };
+    wears.set_if_neq(crate::worn::Wears(net.worn));
     t.translation = me.pos;
     t.rotation = Quat::from_rotation_y(me.yaw);
     let want = if me.third_person { Visibility::Inherited } else { Visibility::Hidden };

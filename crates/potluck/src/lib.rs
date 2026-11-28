@@ -44,6 +44,7 @@ pub mod underground;
 pub mod waypoints;
 pub mod world;
 pub mod worlds;
+pub mod worn;
 
 use bevy::prelude::*;
 
