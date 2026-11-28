@@ -58,6 +58,9 @@ pub const SHIELD: Thing = 319;
 /// What's shot and thrown: a bow, arrows, a sling and a spear (320 to 323).
 pub const BOW: Thing = 320;
 pub const SPEAR: Thing = 323;
+/// Food, and what farm animals give (world 0.20): seeds to the fried egg.
+pub const SEEDS: Thing = 324;
+pub const FRIED_EGG: Thing = 337;
 
 /// How many of a block go in one slot.
 pub const BLOCK_STACK: u32 = 99;
@@ -165,6 +168,22 @@ pub static ITEMS: &[Item] = &[
     stuff("Arrow", "arrow"),
     tool("Sling", "sling"),
     tool("Spear", "spear"),
+    // seeds from tall grass, wild berries and apples (farming), what the
+    // furnace's cooking pot makes, and what hens, goats and bees give
+    stuff("Seeds", "seeds"),
+    stuff("Berries", "berries"),
+    stuff("Apple", "apple"),
+    stuff("Baked potato", "baked_potato"),
+    stuff("Pumpkin pie", "pumpkin_pie"),
+    stuff("Berry pie", "berry_pie"),
+    stuff("Bean stew", "bean_stew"),
+    stuff("Fish stew", "fish_stew"),
+    stuff("Porridge", "porridge"),
+    stuff("Honey", "honey"),
+    stuff("Honey cake", "honey_cake"),
+    stuff("Feather", "feather"),
+    tool("Milk bucket", "bucket_milk"),
+    stuff("Fried egg", "fried_egg"),
 ];
 
 /// A block as a thing to carry.

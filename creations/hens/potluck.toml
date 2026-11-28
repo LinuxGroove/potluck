@@ -1,0 +1,69 @@
+name = "Hens"
+by = "Potluck"
+kind = "creature"
+about = "Hens peck about the Green and lay eggs on the grass now and then: pick them up, cook them, or bake them into pies and cakes. Pat one for a feather now and then. Hold seeds and they come to you; feed two of them seeds and they make a chick, which grows into a hen."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.20"
+tweak = "0.1"
+store = "0.1"
+sound = "0.2"
+
+# An egg, laid on the ground: a little box, speckled.
+[blocks.egg]
+name = "Egg"
+kind = "soft"
+hardness = 0
+solid = false
+boxes = [[6, 0, 6, 10, 5, 10], [7, 5, 7, 9, 6, 9]]
+colors = { e = "#efe4cf", f = "#c8a880" }
+picture = """
+eeeeeeeeeeeeeeee
+eeeeefeeeeeeeeee
+eeeeeeeeeefeeeee
+eeeeeeeeeeeeeeee
+eeefeeeeeeeeeeee
+eeeeeeeeeeeeeeee
+eeeeeeeeeeeeeefe
+eeeeeeeeeeeeeeee
+eeeeeeeeeeeeeeee
+eeeeeefeeeeeeeee
+eeeeeeeeeeeeeeee
+eeeeeeeeeeeefeee
+eeeeeeeeeeeeeeee
+eefeeeeeeeeeeeee
+eeeeeeeeefeeeeee
+eeeeeeeeeeeeeeee
+"""
+
+# a hen's cluck: two short calls
+[sounds.cluck]
+caption = "A hen clucks"
+wave = "square"
+notes = [700, 560]
+each = 0.09
+length = 0.2
+attack = 0.004
+decay = 0.05
+lowpass = 1800
+
+[[sounds.cluck.layers]]
+wave = "noise"
+pitch = 900
+length = 0.2
+attack = 0.004
+decay = 0.04
+gain = 0.3
+lowpass = 1400
+
+# a chick's peep
+[sounds.peep]
+caption = "A chick peeps"
+wave = "sine"
+pitch = [2600, 3100]
+length = 0.09
+attack = 0.005
+decay = 0.04

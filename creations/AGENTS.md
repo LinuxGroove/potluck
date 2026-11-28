@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.19")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.19. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.20")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.20. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.19
+### `@potluck/world` 0.20
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -172,7 +172,7 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords in wood, stone, copper, iron and moonsilver (the copper, iron and moonsilver ones new in 0.16), copper, iron and moonsilver hoes (0.16), Shears, a Bucket and a Water bucket, a Fishing rod, a Watering can, a Sickle and a Hammer (0.17), caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver and a Shield (0.18), a Bow, a Sling and a Spear (0.19) and the Flint and steel (one to a slot), Arrow (0.19), Raw fish and Cooked fish (0.17), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
+- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords in wood, stone, copper, iron and moonsilver (the copper, iron and moonsilver ones new in 0.16), copper, iron and moonsilver hoes (0.16), Shears, a Bucket and a Water bucket, a Fishing rod, a Watering can, a Sickle and a Hammer (0.17), caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver and a Shield (0.18), a Bow, a Sling and a Spear (0.19) and the Flint and steel (one to a slot), Arrow (0.19), Raw fish and Cooked fish (0.17), a Milk bucket (0.20), what farms give and kitchens make, Seeds, Berries, Apple, Baked potato, Fried egg, Pumpkin pie, Berry pie, Bean stew, Fish stew, Porridge, Honey and Honey cake, and a Feather (0.20), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.

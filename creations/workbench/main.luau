@@ -49,6 +49,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Planks = 6 }, give = "Barrel", n = 1 },
 		{ want = { Planks = 4 }, give = "Crate", n = 1 },
 		{ want = { Planks = 6 }, give = "Bookshelf", n = 1 },
+		-- cooks pies and stews over a fire (Furnaces and campfires)
+		{ want = { ["Iron ingot"] = 3 }, give = "Cooking pot", n = 1 },
 	},
 	Lights = {
 		{ want = { Coal = 1, Planks = 1 }, give = "Torch", n = 4 },
@@ -68,6 +70,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		-- waters crops, and reaps them (farming too)
 		{ want = { ["Copper ingot"] = 3 }, give = "Watering can", n = 1 },
 		{ want = { ["Copper ingot"] = 2, Planks = 1 }, give = "Sickle", n = 1 },
+		-- bees fill it with honey (the Bees creation)
+		{ want = { Planks = 4, Hay = 2 }, give = "Beehive", n = 1 },
 	},
 	Tools = {
 		{ want = { Planks = 3 }, give = "Wooden pickaxe", n = 1 },
@@ -96,6 +100,7 @@ local RECIPES: { [string]: { Recipe } } = {
 		-- shot and thrown (the Bows, slings and spears creation)
 		{ want = { Planks = 3, ["Cream wool"] = 2 }, give = "Bow", n = 1 },
 		{ want = { Flint = 1, Planks = 1 }, give = "Arrow", n = 4 },
+		{ want = { Flint = 1, Planks = 1, Feather = 1 }, give = "Arrow", n = 8 },
 		{ want = { ["Cream wool"] = 3 }, give = "Sling", n = 1 },
 		{ want = { Flint = 1, Planks = 3 }, give = "Spear", n = 1 },
 		{ want = { Planks = 6, ["Iron ingot"] = 1 }, give = "Shield", n = 1 },

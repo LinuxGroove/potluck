@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.19")
+local world = require("@potluck/world@0.20")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.19"
+world = "0.20"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.19 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.20 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -103,6 +103,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.20**: the game's items gain seeds, berries, apples, baked potatoes, fried eggs, pumpkin and berry pies, bean and fish stews, porridge, honey, honey cake, a milk bucket and feathers. Farming grows potatoes, beans, pumpkins and berry bushes too, Hunger eats them all, Furnaces and campfires gains a cooking pot, and the new Hens, Goats and Bees creations give eggs and feathers, milk and honey. Woollies, hens and goats have young when two are fed.
 - **0.19**: `world.shoot(player, shot, landed?)` sends an arrow, a stone or a spear flying the way a player aims; a creature it hits hears `hit(player, shot)` with it, and the creation hears where it landed. `world.aims(item)` makes Interact with a thing in hand always `item_used`, even at a block or a creature. The game's items gain a bow, arrows, a sling and a spear; the workbench makes them, and the new Bows, slings and spears creation shoots them. Gloomlings take a shot's power.
 - **0.18**: `world.on("item_used", fn)` hears a player Interact with nothing in reach, with what's in their hand and the way they look; `world.guard(player, share)` is how much of every `world.hurt` reaches a player (creations' shares multiply), and `world.hurt`'s `guarded = false` is a hurt it doesn't touch. The game's items gain caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver, and a shield. The game's workbench makes wool and copper armor and shields, the anvil makes iron and moonsilver armor, and the new Armor creation puts them on.
 - **0.17**: with an item in hand, Interact on water is heard as `block_used` with `"Water"` (it used to go through to the block behind, or nothing). The game's items gain shears, a bucket and a water bucket, a fishing rod, a watering can, a sickle, a hammer, raw fish and cooked fish. The game's workbench makes them, and the new Buckets and fishing creation fills buckets, pours them out and fishes.
