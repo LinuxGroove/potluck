@@ -380,17 +380,47 @@ fn tuft(name: &str, n: usize, tall: (f32, f32), flowers: usize, seeds: usize) ->
 /// its lower side, lighter towards the top, with gaps to see the leaves
 /// behind through. `n` leaves `len` px long; pine needles are thin.
 fn leaf_art(name: &str, pal: &[u32], n: usize, len: (f32, f32), thin: bool) -> Tex {
+    leaf_mix(name, &[(pal, 1.0)], n, len, thin, 0.0)
+}
+
+/// Leaves of several colours, each leaf's palette picked by its share in
+/// `pals`, with snow lying over `snow` of the tile in drifts.
+fn leaf_mix(name: &str, pals: &[(&[u32], f32)], n: usize, len: (f32, f32), thin: bool, snow: f32) -> Tex {
     let mut r = Rng::new(seed_of(name));
     let mut cv = Canvas::new();
     let w = if thin { (0.9, 0.35) } else { (2.0, 0.5) };
+    let total: f32 = pals.iter().map(|p| p.1).sum();
     for _ in 0..n {
         let p = Vec2::new(r.next() * 64.0, r.next() * 64.0);
         let d = Vec2::from_angle(if thin { -1.2 + r.next() * 0.6 } else { r.next() * std::f32::consts::TAU }) * (len.0 + (len.1 - len.0) * r.next()) * 0.5;
         let bend = Vec2::new(-d.y, d.x) * (r.next() - 0.5) * 0.5;
         let light = (0.2 + 0.65 * r.next() + (32.0 - p.y) / 160.0).clamp(0.0, 1.0);
+        let mut pick = r.next() * total;
+        let pal = pals.iter().find(|q| {
+            pick -= q.1;
+            pick <= 0.0
+        });
+        let pal = pal.unwrap_or(&pals[0]).0;
         let off = Vec2::new(0.8, 1.0);
         cv.stroke(p - d + off, p + bend + off, p + d + off, w, shade(ramp(pal, 0.0), 0.7), shade(ramp(pal, 0.05), 0.7));
         cv.stroke(p - d, p + bend, p + d, w, ramp(pal, light * 0.85), ramp(pal, light));
+    }
+    if snow > 0.0 {
+        // drifts in the hollows of the canopy: soft lumps, bluer in their own shade
+        let s = seed_of(name) as i32;
+        for y in 0..ART {
+            for x in 0..ART {
+                let (fx, fy) = (x as f32, y as f32);
+                let v = 0.7 * tnoise(fx, fy, 8, s) + 0.3 * tnoise(fx, fy, 16, s + 1);
+                if v < 1.0 - snow {
+                    continue;
+                }
+                let deep = ((v - (1.0 - snow)) / snow.max(0.01)).min(1.0);
+                let lit = ramp(SNOW, 0.35 + 0.6 * deep + (r.next() - 0.5) * 0.15);
+                cv.rgba[y * ART + x] = [lit[0], lit[1], lit[2], 255.0];
+                cv.height[y * ART + x] = 0.6 + 0.4 * deep;
+            }
+        }
     }
     cv.tex(2.0)
 }
@@ -491,6 +521,13 @@ const PLANK: &[u32] = &[0x7a5230, 0x93653c, 0xa97748, 0xbd8a56];
 const MOSS: &[u32] = &[0x4f5a52, 0x606d61, 0x6f7f6a, 0x5f8a4a, 0x76a254];
 const SNOW: &[u32] = &[0xcfd9e3, 0xdee6ee, 0xeef3f8, 0xffffff];
 const HAY: &[u32] = &[0xa6801f, 0xc29b2c, 0xd9b545, 0xead06a];
+/// Leaves turning: gold, orange and red, an oak's dead brown that hangs on
+/// through winter, and a birch's pale gold.
+const GOLD: &[u32] = &[0x7a5814, 0xae8018, 0xd8ac28, 0xf0cc48, 0xfae47a];
+const ORANGE: &[u32] = &[0x7a3412, 0xb0521a, 0xd97424, 0xf09a34, 0xfbbd58];
+const RED: &[u32] = &[0x5e1a12, 0x8c2618, 0xb83a20, 0xd65430, 0xea7848];
+const BROWN: &[u32] = &[0x3a2614, 0x56391c, 0x6e4c26, 0x8a6434, 0xa27c46];
+const BIRCH_GOLD: &[u32] = &[0x7a5a14, 0xa88420, 0xd2b030, 0xecd04a, 0xf8e67a];
 
 const NONE: ([f32; 4], f32) = ([0.0, 0.0, 0.0, 0.0], 0.0);
 
@@ -677,6 +714,23 @@ fn draw_all() -> Vec<(&'static str, Tex)> {
     t.push(("leaves", leaf_art("leaves", LEAF, 330, (5.0, 8.0), false)));
     t.push(("birch_leaves", leaf_art("birch_leaves", BIRCH, 360, (4.0, 6.0), false)));
     t.push(("pine", leaf_art("pine", PINE, 700, (6.0, 10.0), true)));
+    // the seasons' leaves (`mesh::leaf_tile` picks them): turned in autumn,
+    // an oak's brown through winter, and snow lying on the tops
+    let oak = (330, (5.0, 8.0), false);
+    for (name, pals, snow) in [
+        ("leaves_autumn", &[(ORANGE, 0.45), (GOLD, 0.3), (RED, 0.2), (LEAF, 0.05)][..], 0.0),
+        ("leaves_gold", &[(GOLD, 0.7), (ORANGE, 0.2), (LEAF, 0.1)][..], 0.0),
+        ("leaves_red", &[(RED, 0.6), (ORANGE, 0.3), (BROWN, 0.1)][..], 0.0),
+        ("leaves_brown", &[(BROWN, 0.8), (ORANGE, 0.12), (GOLD, 0.08)][..], 0.0),
+        ("leaves_snow", &[(BROWN, 0.85), (GOLD, 0.15)][..], 0.55),
+    ] {
+        // an oak's dead leaves hang thinner than its living ones
+        let n = if pals[0].0 == BROWN { oak.0 * 2 / 3 } else { oak.0 };
+        t.push((name, leaf_mix(name, pals, n, oak.1, oak.2, snow)));
+    }
+    t.push(("birch_gold", leaf_mix("birch_gold", &[(BIRCH_GOLD, 0.85), (BIRCH, 0.15)], 360, (4.0, 6.0), false, 0.0)));
+    t.push(("birch_snow", leaf_mix("birch_snow", &[(BIRCH_GOLD, 0.7), (BROWN, 0.3)], 360, (4.0, 6.0), false, 0.55)));
+    t.push(("pine_snow", leaf_mix("pine_snow", &[(PINE, 1.0)], 700, (6.0, 10.0), true, 0.5)));
     // the blocks in the new look take the old drawings' places
     for (name, tex) in art::blocks() {
         match t.iter_mut().find(|(n, _)| *n == name) {

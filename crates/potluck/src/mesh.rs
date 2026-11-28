@@ -33,7 +33,17 @@ pub struct Cover {
     /// `POTLUCK_OFF=tufts,fins,lips,wind,lod,sky` (lod: every chunk in
     /// full; sky: no darker rooms under roofs).
     pub off: Off,
+    /// How far into autumn and winter the land is (`sky::Weather`), in
+    /// steps of `SEASON_STEP`, so chunks are meshed again only now and then
+    /// as the season turns (`seasons`).
+    pub autumn: f32,
+    pub winter: f32,
 }
+
+/// The steps the land turns in: leaves turn and snow comes in a few waves,
+/// each a little more, so the chunks are meshed again only a few times a
+/// season.
+pub const SEASON_STEP: f32 = 0.25;
 
 #[derive(Clone, Copy, Default)]
 pub struct Off {
@@ -64,7 +74,7 @@ impl Off {
 
 impl Default for Cover {
     fn default() -> Self {
-        Cover { density: 1.0, shadows: true, fin_shadows: true, off: Off::default() }
+        Cover { density: 1.0, shadows: true, fin_shadows: true, off: Off::default(), autumn: 0.0, winter: 0.0 }
     }
 }
 
@@ -76,8 +86,22 @@ impl Cover {
             Tier::Medium => (0.8, false),
             Tier::High | Tier::Ultra => (1.0, true),
         };
-        Cover { density, shadows, fin_shadows: tier != Tier::Low, off: Off::from_env() }
+        Cover { density, shadows, fin_shadows: tier != Tier::Low, off: Off::from_env(), autumn: 0.0, winter: 0.0 }
     }
+}
+
+/// Turns the land with the season (`sky::Weather`): when autumn or winter
+/// moves on a step, the chunks with grass and leaves are meshed again a few
+/// at a time, nearest first (`Voxels::shade`), and the far land with them.
+pub fn seasons(weather: Res<crate::sky::Weather>, mut cover: ResMut<Cover>, mut voxels: ResMut<Voxels>, chunks: Res<ChunkEntities>) {
+    let step = |v: f32| ((v / SEASON_STEP).round() * SEASON_STEP).clamp(0.0, 1.0);
+    let (autumn, winter) = (step(weather.autumn), step(weather.winter));
+    if autumn == cover.autumn && winter == cover.winter {
+        return;
+    }
+    cover.autumn = autumn;
+    cover.winter = winter;
+    voxels.shade.extend(chunks.detail.keys().copied());
 }
 
 /// How much detail a chunk's meshes carry, by how far it is from the player.
@@ -155,6 +179,49 @@ pub fn leaf_tint(climate: Vec3) -> Vec3 {
     Vec3::ONE + (climate - Vec3::ONE) * 0.6
 }
 
+/// How the season shifts grass: yellowing through autumn and dull and
+/// straw-coloured in winter where no snow lies. White all spring and summer.
+pub fn season_grass(autumn: f32, winter: f32) -> Vec3 {
+    Vec3::ONE.lerp(Vec3::new(1.1, 0.97, 0.7), autumn * 0.7) * Vec3::ONE.lerp(Vec3::new(1.05, 0.9, 0.68), winter * 0.6)
+}
+
+/// Whether snow lies on column (x, z) this far into winter: in patches that
+/// spread as winter goes on, until it lies everywhere.
+pub fn snow_lies(x: i32, z: i32, winter: f32) -> bool {
+    winter > 0.0 && 0.88 * vnoise(x as f32 / 11.0, z as f32 / 11.0, 4243) + 0.12 * hash2(x, z, 4242) < winter * 1.02
+}
+
+/// The tile a leaf block's face shows for the season, if not its own: most
+/// of an oak's leaves turn gold, orange or red in autumn and hang on brown
+/// through winter, a birch's turn gold, pines stay green, and snow lies on
+/// the tops of all of them.
+pub fn leaf_tile(id: BlockId, x: i32, y: i32, z: i32, autumn: f32, winter: f32, snowy_top: bool) -> Option<&'static str> {
+    if snowy_top {
+        return Some(match id {
+            PINE => "pine_snow",
+            BIRCH_LEAVES => "birch_snow",
+            _ => "leaves_snow",
+        });
+    }
+    if id == PINE || hash2(x * 7 + y * 3, z * 13 - y, 515) >= autumn.max(winter) * 0.92 {
+        return None;
+    }
+    if id == BIRCH_LEAVES {
+        return Some("birch_gold");
+    }
+    if hash2(x + y * 5, z * 3, 516) * (autumn + winter) < winter {
+        return Some("leaves_brown");
+    }
+    let h = hash2(x * 3 - y, z + y * 7, 517);
+    Some(if h < 0.45 {
+        "leaves_autumn"
+    } else if h < 0.75 {
+        "leaves_gold"
+    } else {
+        "leaves_red"
+    })
+}
+
 /// The climate's tint across one column (`climate_tint` at its corners,
 /// blended between), worked out once for each chunk meshed: the climate
 /// changes over hundreds of blocks, and working it out for every grass
@@ -162,6 +229,8 @@ pub fn leaf_tint(climate: Vec3) -> Vec3 {
 pub struct Tints {
     o: Vec2,
     c: [Vec3; 4],
+    /// The season's shift on grass (`season_grass`).
+    pub grass: Vec3,
 }
 
 impl Tints {
@@ -169,7 +238,7 @@ impl Tints {
         let o = (key * CHUNK).as_vec2();
         let at = |dx: f32, dz: f32| climate_tint(crate::world::climate(seed, o.x + dx, o.y + dz));
         let s = CHUNK as f32;
-        Tints { o, c: [at(0.0, 0.0), at(s, 0.0), at(0.0, s), at(s, s)] }
+        Tints { o, c: [at(0.0, 0.0), at(s, 0.0), at(0.0, s), at(s, s)], grass: Vec3::ONE }
     }
 
     pub fn at(&self, x: f32, z: f32) -> Vec3 {
@@ -684,7 +753,7 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
         return;
     }
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);
-    let tint = grass_tint(tints.at(fx + 0.5, fz + 0.5), fx + 0.5, fz + 0.5);
+    let tint = grass_tint(tints.at(fx + 0.5, fz + 0.5), fx + 0.5, fz + 0.5) * tints.grass;
     let up = [0.0, 1.0, 0.0];
     let lip = BlockAtlas::uv(atlas.tile("grass_lip"));
     for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -899,7 +968,19 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
     let mut rock = MeshData::default();
     let mut lamps = MeshData::default();
     let o = c * CHUNK;
-    let tints = Tints::of(w.seed, IVec2::new(c.x, c.z));
+    let mut tints = Tints::of(w.seed, IVec2::new(c.x, c.z));
+    tints.grass = season_grass(cover.autumn, cover.winter);
+    // where snow lies this winter: the top of each column it lies in (what
+    // rain stops on), so not under trees or roofs
+    let snow: Option<Vec<i32>> = (cover.winter > 0.0).then(|| {
+        (0..CHUNK * CHUNK)
+            .map(|i| {
+                let (x, z) = (o.x + i % CHUNK, o.z + i / CHUNK);
+                if snow_lies(x, z, cover.winter) { w.roof(x, z) } else { i32::MIN }
+            })
+            .collect()
+    });
+    let snowy_top = |x: i32, y: i32, z: i32| snow.as_ref().is_some_and(|s| s[((z - o.z) * CHUNK + (x - o.x)) as usize] == y + 1);
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
     for y in o.y..o.y + CHUNK {
         for z in o.z..o.z + CHUNK {
@@ -1006,7 +1087,18 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             if blocks::is_opaque(nb) || (def.shape == Shape::Cutout && nb == id) {
                                 continue;
                             }
-                            let tile = atlas.tile(def.faces[f.s]);
+                            let leafy = matches!(id, LEAVES | BIRCH_LEAVES | PINE);
+                            // snow lies on the tops of grass and leaves, and
+                            // hangs over grass's sides
+                            let snowed = (id == GRASS || leafy) && snowy_top(x, y, z);
+                            let name = if leafy {
+                                leaf_tile(id, x, y, z, cover.autumn, cover.winter, snowed && f.s == 0).unwrap_or(def.faces[f.s])
+                            } else if snowed {
+                                if f.s == 0 { "snow" } else if f.s == 1 { "grass_snow_side" } else { def.faces[f.s] }
+                            } else {
+                                def.faces[f.s]
+                            };
+                            let tile = atlas.tile(name);
                             let layer = if plain != GLOW && atlas.glows(tile) { FAINT } else { plain };
                             let rect = BlockAtlas::uv(tile);
                             let mut light = [1.0; 4];
@@ -1034,13 +1126,14 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                             let n = f.n.map(|v| v as f32);
                             let flip = occ[0] + occ[2] > occ[1] + occ[3];
                             // leaves take a little of the climate's tint
-                            let leaf = matches!(id, LEAVES | BIRCH_LEAVES | PINE).then(|| leaf_tint(tints.at(fx + 0.5, fz + 0.5)));
+                            // (but not the snow on them)
+                            let leaf = leafy.then(|| if snowed && f.s == 0 { Vec3::ONE } else { leaf_tint(tints.at(fx + 0.5, fz + 0.5)) });
                             if let (Some(t), true) = (leaf, nb == AIR && fins) {
                                 leaf_fins(&mut layers[if cover.fin_shadows { layer } else { COVER }], corners, n, rect, light, t, hash2(x * 3 + f.n[0], y * 5 + f.n[1], z * 7 + f.n[2]));
                             }
-                            if id == GRASS && f.s == 0 && nb != WATER {
+                            if id == GRASS && f.s == 0 && nb != WATER && !snowed {
                                 // grass takes its colour from where it grows
-                                let tint = corners.map(|p| grass_tint(tints.at(p[0], p[2]), p[0], p[2]));
+                                let tint = corners.map(|p| grass_tint(tints.at(p[0], p[2]), p[0], p[2]) * tints.grass);
                                 layers[layer].quad_tinted(corners, n, rect, [0, 1, 2, 3].map(|k| rgba(tint[k] * light[k])), flip);
                             } else if nb == WATER {
                                 // under water: the water above takes the red out first, then the green
@@ -1057,7 +1150,8 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                                 rock.quad(corners, n, rect, light, flip);
                             }
                         }
-                        if id == GRASS {
+                        // snow covers the tufts
+                        if id == GRASS && !snowy_top(x, y, z) {
                             ground_cover(&mut layers[COVER], w, atlas, x, y, z, cover, detail, &tints);
                         }
                         varies |= matches!(id, GRASS | LEAVES | BIRCH_LEAVES | PINE);

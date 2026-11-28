@@ -7705,3 +7705,131 @@ fn armor_hangs_on_the_parts_it_covers_and_comes_off_again() {
     app.update();
     assert!(on(&mut app).is_empty());
 }
+
+/// Drawing the weather: rain and snow stop on roofs, leaves and water but
+/// fall through tufts and in the open, every drop is its own quad sharing
+/// out how much falls, and the sky greys over, dims the sun and closes the
+/// fog in as it clouds up, with lightning's glow gone with Reduce flashing.
+#[test]
+fn rain_stops_under_roofs_and_the_sky_greys_over_as_it_clouds_up() {
+    use crate::blocks::{AIR, LEAVES, STONE};
+    use crate::render::{dome, Gloom};
+    use crate::sky::{Kind, Sky, Weather};
+    let mut voxels = world();
+    let (x, z) = (186, 286);
+    let top = voxels.top(x, z);
+    assert_eq!(voxels.roof(x, z), voxels.roof(x, z).max(top), "never under the ground");
+    let open = voxels.roof(x, z);
+    voxels.set(IVec3::new(x, top + 6, z), STONE);
+    assert_eq!(voxels.roof(x, z), top + 7, "it lands on the roof");
+    voxels.set(IVec3::new(x, top + 6, z), LEAVES);
+    assert_eq!(voxels.roof(x, z), top + 7, "and on leaves");
+    voxels.set(IVec3::new(x, top + 6, z), AIR);
+    assert_eq!(voxels.roof(x, z), open, "and on the ground again with the roof gone");
+    assert!(voxels.roof(100_000, 100_000) > -128, "land not made yet stops it at the seed's ground");
+
+    // the drops: four corners at one place each, their shares spread evenly
+    let mesh = crate::render::fall::quads(100, 7);
+    let Some(bevy::mesh::VertexAttributeValues::Float32x2(b)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1) else { panic!("no shares") };
+    assert_eq!(b.len(), 400);
+    let shares: Vec<f32> = b.iter().step_by(4).map(|v| v[0]).collect();
+    assert!(shares.windows(2).all(|w| w[1] > w[0]) && shares[0] < 0.01 && shares[99] > 0.99, "{shares:?}");
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("no places") };
+    assert!(p.chunks(4).all(|q| q.iter().all(|c| c == &q[0])) && p.iter().flatten().all(|v| (0.0..1.0).contains(v)));
+
+    let gloom = |kind, strength| {
+        let mut w = Weather::default();
+        w.take(Sky { kind, strength, ..default() });
+        w.settle();
+        Gloom::of(&w, false)
+    };
+    let clear = gloom(Kind::Clear, 0.0);
+    assert_eq!(clear, Gloom::default(), "a clear day's light is as it always was");
+    assert_eq!(clear.reach(true), (160.0, 520.0));
+    assert_eq!(clear.reach(false), (140.0, 330.0));
+    assert_eq!(crate::render::clouds::deck(&clear), (0.0, 0.0), "and no deck is drawn");
+    let (cloudy, rain, storm, fog) = (gloom(Kind::Cloudy, 0.5), gloom(Kind::Rain, 0.8), gloom(Kind::Storm, 0.8), gloom(Kind::Fog, 1.0));
+    assert!(cloudy.cover > 0.2 && cloudy.cover < 0.8 && cloudy.sun > 0.5, "some cloud: {cloudy:?}");
+    let (sheet, billows) = crate::render::clouds::deck(&cloudy);
+    assert!(billows > sheet && sheet < 0.5, "billows with sky between: {sheet} {billows}");
+    assert!(rain.cover > 0.9 && rain.sun < 0.4 && storm.sun < rain.sun, "rain {rain:?} storm {storm:?}");
+    assert!(crate::render::clouds::deck(&storm).0 > 0.99, "overcast in a storm");
+    assert!(storm.grey(1.0, 0.0).max_element() < rain.grey(1.0, 0.0).min_element(), "a storm's cloud is darker");
+    assert!(rain.reach(true).1 < 520.0 && fog.reach(true).1 < 60.0 && fog.reach(false).1 < 60.0, "{:?} {:?}", rain.reach(true), fog.reach(true));
+    assert!(fog.reach(true).0 < fog.reach(true).1 && rain.reach(true).0 < rain.reach(true).1);
+    assert!(storm.opens() > 0.5 && storm.opens() <= 1.6 && clear.opens() == 0.0);
+    // Low's dome greys over too: grey overhead, the fog's colour at the horizon
+    let sun = Vec3::new(0.3, 0.9, -0.3).normalize();
+    let up = dome::colour_in(Vec3::Y, sun, 1.0, 0.0, &storm);
+    assert!(up.max_element() - up.min_element() < 0.08, "grey, not blue: {up}");
+    let flat = dome::colour_in(Vec3::X, sun, 1.0, 0.0, &storm);
+    assert!((flat - storm.fog_colour(1.0, 0.0)).length() < 0.02, "{flat}");
+    assert!((dome::colour_in(Vec3::Y, sun, 1.0, 0.0, &clear) - dome::colour(Vec3::Y, sun, 1.0, 0.0)).length() < 1e-6);
+
+    // lightning brightens the cloud, never with Reduce flashing
+    let mut w = Weather::default();
+    w.take(Sky { kind: Kind::Storm, strength: 1.0, ..default() });
+    w.strikes.push((Vec3::ZERO, 0.15));
+    let (lit, steady) = (Gloom::of(&w, false), Gloom::of(&w, true));
+    assert!(lit.glow > 0.4 && steady.glow == 0.0);
+    assert!(lit.grey(1.0, 0.0).x > steady.grey(1.0, 0.0).x + 0.15, "lit up");
+}
+
+/// The seasons on the land: an oak's leaves turn gold, orange and red in
+/// autumn and hang on brown through winter, a birch's turn gold, pines stay
+/// green, and snow lies in spreading patches on grass and leaves open to
+/// the sky, covering the tufts, until it lies everywhere.
+#[test]
+fn leaves_turn_and_snow_lies_with_the_seasons() {
+    use crate::blocks::{BIRCH_LEAVES, LEAVES, PINE};
+    use crate::mesh::{leaf_tile, snow_lies, Cover, Detail};
+    let tiles = |id, autumn, winter| (0..1000).filter_map(|i| leaf_tile(id, i, 60 + i % 7, i * 7, autumn, winter, false)).collect::<Vec<_>>();
+    assert!(tiles(LEAVES, 0.0, 0.0).is_empty() && tiles(BIRCH_LEAVES, 0.0, 0.0).is_empty(), "green all spring and summer");
+    let autumn = tiles(LEAVES, 1.0, 0.0);
+    assert!(autumn.len() > 850 && autumn.len() < 970, "most of an oak's leaves turn: {}", autumn.len());
+    for t in ["leaves_autumn", "leaves_gold", "leaves_red"] {
+        assert!(autumn.iter().filter(|n| **n == t).count() > 100, "{t}");
+    }
+    assert!(tiles(LEAVES, 0.5, 0.0).len() < autumn.len() * 2 / 3, "a little at a time");
+    assert!(tiles(PINE, 1.0, 1.0).is_empty(), "pines stay green");
+    assert!(tiles(BIRCH_LEAVES, 1.0, 0.0).iter().all(|t| *t == "birch_gold"));
+    let winter = tiles(LEAVES, 0.0, 1.0);
+    assert!(winter.len() > 850 && winter.iter().all(|t| *t == "leaves_brown"), "an oak's hang on brown");
+    for (id, t) in [(LEAVES, "leaves_snow"), (BIRCH_LEAVES, "birch_snow"), (PINE, "pine_snow")] {
+        assert_eq!(leaf_tile(id, 1, 60, 1, 0.0, 1.0, true), Some(t));
+    }
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    for t in ["leaves_autumn", "leaves_gold", "leaves_red", "leaves_brown", "leaves_snow", "birch_gold", "birch_snow", "pine_snow", "grass_snow_side", "snow"] {
+        assert!(atlas.has(t), "{t} is drawn");
+    }
+
+    // snow comes in patches that spread
+    let lying = |w: f32| (0..64).flat_map(|x| (0..64).map(move |z| (x, z))).filter(|&(x, z)| snow_lies(x * 3, z * 5, w)).count();
+    assert_eq!(lying(0.0), 0);
+    assert_eq!(lying(1.0), 64 * 64);
+    let half = lying(0.5);
+    assert!(half > 64 * 64 / 4 && half < 64 * 64 * 3 / 4, "{half}");
+    assert!(lying(0.25) < half && half < lying(0.75));
+    let alike = (0..2000).filter(|&i| snow_lies(i, 40, 0.5) == snow_lies(i + 1, 40, 0.5)).count();
+    assert!(alike > 1600, "in patches, not speckles: {alike}");
+
+    // meshed in deep winter, grass tops are snow and the tufts are gone
+    let w = world();
+    let (x, z) = (world::START.x as i32, world::START.z as i32);
+    let c = IVec3::new(x, w.top(x, z), z) / world::CHUNK;
+    let snow = BlockAtlas::uv(atlas.tile("snow"));
+    let mesh = |autumn, winter| {
+        let m = crate::mesh::mesh_chunk(&w, &atlas, c, Cover { autumn, winter, ..default() }, Detail::Near);
+        let mut l = m.layers.into_iter();
+        let solid = l.next().unwrap().into_mesh(false);
+        let cover = l.nth(crate::mesh::COVER - 1).unwrap().into_mesh(false).count_vertices();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) = solid.attribute(Mesh::ATTRIBUTE_UV_0) else { panic!("no uvs") };
+        let snowed = uv.iter().filter(|u| u[0] >= snow[0] && u[0] <= snow[2] && u[1] >= snow[1] && u[1] <= snow[3]).count();
+        (snowed, cover)
+    };
+    let (summer, deep) = (mesh(0.0, 0.0), mesh(0.0, 1.0));
+    assert_eq!(summer.0, 0, "no snow in summer");
+    assert!(deep.0 > 400, "snow on the grass: {deep:?}");
+    assert!(deep.1 < summer.1 / 2, "over the tufts: {deep:?} against {summer:?}");
+}

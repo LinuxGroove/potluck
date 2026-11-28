@@ -337,6 +337,27 @@ fn grass_top() -> Tex {
 }
 
 /// Soil with grass hanging over its top edge.
+/// Earth with a cap of snow over its top, for grass that snow lies on.
+fn grass_snow_side() -> Tex {
+    let d = seed_of("dirt2");
+    let s = seed_of("snow2");
+    let mut a = Art::new("grass_snow_side", &[DIRT, PEBBLE, SNOW]);
+    let edge: Vec<f32> = (0..N).map(|x| 9.0 + 4.0 * vn(x as f32, 0.0, 6, 1, s ^ 15) + 3.0 * smooth(0.6, 0.9, vn(x as f32, 0.0, 12, 1, s ^ 16))).collect();
+    a.fill(|x, y, _| {
+        let e = edge[x as usize];
+        if y < e {
+            let m = fbm(x, y, 8, 2, s);
+            return px(2, 0.8 + 0.2 * (m - 0.5) - 0.45 * (y / e).powf(2.0), 0.9 - 0.2 * (y / e), 0.6);
+        }
+        let mut p = dirt_px(x, y, d);
+        if y < e + 2.0 {
+            p.t -= 0.25;
+        }
+        p
+    });
+    a.finish(2.5, 0.7)
+}
+
 fn grass_side() -> Tex {
     let s = seed_of("dirt2");
     let g = seed_of("grass2");
@@ -719,6 +740,7 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
         ("cobble", cobble()),
         ("snow", snow()),
         ("snow_side", snow_side()),
+        ("grass_snow_side", grass_snow_side()),
         ("hay_side", straw("hay_side", 420, true, true)),
         ("hay_top", straw("hay_top", 300, false, false)),
         ("wool_red", wool("wool_red", WOOL_RED)),
