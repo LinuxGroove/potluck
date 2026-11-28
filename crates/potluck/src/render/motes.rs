@@ -85,6 +85,7 @@ pub fn motes(
     voxels: Res<Voxels>,
     me: Res<Me>,
     clock: Res<Clock>,
+    eye: Res<super::Eye>,
     mut motes: Query<(Entity, &mut Transform, &mut Mote)>,
     mut dice: Local<Dice>,
     mut owed: Local<f32>,
@@ -187,12 +188,13 @@ pub fn motes(
             spawn(&mut commands, Kind::Firefly, at, Vec3::ZERO, dice.range(18.0, 40.0), dice.range(0.04, 0.06), seed);
         }
     }
-    // dust: by day, in the air round a player under a roof or the trees
-    let eye = me.eye();
-    let covered = voxels.top(eye.x.floor() as i32, eye.z.floor() as i32) as f32 > eye.y + 1.0;
-    if covered && night < 0.5 && dust < DUST {
+    // dust: by day, in the air round a player under a roof or the trees,
+    // not down in the caves, where no sun reaches to catch it
+    let at_eye = me.eye();
+    let covered = voxels.top(at_eye.x.floor() as i32, at_eye.z.floor() as i32) as f32 > at_eye.y + 1.0;
+    if covered && night < 0.5 && eye.below < 0.3 && dust < DUST {
         for _ in 0..2 {
-            let at = eye + Vec3::new(dice.range(-1.0, 1.0), dice.range(-0.8, 0.9), dice.range(-1.0, 1.0)) * DUST_REACH;
+            let at = at_eye + Vec3::new(dice.range(-1.0, 1.0), dice.range(-0.8, 0.9), dice.range(-1.0, 1.0)) * DUST_REACH;
             if voxels.at(at.floor().as_ivec3()) == crate::blocks::AIR {
                 let vel = Vec3::new(dice.range(-0.03, 0.03), dice.range(-0.02, 0.01), dice.range(-0.03, 0.03));
                 spawn(&mut commands, Kind::Dust, at, vel, dice.range(8.0, 16.0), dice.range(0.03, 0.05), dice.range(0.0, 50.0));

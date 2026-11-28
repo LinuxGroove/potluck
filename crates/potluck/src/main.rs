@@ -187,6 +187,7 @@ fn main() {
         .init_resource::<player::Me>()
         .init_resource::<mesh::ChunkEntities>()
         .init_resource::<mesh::cull::Culling>()
+        .init_resource::<render::Eye>()
         .init_resource::<mesh::MeshFocus>()
         .init_resource::<mesh::Cover>()
         .init_resource::<mesh::View>()
