@@ -183,6 +183,9 @@ pub fn interact(
         }
     } else if let Some((i, _)) = me.aim_arch.as_ref().filter(|_| c.interact) {
         acts.0.push(Act::Arch(*i));
+    } else if let Some(at) = me.water.filter(|_| c.interact && crate::items::is_item(me.held(settings.survival))) {
+        // water, with an item in hand: a bucket to fill, a rod to cast
+        actions.0.push((pid, Action::UseBlock(at.to_array())));
     } else if let Some(hit) = me.target.filter(|_| c.interact) {
         // a block: creations may answer it (a table to craft at, say)
         actions.0.push((pid, Action::UseBlock(hit.block.to_array())));

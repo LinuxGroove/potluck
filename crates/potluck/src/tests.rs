@@ -165,6 +165,41 @@ local Thing = world.creature {
 "##;
 
 #[test]
+fn a_creature_used_before_its_first_step_is_spawned_first() {
+    // spawned by a timer, and patted before its first tick: `spawned` comes
+    // first, so `used` finds the field it sets (the soak caught Gloomlings
+    // stopping over this)
+    let code = r##"
+local world = require("@potluck/world")
+local Thing = world.creature {
+    name = "Thing", count = 0, home = "paddock",
+    body = { { "box", size = { 1, 1, 1 }, at = { 0, 0.5, 0 }, color = "#ffffff" } },
+}
+function Thing:spawned() self.pats = 0 end
+function Thing:used(player) self.pats += 1; print("pats " .. self.pats) end
+world.after(0.1, function() world.spawn(Thing, world.spot("paddock")) end)
+"##;
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.start(&creation(code), &mut herd).unwrap();
+    for _ in 0..20 {
+        scripts.tick(&mut voxels, &mut herd, 0.05);
+        if !herd.bodies.is_empty() {
+            break;
+        }
+    }
+    let id = *herd.bodies.keys().next().expect("the timer spawns one");
+    let ada = PlayerInfo { id: 1, name: "Ada".into(), pos: herd.bodies[&id].pos };
+    scripts.players = vec![ada.clone()];
+    scripts.event(&mut voxels, &mut herd, id, "used", &ada);
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    let vm = &scripts.vms["test"];
+    assert_eq!(vm.error, None, "no error");
+    assert!(vm.log.iter().any(|l| l.contains("pats 1")), "used once, after spawned: {:?}", vm.log);
+}
+
+#[test]
 fn a_creation_that_never_stops_is_stopped() {
     let mut voxels = world();
     let mut herd = Herd::default();
@@ -3356,6 +3391,9 @@ fn a_table_is_a_workbench_for_survival_players() {
     // the circuit parts are there when the Circuits creation's blocks are
     let circuits = lib.remove("circuits").expect("the base game has circuits");
     crate::made::register(&circuits.id, &circuits.manifest.blocks).unwrap();
+    // and the anvil when the Tools creation's is
+    let tools = lib.remove("tools").expect("the base game has tools");
+    crate::made::register(&tools.id, &tools.manifest.blocks).unwrap();
     let b = |n: &str| by_name(n).unwrap();
     let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
     let mut voxels = world();
@@ -3414,12 +3452,12 @@ fn a_table_is_a_workbench_for_survival_players() {
     // every recipe makes what it says, with enough to hand
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
-        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot"],
+        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot"],
         vec!["Planks"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
-        vec!["Planks", "Dirt", "Wheat"],
-        vec!["Planks", "Cobblestone", "Flint", "Iron ingot"],
-        vec!["Planks", "Cobblestone"],
+        vec!["Planks", "Dirt", "Wheat", "Copper ingot"],
+        vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool"],
+        vec!["Planks", "Cobblestone", "Copper ingot"],
         vec!["Cream wool", "Planks", "Lantern"],
         vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
     ];
@@ -3429,11 +3467,24 @@ fn a_table_is_a_workbench_for_survival_players() {
         scripts.carry(7, true, &carry, 1000);
         scripts.use_block(7, at, table);
         run(&mut scripts, &mut voxels, &mut herd, 0.2);
-        let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
-        assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
-        for i in 0..panel.choices.len() {
-            let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap_or_else(|| panic!("{} {i}: {:?} {:?}", panel.title, scripts.vms["workbench"].error, scripts.vms["workbench"].log));
-            assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
+        let mut panel = answer(&mut scripts, &mut voxels, &mut herd, Some(kind as u32)).unwrap();
+        // a long list comes in pages, with More last, back round to the first
+        loop {
+            assert!(panel.choices.iter().all(|c| c.chars().count() <= 30), "{:?}", panel.choices);
+            assert!(panel.choices.len() <= 8 && panel.title.chars().count() <= 40, "{}: {:?}", panel.title, panel.choices);
+            let mut next = None;
+            for i in 0..panel.choices.len() {
+                let after = answer(&mut scripts, &mut voxels, &mut herd, Some(i as u32)).unwrap_or_else(|| panic!("{} {i}: {:?} {:?}", panel.title, scripts.vms["workbench"].error, scripts.vms["workbench"].log));
+                if panel.choices[i] == "More" {
+                    next = Some(after);
+                    break;
+                }
+                assert!(after.text.starts_with("Made"), "{} {i}: {}", panel.title, after.text);
+            }
+            match next {
+                Some(p) if !p.title.contains("(1 of") => panel = p,
+                _ => break,
+            }
         }
         answer(&mut scripts, &mut voxels, &mut herd, None);
     }
@@ -3693,6 +3744,26 @@ fn hunger_eats_what_you_carry_and_an_empty_belly_stops_healing() {
     assert_eq!(scripts.vms["hunger"].error, None, "{:?}", scripts.vms["hunger"].log);
 }
 
+/// world 0.17: Interact looks through water to the block behind it, but
+/// with an item in hand it uses the water (a bucket, a rod).
+#[test]
+fn a_ray_finds_water_before_the_block_behind_it() {
+    use crate::blocks::{AIR, STONE, WATER};
+    use crate::player::{raycast, water_ahead};
+    let mut w = world();
+    let (eye, dir) = (Vec3::new(100.5, 110.5, 100.5), Vec3::X);
+    for x in 101..106 {
+        w.set(IVec3::new(x, 110, 100), AIR);
+    }
+    w.set(IVec3::new(102, 110, 100), WATER);
+    w.set(IVec3::new(104, 110, 100), STONE);
+    assert_eq!(raycast(&w, eye, dir, 6.0).map(|h| h.block), Some(IVec3::new(104, 110, 100)), "the block behind the water");
+    assert_eq!(water_ahead(&w, eye, dir, 6.0), Some(IVec3::new(102, 110, 100)), "the water in front of it");
+    w.set(IVec3::new(102, 110, 100), AIR);
+    w.set(IVec3::new(105, 110, 100), WATER);
+    assert_eq!(water_ahead(&w, eye, dir, 6.0), None, "water behind a block isn't reached");
+}
+
 /// world 0.8 and the Tools creation: a tool in hand digs its kind of block
 /// faster on the player's own game, wears with every block it breaks, and
 /// breaks when it's worn out; items can't be put down.
@@ -3715,7 +3786,7 @@ fn tools_dig_faster_wear_out_and_break() {
     scripts.set_pockets(8, false, &[], 0);
     scripts.start(&tools, &mut herd).unwrap();
     let digging = scripts.digging_changes().expect("the tools say how they dig");
-    assert_eq!(digging.len(), 6, "{digging:?}");
+    assert_eq!(digging.len(), 21, "five materials, three kinds each, three hoes, shears, a sickle and a hammer: {digging:?}");
     let speeds = |b| digging.iter().find(|d| d.0 == b).map(|d| d.1).unwrap();
     assert_eq!(speeds(pick), crate::items::Digging { speeds: [1.0, 2.5, 1.0, 1.0, 1.0], level: 1 }, "a wooden pickaxe digs stone faster");
     assert_eq!((speeds(axe).speeds[2], speeds(axe).level), (4.0, 2), "a stone axe chops faster, and reaches further");

@@ -20,10 +20,11 @@ local BENCH = "Table" -- the block you craft at
 -- A recipe: what it takes, what it makes and how many.
 type Recipe = { want: { [string]: number }, give: string, n: number }
 
--- Up to eight kinds of thing, each with up to eight recipes (a question has
--- eight choices at most). Tools and swords do their work through the Tools
--- creation, and a basket fills up into a balloon through the Hot air
--- balloon creation.
+-- Kinds of thing, each with its recipes. A question has eight choices at
+-- most, so a longer list comes in pages, seven to a page and More. Tools,
+-- swords and the anvil do their work through the Tools creation, hoes
+-- through Farming, and a basket fills up into a balloon through the Hot
+-- air balloon creation.
 local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel", "Circuits" }
 local RECIPES: { [string]: { Recipe } } = {
 	Building = {
@@ -37,6 +38,9 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Cobblestone = 8 }, give = "Furnace", n = 1 },
 		-- the circuits creation's: it opens when powered
 		{ want = { ["Copper ingot"] = 2 }, give = "Copper gate", n = 1 },
+		-- the tools creation's: it makes iron and moonsilver tools and
+		-- mends worn ones
+		{ want = { ["Iron ingot"] = 5, Stone = 2 }, give = "Anvil", n = 1 },
 	},
 	Furniture = {
 		{ want = { Planks = 6 }, give = "Table", n = 1 },
@@ -58,6 +62,11 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Dirt = 3 }, give = "Clay pot", n = 1 },
 		{ want = { Wheat = 4 }, give = "Hay", n = 1 },
 		{ want = { Dirt = 4 }, give = "Farmland", n = 4 },
+		-- tills a patch at a time (the farming creation)
+		{ want = { ["Copper ingot"] = 2, Planks = 2 }, give = "Copper hoe", n = 1 },
+		-- waters crops, and reaps them (farming too)
+		{ want = { ["Copper ingot"] = 3 }, give = "Watering can", n = 1 },
+		{ want = { ["Copper ingot"] = 2, Planks = 1 }, give = "Sickle", n = 1 },
 	},
 	Tools = {
 		{ want = { Planks = 3 }, give = "Wooden pickaxe", n = 1 },
@@ -66,12 +75,23 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone pickaxe", n = 1 },
 		{ want = { Cobblestone = 3, Planks = 2 }, give = "Stone axe", n = 1 },
 		{ want = { Cobblestone = 1, Planks = 2 }, give = "Stone shovel", n = 1 },
+		-- copper ones here; iron and moonsilver at an anvil
+		{ want = { ["Copper ingot"] = 3, Planks = 2 }, give = "Copper pickaxe", n = 1 },
+		{ want = { ["Copper ingot"] = 3, Planks = 2 }, give = "Copper axe", n = 1 },
+		{ want = { ["Copper ingot"] = 1, Planks = 2 }, give = "Copper shovel", n = 1 },
+		-- shears and a hammer (the Tools creation), a bucket and a rod
+		-- (Buckets and fishing)
+		{ want = { ["Iron ingot"] = 2 }, give = "Shears", n = 1 },
+		{ want = { ["Iron ingot"] = 3, Planks = 2 }, give = "Hammer", n = 1 },
+		{ want = { ["Iron ingot"] = 3 }, give = "Bucket", n = 1 },
+		{ want = { Planks = 3, ["Cream wool"] = 2 }, give = "Fishing rod", n = 1 },
 		-- lights fires (the fire creation)
 		{ want = { Flint = 1, ["Iron ingot"] = 1 }, give = "Flint and steel", n = 1 },
 	},
 	Weapons = {
 		{ want = { Planks = 2 }, give = "Wooden sword", n = 1 },
 		{ want = { Cobblestone = 2, Planks = 1 }, give = "Stone sword", n = 1 },
+		{ want = { ["Copper ingot"] = 2, Planks = 1 }, give = "Copper sword", n = 1 },
 	},
 	-- put down, a basket fills up into a hot air balloon (the balloon creation)
 	Travel = {
@@ -143,28 +163,49 @@ local function exists(name: string): boolean
 	return (pcall(world.kind, name))
 end
 
--- the recipes of one kind; `said` is how the last one went
-local function recipes(player, at: vector, kind: string, said: string?)
+-- One page of a long list: what's on it, which page it is and how many
+-- there are. Eight fit on one; past that, seven to a page and More.
+local PAGE = 7
+local function page_of<T>(list: { T }, page: number): ({ T }, number, number)
+	if #list <= 8 then
+		return list, 1, 1
+	end
+	local pages = math.ceil(#list / PAGE)
+	page = (page - 1) % pages + 1
+	return table.move(list, (page - 1) * PAGE + 1, math.min(page * PAGE, #list), 1, {}), page, pages
+end
+
+-- the recipes of one kind, a page of them; `said` is how the last one went
+local function recipes(player, at: vector, kind: string, said: string?, page: number?)
 	local list = {}
 	for _, r in RECIPES[kind] do
 		if exists(r.give) then
 			table.insert(list, r)
 		end
 	end
+	local shown, this, pages = page_of(list, page or 1)
 	local choices, more = {}, {}
-	for _, r in list do
+	for _, r in shown do
 		local short, long = label(r)
 		table.insert(choices, short)
 		if long then
 			table.insert(more, long)
 		end
 	end
+	if pages > 1 then
+		table.insert(choices, "More")
+	end
 	local text = (if said then said .. "\n\n" else "") .. "What would you like to make?"
 	if #more > 0 then
 		text ..= "\n\n" .. table.concat(more, "\n")
 	end
-	ui.ask(player, { title = "Workbench: " .. kind, text = text, choices = choices }, function(who, choice)
-		local r = choice and list[choice]
+	local title = "Workbench: " .. kind .. (if pages > 1 then " (" .. this .. " of " .. pages .. ")" else "")
+	ui.ask(player, { title = title, text = text, choices = choices }, function(who, choice)
+		if pages > 1 and choice == #shown + 1 then
+			recipes(who, at, kind, nil, this + 1)
+			return
+		end
+		local r = choice and shown[choice]
 		if not r then
 			return
 		end
@@ -173,11 +214,11 @@ local function recipes(player, at: vector, kind: string, said: string?)
 			sound.play("click", { at = at, caption = "Something's made" })
 		end
 		-- ask again, so making several is quick
-		recipes(who, at, kind, result)
+		recipes(who, at, kind, result, this)
 	end)
 end
 
-function choose(player, at: vector)
+function choose(player, at: vector, page: number?)
 	if world.pockets(player) == nil then
 		ui.ask(player, {
 			title = "Workbench",
@@ -196,8 +237,17 @@ function choose(player, at: vector)
 			end
 		end
 	end
-	ui.ask(player, { title = "Workbench", text = "What would you like to make?", choices = kinds }, function(who, choice)
-		local kind = choice and kinds[choice]
+	local shown, this, pages = page_of(kinds, page or 1)
+	local choices = table.clone(shown)
+	if pages > 1 then
+		table.insert(choices, "More")
+	end
+	ui.ask(player, { title = "Workbench", text = "What would you like to make?", choices = choices }, function(who, choice)
+		if pages > 1 and choice == #shown + 1 then
+			choose(who, at, this + 1)
+			return
+		end
+		local kind = choice and shown[choice]
 		if kind then
 			recipes(who, at, kind)
 		end

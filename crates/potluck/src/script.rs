@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 15), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 5)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 17), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 5)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -2698,7 +2698,9 @@ impl Scripts {
         if vm.paused {
             return;
         }
-        let Ok((t, _)) = vm.instance(&b) else { return };
+        // one spawned since the last tick hasn't had `spawned` yet: it has it
+        // first, or its handlers find the fields it sets missing
+        let Ok((t, new)) = vm.instance(&b) else { return };
         let _ = vm.fill(&t, &b, &players);
         let mut log = Vec::new();
         let p = player.clone();
@@ -2716,6 +2718,11 @@ impl Scripts {
             self.shared.lock().unwrap().sounds.extend(sounds.into_iter().map(|p| (None, p)));
         }
         let r = vm.session(voxels, herd, &players, &mut self.out, &creation, time.max(0.001), &mut log, |lua, _| {
+            if new {
+                if let Some(f) = t.get::<Option<Function>>("spawned")? {
+                    f.call::<()>(t.clone())?;
+                }
+            }
             if let Some(f) = t.get::<Option<Function>>(event)? {
                 f.call::<()>((t.clone(), player_table(lua, &p)?))?;
             }

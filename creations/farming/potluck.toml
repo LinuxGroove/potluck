@@ -1,13 +1,14 @@
 name = "Farming"
 by = "Potluck"
 kind = "mod"
-about = "Grow your own: Interact on grass to dig farmland, plant wheat or carrots on it, and harvest more than you sowed when they ripen. Crops grow faster by day and near water."
+about = "Grow your own: Interact on grass to dig farmland (a hoe digs a square at once), plant wheat or carrots on it, and harvest more than you sowed when they ripen. Crops grow faster by day and near water, and faster still with a watering can, and a sickle reaps a square of ripe ones at once."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.5"
+world = "0.17"
 tweak = "0.1"
 store = "0.1"
+ui = "0.2"
 sound = "0.1"

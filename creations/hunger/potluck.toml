@@ -1,7 +1,7 @@
 name = "Hunger"
 by = "Potluck"
 kind = "mod"
-about = "A food bar beside your health in survival. You eat the bread, roasted carrots, carrots and wheat you carry when you get hungry. On an empty belly you stop healing, and it slowly hurts you down to half health."
+about = "A food bar beside your health in survival. You eat the fish, bread, roasted carrots, carrots and wheat you carry when you get hungry. On an empty belly you stop healing, and it slowly hurts you down to half health."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
