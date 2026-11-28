@@ -5116,7 +5116,7 @@ fn chat_goes_through_the_host_to_everyone_and_nothing_from_outside_reaches_young
     assert_eq!(texts(&cy), ["Drew: hello everyone", "Cy: Hi!"]);
     assert!(cy.toasts.iter().any(|t| t.contains("quick lines")), "{:?}", cy.toasts);
     // a line from outside the world (a bridge, later) reaches Drew but not Cy
-    app.world_mut().resource_mut::<Chat>().inbox.push(Line { id: 0, name: "Kaden".into(), from: Source::Bridge("Fluxer".into()), text: "hi from outside".into(), place: None, young: false, at: 0 });
+    app.world_mut().resource_mut::<Chat>().inbox.push(Line { id: 0, name: "Kaden".into(), from: Source::Bridge("Fluxer".into()), text: "hi from outside".into(), place: None, young: false, to: None, at: 0 });
     pump(&mut app, &mut [&mut drew, &mut cy], &|g| g[0].lines.len() >= 3);
     assert_eq!(drew.lines[2].who(), "Kaden on Fluxer");
     for _ in 0..20 {
@@ -5136,6 +5136,210 @@ fn chat_goes_through_the_host_to_everyone_and_nothing_from_outside_reaches_young
     pump(&mut app, &mut [&mut kaden, &mut dot], &|g| g[0].lines.len() >= 3 && g[1].lines.len() >= 2);
     assert_eq!(kaden.lines.len(), 3);
     assert!(dot.lines.iter().all(|l| !matches!(l.from, Source::Bridge(_))), "{:?}", texts(&dot));
+}
+
+#[test]
+fn slash_commands_read_what_players_type() {
+    use crate::commands::{parse, Command, Coord};
+    let ok = |t: &str| parse(t).unwrap().unwrap();
+    let err = |t: &str| parse(t).unwrap().unwrap_err();
+    assert!(parse("hello / goodbye").is_none(), "a line, not a command");
+    assert_eq!(ok("/msg Kaden come and see"), Command::Msg("Kaden come and see".into()));
+    assert_eq!(ok("/TELL Kaden hi"), Command::Msg("Kaden hi".into()));
+    assert_eq!(ok("/w Kaden hi"), Command::Msg("Kaden hi".into()));
+    assert!(err("/msg").contains("/msg NAME"));
+    assert_eq!(ok("/r on my way"), Command::Reply("on my way".into()));
+    assert_eq!(ok("/tp 10 40 -20.5"), Command::Tp(Coord::At(10.0), Some(Coord::At(40.0)), Coord::At(-20.5)));
+    assert_eq!(ok("/tp ~ ~10 ~-3"), Command::Tp(Coord::On(0.0), Some(Coord::On(10.0)), Coord::On(-3.0)));
+    assert_eq!(ok("/tp 100 -200"), Command::Tp(Coord::At(100.0), None, Coord::At(-200.0)), "on the ground there");
+    assert_eq!(ok("/tp Ken V"), Command::TpTo("Ken V".into()), "names may have spaces");
+    assert_eq!(ok("/tp 7"), Command::TpTo("7".into()), "one word is a name");
+    assert_eq!(ok("/tp inf 1 nan"), Command::TpTo("inf 1 nan".into()), "and nowhere is not a place");
+    assert!(err("/tp 1 2 3 4").contains("/tp X Y Z"));
+    assert!(err("/tp").contains("/tp NAME"));
+    assert_eq!(ok("/gamemode survival"), Command::Mode { survival: true });
+    assert_eq!(ok("/gamemode Creative"), Command::Mode { survival: false });
+    assert_eq!(ok("/gamemode c"), Command::Mode { survival: false });
+    assert!(err("/gamemode spectator").contains("survival and creative"));
+    assert_eq!(ok("/help"), Command::Help);
+    assert!(err("/fly").contains("There's no /fly"));
+    assert!(err("/").contains("after the slash"));
+    assert_eq!(Coord::On(-3.0).of(10.0), 7.0);
+    // names, longest first, in any case
+    let here = |id: u32, name: &str| crate::commands::Player { id, name: name.into(), young: false, pos: Vec3::ZERO };
+    let all = [here(2, "Ken"), here(3, "Ken V"), here(4, "Bo"), here(5, "bo")];
+    let (p, rest) = crate::commands::named(&all, "ken v hello there").unwrap();
+    assert_eq!((p.id, rest), (3, "hello there"));
+    let (p, rest) = crate::commands::named(&all, "KEN hi").unwrap();
+    assert_eq!((p.id, rest), (2, "hi"));
+    assert!(crate::commands::named(&all, "Bo hi").unwrap_err().contains("2 players"));
+    assert!(crate::commands::named(&all, "Kenny hi").unwrap_err().contains("Nobody called Kenny"));
+}
+
+#[test]
+fn private_messages_reach_only_whoever_theyre_for_and_never_younger_players() {
+    use crate::chat::{Chat, Line, Say};
+    use crate::net::{self, Event, Msg};
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    app.insert_resource(crate::settings::Settings { name: "Ken's world".into(), ..Default::default() });
+    app.update();
+    let port = free_port();
+    app.world_mut().resource_mut::<net::Net>().host_with(net::HostOptions { name: "Ken's world".into(), port, tls: None, beacon: false, rules: Default::default() }).unwrap();
+    struct Guest {
+        to: std::sync::mpsc::Sender<Vec<u8>>,
+        from: Receiver<Wire>,
+        lines: Vec<Line>,
+        toasts: Vec<String>,
+        found: Vec<(String, [f32; 3])>,
+        id: Option<u32>,
+    }
+    let join = |name: &str, young: bool| {
+        let (tx, rx) = channel();
+        let to = transport::connect(&format!("127.0.0.1:{port}"), port, tx).unwrap();
+        to.send(net::frame_msg(&Msg::Hello { name: name.into(), protocol: net::PROTOCOL, pass: None, young })).unwrap();
+        Guest { to, from: rx, lines: vec![], toasts: vec![], found: vec![], id: None }
+    };
+    let pump = |app: &mut App, guests: &mut [&mut Guest], until: &dyn Fn(&[&mut Guest]) -> bool| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(20) && !until(guests) {
+            app.update();
+            std::thread::sleep(Duration::from_millis(5));
+            for g in guests.iter_mut() {
+                for w in g.from.try_iter() {
+                    match net::decode(w) {
+                        Some(Event::Msg(_, Msg::Welcome { id, .. })) => g.id = Some(id),
+                        Some(Event::Msg(_, Msg::Chat(l))) => g.lines.extend(l),
+                        Some(Event::Msg(_, Msg::Toast(t))) => g.toasts.push(t),
+                        Some(Event::Msg(_, Msg::Found { name, at })) => g.found.push((name, at)),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+    let say = |g: &Guest, t: &str| g.to.send(net::frame_msg(&Msg::Say(Say { text: t.into(), place: None }))).unwrap();
+    let mut drew = join("Drew", false);
+    let mut kaden = join("Kaden", false);
+    let mut cy = join("Cy", true);
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| g.iter().all(|g| g.id.is_some()));
+    kaden.to.send(net::frame_msg(&Msg::Me { pos: [10.5, 40.0, -20.5], yaw: 0.0 })).unwrap();
+    say(&drew, "/msg kaden come and see my fucking farm");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| !g[0].lines.is_empty() && !g[1].lines.is_empty());
+    let (kid, did) = (kaden.id.unwrap(), drew.id.unwrap());
+    let l = &kaden.lines[0];
+    assert_eq!((l.text.as_str(), l.to.as_ref().map(|t| t.id)), ("come and see my ******* farm", Some(kid)), "filtered, and for Kaden");
+    assert_eq!(l.who_for(kid), "Drew to you");
+    assert_eq!(drew.lines[0].who_for(did), "You to Kaden", "and back to Drew");
+    assert!(!l.may_leave() && !l.for_young());
+    // answering with /r
+    say(&kaden, "/r on my way");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| g[0].lines.len() >= 2);
+    assert_eq!(drew.lines[1].text, "on my way");
+    assert_eq!(drew.lines[1].who_for(did), "Kaden to you");
+    // nothing private for younger players, either way
+    say(&drew, "/msg Cy hi");
+    say(&cy, "/msg Drew Hi!");
+    // and commands that aren't, or that name nobody, go to nobody
+    say(&drew, "/fly");
+    say(&drew, "/msg Kenny hi");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| g[0].toasts.len() >= 3 && !g[2].toasts.is_empty());
+    assert!(drew.toasts.iter().any(|t| t == "Cy can't get private messages."), "{:?}", drew.toasts);
+    assert!(drew.toasts.iter().any(|t| t.contains("There's no /fly")), "{:?}", drew.toasts);
+    assert!(drew.toasts.iter().any(|t| t.contains("Nobody called Kenny")), "{:?}", drew.toasts);
+    assert!(cy.toasts.iter().any(|t| t.contains("quick lines")), "{:?}", cy.toasts);
+    // where someone is, for /tp NAME, but never a younger player
+    say(&drew, "/tp Kaden");
+    say(&drew, "/tp Cy");
+    pump(&mut app, &mut [&mut drew, &mut kaden, &mut cy], &|g| !g[0].found.is_empty() && g[0].toasts.len() >= 4);
+    assert_eq!(drew.found, [("Kaden".to_string(), [10.5, 40.0, -20.5])]);
+    assert!(drew.toasts.iter().any(|t| t == "You can't teleport to Cy."), "{:?}", drew.toasts);
+    for _ in 0..20 {
+        app.update();
+    }
+    for w in cy.from.try_iter() {
+        if let Some(Event::Msg(_, Msg::Chat(l))) = net::decode(w) {
+            cy.lines.extend(l);
+        }
+    }
+    assert!(cy.lines.is_empty(), "Cy saw none of it: {:?}", cy.lines);
+    let chat = app.world().resource::<Chat>();
+    assert!(chat.outbox.is_empty(), "private lines never leave the world");
+    assert!(chat.history(false).is_empty(), "nor go to whoever joins");
+    assert_eq!(chat.seen().count(), 0, "nor show to the host's own player");
+}
+
+#[test]
+fn slash_commands_switch_modes_and_go_places_on_your_own_game() {
+    use bevy::ecs::system::RunSystemOnce;
+    use crate::settings::Settings;
+    use crate::ui::{Act, Acts, Toasts};
+    use crate::waypoints::Travel;
+    home();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    crate::sim(&mut app, crate::SEED);
+    let mut me = crate::player::Me::default();
+    me.pos = Vec3::new(5.5, 30.0, 5.5);
+    app.insert_resource(Settings::default()).insert_resource(me).insert_resource(crate::KnobEdits::default()).init_resource::<Travel>();
+    app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
+    let run = |app: &mut App, text: &str| {
+        app.world_mut().resource_mut::<Acts>().0.push(Act::Say(text.into()));
+        app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    };
+    let toasts = |app: &mut App| std::mem::take(&mut app.world_mut().resource_mut::<Toasts>().0).into_iter().map(|(t, _)| t).collect::<Vec<_>>();
+    // building, a place on the map is a moment away
+    run(&mut app, "/tp 100 40 -20");
+    let trip = app.world().resource::<Travel>().trip.clone().expect("going");
+    assert_eq!((trip.to, trip.exact, trip.name.as_str()), (Vec3::new(100.0, 40.0, -20.0), true, "100, 40, -20"));
+    app.world_mut().resource_mut::<Travel>().trip = None;
+    run(&mut app, "/tp ~10 ~-5");
+    let trip = app.world().resource::<Travel>().trip.clone().expect("going");
+    assert_eq!((trip.to.x, trip.to.z, trip.exact), (15.5, 0.5, false), "on from here, on the ground");
+    app.world_mut().resource_mut::<Travel>().trip = None;
+    run(&mut app, "/tp 40000 1 1");
+    assert!(toasts(&mut app).iter().any(|t| t.contains("edge of the world")));
+    // survival, as Settings switches it, and then no going anywhere
+    run(&mut app, "/gamemode survival");
+    assert!(app.world().resource::<Settings>().survival);
+    run(&mut app, "/gamemode s");
+    assert!(toasts(&mut app).iter().any(|t| t.contains("already")));
+    run(&mut app, "/tp 100 40 -20");
+    assert!(app.world().resource::<Travel>().trip.is_none());
+    assert!(toasts(&mut app).iter().any(|t| t.contains("In survival")));
+    run(&mut app, "/gamemode creative");
+    assert!(!app.world().resource::<Settings>().survival);
+    // a world that doesn't let players teleport
+    app.world_mut().resource_mut::<crate::net::Net>().host_with(crate::net::HostOptions { name: "x".into(), port: free_port(), tls: None, beacon: false, rules: crate::hosting::Rules { teleport: false, ..Default::default() } }).unwrap();
+    run(&mut app, "/tp 1 2 3");
+    assert!(app.world().resource::<Travel>().trip.is_none());
+    assert!(toasts(&mut app).iter().any(|t| t.contains("doesn't let players teleport")));
+    app.world_mut().resource_mut::<crate::net::Net>().leave();
+    // the host's commands go to it as lines would, and /tp NAME waits for its answer
+    run(&mut app, "/msg Kaden hi");
+    run(&mut app, "/tp Kaden");
+    let out: Vec<String> = app.world().resource::<crate::chat::Chat>().out.iter().map(|s| s.text.clone()).collect();
+    assert_eq!(out, ["/msg Kaden hi", "/tp Kaden"]);
+    app.world_mut().resource_mut::<crate::chat::Chat>().found.push(("Kaden".into(), Vec3::new(50.0, 20.0, 50.0)));
+    app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    let trip = app.world().resource::<Travel>().trip.clone().expect("off to Kaden");
+    assert_eq!((trip.to, trip.name.as_str()), (Vec3::new(50.0, 20.0, 50.0), "Kaden"));
+    app.world_mut().resource_mut::<Travel>().trip = None;
+    // an answer nobody asked for goes nowhere
+    app.world_mut().resource_mut::<crate::chat::Chat>().found.push(("Kaden".into(), Vec3::ZERO));
+    app.world_mut().run_system_once(crate::chat::acts).unwrap();
+    assert!(app.world().resource::<Travel>().trip.is_none());
+    // /help, for this player only; typos say so
+    run(&mut app, "/help");
+    let chat = app.world().resource::<crate::chat::Chat>();
+    let shown: Vec<String> = chat.seen().map(|(l, _)| l.who_for(chat.me)).collect();
+    assert_eq!(shown.len(), crate::commands::HELP.len());
+    assert!(shown[0].starts_with("/msg"), "{shown:?}");
+    assert!(chat.history(false).is_empty(), "nobody else gets it");
+    run(&mut app, "/gamemod creative");
+    assert!(toasts(&mut app).iter().any(|t| t.contains("There's no /gamemod")));
 }
 
 #[test]
@@ -5195,7 +5399,7 @@ fn a_pad_opens_the_keyboard_on_a_field_and_esc_from_a_menu_goes_back_to_playing(
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     crate::sim(&mut app, crate::SEED);
-    app.insert_resource(crate::settings::Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default());
+    app.insert_resource(crate::settings::Settings::default()).insert_resource(crate::player::Me::default()).insert_resource(crate::KnobEdits::default()).init_resource::<crate::waypoints::Travel>();
     app.world_mut().resource_mut::<crate::ui::WorldInfo>().in_world = true;
     // chat with a pad: A on the field brings up the keyboard
     app.world_mut().resource_mut::<Focus>().go(Screen::Chat);

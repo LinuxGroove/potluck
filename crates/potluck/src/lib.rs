@@ -6,6 +6,7 @@ pub mod behaviours;
 pub mod blocks;
 pub mod bridge;
 pub mod chat;
+pub mod commands;
 pub mod check;
 pub mod creations;
 pub mod creatures;

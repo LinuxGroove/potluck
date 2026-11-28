@@ -30,7 +30,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 29;
+pub const PROTOCOL: u32 = 30;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -148,6 +148,8 @@ pub enum Msg {
     Say(crate::chat::Say),
     /// Lines of chat, as the host keeps them (from the host).
     Chat(Vec<crate::chat::Line>),
+    /// Where the player you asked for is (`/tp NAME`), to go there.
+    Found { name: String, at: [f32; 3] },
 }
 
 pub enum Event {
@@ -281,6 +283,8 @@ pub struct ClientNet {
     chat: bool,
     /// Lines of chat from the host, for chat to take.
     lines: Vec<crate::chat::Line>,
+    /// Players the host found for `/tp NAME`, for chat to take.
+    found: Vec<(String, Vec3)>,
     /// What to call the world in messages: its address, or its name when it
     /// was shared from home.
     shown: String,
@@ -347,6 +351,7 @@ impl ClientNet {
             teleport: true,
             chat: true,
             lines: vec![],
+            found: vec![],
             shown: shown.to_string(),
             link: None,
             p2p: false,
@@ -1023,6 +1028,14 @@ impl Net {
         }
     }
 
+    /// Players the host found for `/tp NAME` since last asked (a guest).
+    pub fn take_found(&mut self) -> Vec<(String, Vec3)> {
+        match &mut self.role {
+            Role::Client(c) => std::mem::take(&mut c.found),
+            _ => vec![],
+        }
+    }
+
     /// What players asked to say since last asked (the host).
     pub fn take_says(&mut self) -> Vec<(u32, crate::chat::Say)> {
         match &mut self.role {
@@ -1358,6 +1371,12 @@ pub fn client_net(
                         if n > 200 {
                             c.lines.drain(..n - 200);
                         }
+                    }
+                }
+                Msg::Found { name, at } => {
+                    if let Role::Client(c) = &mut net.role {
+                        c.found.truncate(4);
+                        c.found.push((name, Vec3::from_array(at)));
                     }
                 }
                 Msg::Go { address, note } => {

@@ -37,7 +37,8 @@ build = true
 teleport = true
 
 # Whether players may chat. Every line goes through this server, which
-# filters it; younger players chat with quick lines.
+# filters it and writes it to chat.jsonl (private messages, /msg, too);
+# younger players chat with quick lines.
 chat = true
 
 # How dangerous the world is: "peaceful" (no hostile creatures), "gentle",

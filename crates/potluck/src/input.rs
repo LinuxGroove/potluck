@@ -115,6 +115,8 @@ pub struct Controls {
     pub mark: bool,
     pub minimap: bool,
     pub chat: bool,
+    /// A slash: chat, with one typed for a command.
+    pub slash: bool,
     // menus
     pub up: bool,
     pub down: bool,
@@ -206,6 +208,7 @@ pub fn read(
     c.mark = kp(KeyCode::KeyB);
     c.minimap = kp(KeyCode::KeyN);
     c.chat = kp(KeyCode::KeyT) || kp(KeyCode::Enter) || kp(KeyCode::NumpadEnter);
+    c.slash = kp(KeyCode::Slash) || kp(KeyCode::NumpadDivide);
     c.up = kp(KeyCode::ArrowUp);
     c.down = kp(KeyCode::ArrowDown);
     c.left = kp(KeyCode::ArrowLeft);

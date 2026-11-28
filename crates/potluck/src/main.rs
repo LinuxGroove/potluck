@@ -498,7 +498,7 @@ fn shot(
                     (4, "Cy", "Nice build!", None),
                 ];
                 for (i, (id, name, text, place)) in say.into_iter().enumerate() {
-                    let line = chat::Line { id: i as u64 + 1, name: name.into(), from: chat::Source::Player(id), text: text.into(), place, young: id == 4, at: hosting::now() };
+                    let line = chat::Line { id: i as u64 + 1, name: name.into(), from: chat::Source::Player(id), text: text.into(), place, young: id == 4, to: None, at: hosting::now() };
                     chat.keep(line, now);
                 }
             }

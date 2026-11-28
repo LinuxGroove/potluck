@@ -24,6 +24,7 @@ This is a test build of milestones M0 to M3 of the plan: a hilly island with the
 | First or third person | F5 | Right stick click |
 | Map | M | View |
 | Chat | T or Enter | D-pad up |
+| Chat with a command started | / | |
 | Mark a waypoint where you stand | B | D-pad down |
 | Minimap nearer, further or off | N | D-pad right |
 | Pause | Esc | Start |
@@ -35,6 +36,17 @@ Walk down the hill from where you start to the Green. The Mossbacks are in the h
 The minimap in the top right corner shows the land round you as it really is, block by block, with friends, creatures and your waypoints on it; under a roof or underground it shows the level you're on instead, like a plan of the rooms and tunnels. The map (M, or View on a pad) shows the whole island: move it with the mouse or the left stick, zoom with the wheel or the triggers, and mark any spot as a waypoint. Waypoints have names and colours, show over the world with how far they are, and can be shared in chat, where they appear on everyone's map to go to or keep. Outside survival you can go anywhere on the map, to any waypoint or to a friend, at once. In survival you can go back only to your own waypoints at places you've stood, after standing still for three seconds, and once a minute; the map also marks where you last fell. Going somewhere fades the screen out and in rather than moving the camera.
 
 Chat (T, or D-pad up) goes to everyone in the world, through whoever hosts it, so it works on a LAN with no internet. On a pad, A on the line brings up a keyboard on the screen, and the quick lines below it need no typing. Lines are tidied and the worst words hidden; younger players chat with the quick lines, and a parent can turn chat off in **Parent settings**.
+
+A line that starts with a slash is a command, as in Minecraft (`/help` lists them):
+
+| Command | What it does |
+|---|---|
+| `/msg NAME words` (or `/tell`, `/w`) | Only NAME sees the words, besides you. |
+| `/r words` | Answers whoever last sent you a private message. |
+| `/tp X Y Z`, `/tp X Z` or `/tp NAME` | Goes there, or to that player. `~` is where you are (`/tp ~ ~20 ~` goes 20 up), `/tp X Z` lands on the ground. |
+| `/gamemode survival` or `/gamemode creative` | Switches, as **Survival** in Settings does. |
+
+Commands follow the same rules as the menus: `/tp` goes where the map would let you (anywhere outside survival, nowhere in survival, and not at all where the world turned teleporting off), and nobody but the world's host can `/tp` to a younger player. Private messages are filtered like any line, never leave the world, and a server keeps them in its chat log; younger players neither send nor get them.
 
 The four stone arches on the north side of the Green show what's in this world that someone brought (a friend's creations, or yours) and, in the arches left over, what the market offers: favourites of the last month's jams, entries in this week's, and what's trending. Walk up to one and Interact to bring it into your world, or to look inside one that's here already. Younger players only see creations a moderator checked for all ages.
 
@@ -85,7 +97,7 @@ The rest of its settings are in `server.toml` in its data folder (`/var/snap/pot
 
 - **Who may join**: `join = "anyone"` who knows the address, `"signed-in"` players the market vouches for (the game asks the market for a pass naming this server's address, good for five minutes), or `"list"` for only the handles in `allow`; `ban` keeps handles out; `max_players` (50). A listed server is for players 13 and older unless `all_ages = true`.
 - **What players may do**: `build` (place and break blocks), `bring` (their own creations: `"anyone"`, `"signed-in"` or `"nobody"`), `teleport` (go to waypoints and friends from the map) and `chat`.
-- **Chat**: every line is written to `chat.jsonl` in the data folder, for you to read; put a `chat_words.txt` there (one word a line, `word*` for words starting with it, like [assets/chat_words.txt](assets/chat_words.txt)) to hide your own list of words instead of the game's.
+- **Chat**: every line, private messages too, is written to `chat.jsonl` in the data folder, for you to read; put a `chat_words.txt` there (one word a line, `word*` for words starting with it, like [assets/chat_words.txt](assets/chat_words.txt)) to hide your own list of words instead of the game's.
 - **Creations it always runs**, by market code: `creations = ["ABCD2345", "WXYZ6789@3"]` (the newest version each start, or the one after `@`).
 - **The server list**: make a token on the market's **Your servers** page, then set `list = true`, `address` (what players type) and `market_token`. The server sends a heartbeat every minute; the market lists it once it has reached the server's status page at that address, and shows its creations' boards on their pages.
 - **Links to other servers**: `[links] rodeo = "wss://rodeo.example.org"`, which creations send players to with `game.send(player, "rodeo")`.
