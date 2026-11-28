@@ -6,9 +6,10 @@
 -- (world.guard), more for better stuff: ARMOR below says how much. A bar
 -- beside your health shows how well you're guarded. Use an empty hand on
 -- nothing to see what you wear and take a piece off. What each player
--- wears is kept with the world (store), by their name.
+-- wears is kept with the world (store), by their name, and every game
+-- draws it on them (world.wear, 0.24).
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.24")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -137,10 +138,25 @@ end)
 -- who's been told what the bar means
 local told: { [number]: boolean } = {}
 
+-- what every game draws each player wearing, as last said: in survival
+-- what they wear, and nothing otherwise
+local drawn: { [number]: { [string]: string } } = {}
+local function show_worn(p, on: boolean)
+	local mine = if on then worn[p.name] or {} else {}
+	local was = drawn[p.id] or {}
+	for _, slot in SLOTS do
+		if was[slot] ~= mine[slot] then
+			world.wear(p, slot, mine[slot])
+		end
+	end
+	drawn[p.id] = table.clone(mine)
+end
+
 -- how much each player's armor keeps off, and the bar
 world.every(0.5, function()
 	for _, p in world.players() do
 		local g = if world.pockets(p) ~= nil then guard_of(p) else 0
+		show_worn(p, world.pockets(p) ~= nil)
 		world.guard(p, 1 - math.min(g * PER_POINT * knobs.strong, MOST))
 		if g > 0 then
 			ui.meter(p, "guard", math.min(g / FULL, 1), { color = knobs.color })
@@ -160,4 +176,5 @@ end)
 world.on("player_left", function(p)
 	told[p.id] = nil
 	shown[p.id] = nil
+	drawn[p.id] = nil
 end)

@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.23")
+local world = require("@potluck/world@0.24")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.23"
+world = "0.24"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.23 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, their XP and charms, how fast they dig and how hard they hit, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.24 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, what they're seen wearing, their XP and charms, how fast they dig and how hard they hit, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -106,6 +106,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.24**: `world.wear(player, slot, thing)` says what every game draws a player wearing on their head, body, legs and feet and on their arm (nil for nothing); the base game's Armor says what each player in survival has on.
 - **0.23**: `self:follow(points, speed?, more?)` sends a creature along a path of points with no gravity, gathering and losing speed gently and slowing by itself to stop at the end, and `self:following()` says how far it has left, how fast it's going and how many points are left; a kind's `steer = false` stops its rider steering it. `world.spawn` puts a creature where it says when that isn't in a solid block. A creation can make 32 blocks (16 before). The base game gains Rails and carts (rails that join round corners and up slopes by themselves, carts that roll along them, powered rails), pistons and note blocks in Circuits, and dispensers and chutes in Storage.
 - **0.22**: players gain XP: `world.reward(player, xp)` gives a player in survival some (rate-limited for each creation), `world.xp(player)` is how much they have and their level, `world.spend_xp` spends it and `world.xp_for(level)` says what a level takes; the game shows it in a bar over the hotbar and says when they go up a level. `world.haste(player, share)` makes a player dig faster or slower and `world.might(player, share)` says how much harder they hit, for creations to read (each creation's share multiplies). `world.charm(player, item, charms)` and `world.charms(player, item)` keep named charms on a player's things, kept with the world. The base game gains Charms (a charm table that charms tools and weapons with XP and gloom dust), XP from mining, smelting, cooking, farming, raising animals, beating wild creatures and relighting Old Greens, and mending with XP at the anvil.
 - **0.21**: `world.danger()` is the world's danger, Peaceful, Gentle (the default), Normal or Hard, which players set for each world and servers in `server.toml`; `world.on("player_fell", fn)` hears a player in survival hurt too badly, with where they fell. `self:throw(shot, landed?)` sends something flying from a creature, at a place or the way it aims, and its shots hit players (`landed` gets the player); shots can look like an `"ember"`. A kind's `home = "here"` makes each one's home where it's spawned. The game's items gain leather armor and what wild creatures leave: silk, leather, bristles, raw and cooked meat, embers, sentinel cores and gloom dust. The base game gains Cave Crawlers, Bramble Boars, Ember Imps, Stone Sentinels and Lost packs.

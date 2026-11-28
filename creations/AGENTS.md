@@ -212,6 +212,17 @@ world.guard(player, 1)     -- every hurt in full again
 
 - `world.guard(player, share)` is how much of every `world.hurt` reaches that player, 0 to 1, from any creation: a Gloomling's bite, say. Falls, which the player's own game works out, aren't guarded. It stays until the creation changes it again, stops, or the player leaves.
 - When several creations set it, their shares multiply. A hurt armor shouldn't help with, like starving or burning, says `{ guarded = false }`: `world.hurt(player, 1, { down_to = 10, guarded = false })`. `down_to` holds either way.
+
+What a player is seen wearing (new in 0.24), drawn on them by every game:
+
+```luau
+world.wear(player, "head", "Iron helmet")
+world.wear(player, "arm", "Shield")
+world.wear(player, "arm", nil)   -- the shield's off
+```
+
+- The slots are `"head"`, `"body"`, `"legs"`, `"feet"` and `"arm"` (a shield). `thing` is any block or item by name, or nil for nothing; it says false for a player whose game hasn't joined yet.
+- It's only how they look: what keeps hurts off is `world.guard`. The base game's Armor does both. What's worn goes when the player leaves; a creation says it again when they come back.
 - It runs where the world runs, so a creation's client half can't call it.
 
 What players hold, and tools (new in 0.8), for pickaxes, swords, wands and anything else that does something in hand:

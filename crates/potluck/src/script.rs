@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 23), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 24), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -351,7 +351,14 @@ pub struct GameShared {
     /// What each creation may still give each player (`world.reward`): the
     /// XP left and when it was worked out.
     pub xp_left: HashMap<(u32, String), (f32, f64)>,
+    /// What each player is seen wearing (`world.wear`), in `WEAR_SLOTS`
+    /// order, 0 for nothing; players wearing nothing aren't here.
+    pub worn: HashMap<u32, [Thing; 5]>,
 }
+
+/// Where a player can be seen wearing something (`world.wear`): a cap or
+/// helmet, a coat, leggings, boots, and a shield on the arm.
+pub const WEAR_SLOTS: [&str; 5] = ["head", "body", "legs", "feet", "arm"];
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
 pub const MAX_HURT: f64 = crate::player::MAX_HEALTH as f64;
@@ -1688,6 +1695,31 @@ impl Vm {
                             sh.guard.remove(&key);
                         } else {
                             sh.guard.insert(key, share as f32);
+                        }
+                        Ok(true)
+                    })?,
+                )?;
+            }
+            // world 0.24: what a player is seen wearing, for every game to draw
+            {
+                let sh = shared.clone();
+                world.set(
+                    "wear",
+                    lua.create_function(move |_, (player, slot, thing): (Value, String, Option<String>)| {
+                        let pid = pid_of(&player)?;
+                        let i = WEAR_SLOTS.iter().position(|s| *s == slot).ok_or_else(|| bad(format!("world.wear: \"{slot}\" isn't a place to wear something ({})", WEAR_SLOTS.join(", "))))?;
+                        let t = match &thing {
+                            None => 0,
+                            Some(name) => items::by_name(name).ok_or_else(|| bad(format!("world.wear: there's nothing called \"{name}\"")))?,
+                        };
+                        let mut sh = sh.lock().unwrap();
+                        if !sh.pockets.contains_key(&pid) {
+                            return Ok(false);
+                        }
+                        let w = sh.worn.entry(pid).or_default();
+                        w[i] = t;
+                        if *w == [0; 5] {
+                            sh.worn.remove(&pid);
                         }
                         Ok(true)
                     })?,
@@ -3200,6 +3232,12 @@ impl Scripts {
         items::Rules { digging: self.digging().into_iter().collect(), drops: self.drops().into_iter().collect() }
     }
 
+    /// What a player is seen wearing (`world.wear`), in `WEAR_SLOTS` order,
+    /// 0 for nothing: for each game to draw on them.
+    pub fn worn(&self, player: u32) -> [Thing; 5] {
+        self.shared.lock().unwrap().worn.get(&player).copied().unwrap_or_default()
+    }
+
     /// The time of day creations see (`world.daytime`).
     pub fn set_day(&mut self, time: f32) {
         self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
@@ -3427,6 +3465,7 @@ impl Scripts {
                 sh.guard.retain(|k, _| k.0 != p.id);
                 sh.healing_changed.remove(&p.id);
                 sh.held.remove(&p.id);
+                sh.worn.remove(&p.id);
                 sh.names.remove(&p.id);
                 sh.haste.retain(|k, _| k.0 != p.id);
                 sh.haste_changed.remove(&p.id);

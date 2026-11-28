@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.12, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.3
+-- @potluck/world 0.24, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.7
 
 export type Position = vector | { number }
 
@@ -122,6 +122,9 @@ export type World = {
 	drops: (block: string, rule: { gives: (string | false)?, count: (number | { number })?, level: number? }?) -> (),
 	-- 0.18
 	guard: (player: Player | number, share: number) -> boolean,
+	-- 0.24: what every game draws them wearing in a slot ("head", "body",
+	-- "legs", "feet" or "arm"); nil for nothing
+	wear: (player: Player | number, slot: string, thing: string?) -> boolean,
 	-- 0.19
 	shoot: (player: Player | number, opts: ShotOptions, landed: ((at: vector, block: string?, creature: number?) -> ())?) -> number?,
 	aims: (item: string, on: boolean?) -> (),
