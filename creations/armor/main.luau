@@ -8,16 +8,24 @@
 -- nothing to see what you wear and take a piece off. What each player
 -- wears is kept with the world (store), by their name, and every game
 -- draws it on them (world.wear, 0.24).
+--
+-- Winter nights out under the sky are cold (@potluck/sky), and so is
+-- falling snow. With two pieces of wool or leather on, or one that's
+-- Warm (the Charms creation's charm), or a fire or a light near, or a roof
+-- overhead, they're warm. Cold, a player doesn't heal by themselves, and in
+-- a Normal or Hard world the cold hurts, though never below 6.
 
 local world = require("@potluck/world@0.24")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.2")
+local sky = require("@potluck/sky@0.1")
 
 local knobs = tweak {
 	strong = { 1, min = 0, max = 2, label = "How much armor keeps off", order = 1 },
 	color = { "#8fb3d9", label = "Armor bar", order = 2 },
+	cold = { true, label = "Winter nights are cold", order = 3 },
 }
 
 -- Where a piece goes, and its guard: each point keeps off 3.5% of a hurt,
@@ -173,8 +181,57 @@ world.every(0.5, function()
 	end
 end)
 
+-- What keeps the cold off: two pieces of wool or leather, or one that's Warm.
+local function dressed_warm(p): boolean
+	local n = 0
+	for _, piece in worn[p.name] or {} do
+		if table.find(world.charms(p, piece), "Warm") then
+			return true
+		end
+		if string.sub(piece, 1, 5) == "Wool " or string.sub(piece, 1, 8) == "Leather " then
+			n += 1
+		end
+	end
+	return n >= 2
+end
+
+-- Whether it's cold where they are: out under the sky on a winter night,
+-- or in falling snow, with no fire or light near.
+local function out_in_the_cold(p): boolean
+	local snowing = sky.weather().kind == "snow"
+	if not snowing and ((sky.season()) ~= "winter" or world.daylight() > 0.3) then
+		return false
+	end
+	local head = p.position + vector.create(0, 1.6, 0)
+	if world.top(head.x, head.z) > math.floor(head.y) then
+		return false
+	end
+	return world.find_light(p.position, 5) == nil
+end
+
+-- Who's cold now. The cold hurts every few seconds in a Normal or Hard
+-- world, never below this.
+local cold: { [number]: boolean } = {}
+local COLD_DOWN_TO = 6
+
+world.every(5, function()
+	local danger = world.danger()
+	for _, p in world.players() do
+		local now = knobs.cold and danger ~= "peaceful" and world.pockets(p) ~= nil and out_in_the_cold(p) and not dressed_warm(p)
+		if now ~= (cold[p.id] == true) then
+			cold[p.id] = if now then true else nil
+			world.healing(p, if now then 0 else 1)
+			tell(p, if now then "You're cold. Wool or leather, a fire, a light or a roof keeps you warm." else "You're warm again.")
+		end
+		if now and (danger == "normal" or danger == "hard") then
+			world.hurt(p, if danger == "hard" then 2 else 1, { down_to = COLD_DOWN_TO, guarded = false })
+		end
+	end
+end)
+
 world.on("player_left", function(p)
 	told[p.id] = nil
 	shown[p.id] = nil
 	drawn[p.id] = nil
+	cold[p.id] = nil
 end)

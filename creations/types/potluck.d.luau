@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.24, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.7
+-- @potluck/world 0.24, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.8, @potluck/sky 0.1
 
 export type Position = vector | { number }
 
@@ -248,6 +248,7 @@ export type Test = {
 	hold: (player: Player, block: string?) -> (),
 	from_half: (player: Player, topic: string, value: Stored?) -> (), -- 0.3
 	danger: (level: "peaceful" | "gentle" | "normal" | "hard") -> (), -- 0.7: the world's, for this case
+	daytime: (time: number) -> (), -- 0.8: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset; it stays there
 	-- these only look
 	kind: (name: string) -> any,
 	creature: (id: number | Creature) -> Creature?,
@@ -258,6 +259,40 @@ export type Test = {
 	heard: (name: string) -> number,
 	-- 0.3: the last value sent to that player's client half on a topic, and how many times
 	sent: (player: Player | number, topic: string) -> (Stored?, number),
+}
+
+-- @potluck/sky 0.1: the weather and the season, the same on every game in
+-- the world. The game draws them and plays the rain and thunder.
+export type WeatherKind = "clear" | "cloudy" | "rain" | "storm" | "snow" | "fog"
+export type SeasonName = "spring" | "summer" | "autumn" | "winter"
+export type Weather = {
+	kind: WeatherKind,
+	-- how heavy, 0 to 1
+	strength: number,
+	-- blocks a second along x and z (y is 0)
+	wind: vector,
+}
+export type WeatherOptions = {
+	-- 0 to 1: 0.6 when not said (0 for clear)
+	strength: number?,
+	-- blocks a second along x and z, up to 12; the wind stays as it was when not said
+	wind: Position?,
+	-- seconds it takes to come in, 0 to 120: 20 when not said
+	over: number?,
+}
+export type Sky = {
+	weather: () -> Weather,
+	-- kind is a WeatherKind
+	set_weather: (kind: string, opts: WeatherOptions?) -> (),
+	-- the season, and how far through it, 0 to 1
+	season: () -> (SeasonName, number),
+	-- name is a SeasonName
+	set_season: (name: string, progress: number?) -> (),
+	-- lightning there: a glow in the sky and thunder on every game, and
+	-- `strike` for every creation; false when it's made too many (one a
+	-- second, three at once)
+	strike: (at: Position) -> boolean,
+	on: (event: "strike", fn: (at: vector) -> ()) -> (),
 }
 
 export type Knob = { [number]: any, min: number?, max: number?, label: string?, order: number? }

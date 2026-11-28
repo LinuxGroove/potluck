@@ -7490,3 +7490,99 @@ fn flames_have_stand_ins_for_the_ray_tracer_and_caves_keep_the_sky_haze_out() {
     app.world_mut().run_system_once(crate::render::cave_air).unwrap();
     assert!(far(&mut app) > 500.0 * AtmosphereSettings::default().aerial_view_lut_max_distance);
 }
+
+/// sky 0.1: what creations say of the weather reaches the host and every
+/// game, lightning is heard by every creation, and each game eases into
+/// the weather and glows softly at a strike (never with Reduce flashing).
+#[test]
+fn the_sky_eases_in_everywhere_and_lightning_glows_softly() {
+    use crate::net::{decode, frame_msg, Event, Msg};
+    use crate::sky::{Kind, Season, Sky, Thunder, Weather, GLOW_FOR};
+    use crate::transport::Wire;
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    // one creation makes a storm, another hears where it strikes
+    let maker = r#"
+local sky = require("@potluck/sky@0.1")
+local world = require("@potluck/world")
+sky.set_weather("storm", { strength = 0.8, wind = vector.create(30, 0, 0), over = 10 })
+sky.set_season("autumn", 0.25)
+world.after(0.2, function() assert(sky.strike(vector.create(5, 60, 5))) end)
+"#;
+    let hearer = r#"
+local sky = require("@potluck/sky@0.1")
+local world = require("@potluck/world")
+sky.on("strike", function(at) print("struck " .. at.x .. " " .. at.y .. " " .. at.z) end)
+"#;
+    scripts.start(&creation(maker), &mut herd).unwrap();
+    let mut other = creation(hearer);
+    other.id = "hearer".into();
+    scripts.start(&other, &mut herd).unwrap();
+    let sky = scripts.sky_changes().expect("the sky changed");
+    assert_eq!((sky.kind, sky.season, sky.progress, sky.over), (Kind::Storm, Season::Autumn, 0.25, 10.0));
+    assert!((sky.strength - 0.8).abs() < 1e-6 && (Vec2::from(sky.wind).length() - crate::sky::MAX_WIND).abs() < 1e-4, "the wind's as strong as it gets: {sky:?}");
+    assert_eq!(scripts.sky_changes(), None, "said once");
+    run(&mut scripts, &mut voxels, &mut herd, 0.5);
+    assert_eq!(scripts.vms["test"].error, None, "{:?}", scripts.vms["test"].log);
+    assert!(scripts.vms["hearer"].log.iter().any(|l| l == "struck 5 60 5"), "{:?}", scripts.vms["hearer"].log);
+    assert_eq!(scripts.strike_changes(), vec![Vec3::new(5.0, 60.0, 5.0)], "for every game");
+    assert!(scripts.strike_changes().is_empty());
+
+    // what goes between devices, tidied when it comes in
+    for m in [Msg::Sky(sky), Msg::Strike([5.0, 60.0, 5.0])] {
+        let Some(Event::Msg(_, back)) = decode(Wire::Data(1, frame_msg(&m))) else { panic!("didn't decode") };
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&m).unwrap());
+    }
+    let wild = Sky { strength: f32::NAN, wind: [1e9, -1e9], over: -3.0, progress: 7.0, ..sky }.tidy();
+    assert_eq!((wild.strength, wild.over, wild.progress), (0.0, 0.0, 1.0));
+    assert!(Vec2::from(wild.wind).length() <= crate::sky::MAX_WIND + 1e-4);
+
+    // a game eases into it: nothing all at once
+    let mut w = Weather::default();
+    w.take(Sky::default());
+    assert!(!w.fresh && w.rain == 0.0, "a new world starts as it is");
+    w.take(sky);
+    w.step(1.0);
+    assert!(w.rain > 0.0 && w.rain < 0.2 && w.cloud < 0.2, "a second in: {w:?}");
+    for _ in 0..12 {
+        w.step(1.0);
+    }
+    let [rain, _, _, cloud, storm] = Weather::targets(&sky);
+    assert!((w.rain - rain).abs() < 1e-4 && (w.cloud - cloud).abs() < 1e-4 && (w.storm - storm).abs() < 1e-4, "there after `over`: {w:?}");
+    assert!(w.autumn > 0.0 && w.autumn < 0.2, "the leaves turn slowly: {}", w.autumn);
+    // and joining a world, it's there at once
+    let mut joined = Weather { fresh: true, ..default() };
+    joined.take(sky);
+    assert_eq!((joined.rain, joined.storm), (rain, storm));
+    // the land never jumps from one season to the next
+    let at = |season, progress| Weather::season_targets(&Sky { season, progress, ..default() });
+    for (a, b) in [(Season::Spring, Season::Summer), (Season::Summer, Season::Autumn), (Season::Autumn, Season::Winter), (Season::Winter, Season::Spring)] {
+        let (end, start) = (at(a, 1.0), at(b, 0.0));
+        assert!((end.0 - start.0).abs() < 1e-6 && (end.1 - start.1).abs() < 1e-6, "{a:?} to {b:?}: {end:?} then {start:?}");
+    }
+    assert_eq!(at(Season::Winter, 0.5), (0.0, 1.0), "deep in winter, snow and no leaves turning");
+    assert_eq!(at(Season::Autumn, 0.5), (1.0, 0.0));
+
+    // lightning: a soft swell and fade, never a flash, and none at all
+    // with Reduce flashing on; thunder after, by how far it was
+    let mut thunder = Thunder::default();
+    crate::sky::strike(&mut w, &mut thunder, Vec3::new(0.0, 60.0, 0.0), Some(Vec3::new(340.0, 60.0, 0.0)));
+    assert!(w.glow(false) == 0.0 && w.glow(true) == 0.0);
+    let mut last = 0.0;
+    let mut most = 0.0f32;
+    for i in 1..=40 {
+        w.step(0.05);
+        let g = w.glow(false);
+        assert!((g - last).abs() <= 0.5 * 0.05 / 0.15 + 1e-4, "no sudden change at {i}: {last} to {g}");
+        assert_eq!(w.glow(true), 0.0, "never with Reduce flashing");
+        most = most.max(g);
+        last = g;
+    }
+    assert!(most > 0.4 && most <= 0.5, "a soft brightening: {most}");
+    w.step(GLOW_FOR);
+    assert!(w.strikes.is_empty() && w.glow(false) == 0.0, "and gone");
+    assert_eq!(thunder.0.len(), 1);
+    assert!((thunder.0[0].0 - 1.0).abs() < 1e-4, "heard a second later from 340 blocks: {:?}", thunder.0);
+}

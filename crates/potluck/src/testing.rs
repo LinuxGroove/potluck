@@ -84,6 +84,7 @@ function test.answer(player, choice) ask("answer", player, choice) end
 function test.hold(player, block) ask("hold", player, block) end
 function test.from_half(player, topic, value) ask("from_half", player, topic, value) end
 function test.danger(level) ask("danger", level) end
+function test.daytime(time) ask("daytime", time) end
 -- looking: these only read what the harness said
 function test.kind(name)
 	seen("kind")
@@ -473,6 +474,8 @@ impl Harness {
             let _ = self.scripts.healing_changes();
             let _ = self.scripts.digging_changes();
             let _ = self.scripts.drops_changes();
+            let _ = self.scripts.sky_changes();
+            let _ = self.scripts.strike_changes();
             // shots wait in the outbox for the next tick to fly them
             let shots = std::mem::take(&mut self.scripts.out.shots);
             self.scripts.out = Default::default();
@@ -662,6 +665,18 @@ impl Harness {
                     Some(name) => crate::items::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's nothing called \"{name}\"")))?,
                 };
                 self.scripts.set_held(p.id, b);
+                nothing
+            }
+            "daytime" => {
+                let t = match arg(1) {
+                    Some(Value::Integer(i)) => *i as f64,
+                    Some(Value::Number(n)) => *n,
+                    _ => f64::NAN,
+                };
+                if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+                    return Err(Stop::Problem("test.daytime needs a time of day from 0 to 1 (0 midnight, 0.5 noon)".into()));
+                }
+                self.scripts.set_day(t as f32);
                 nothing
             }
             "danger" => {

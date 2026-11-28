@@ -3,6 +3,7 @@
 
 local test = require("@potluck/test@0.4")
 local world = require("@potluck/world@0.20")
+local sky = require("@potluck/sky@0.1")
 
 local UP = vector.create(0, 1, 0)
 
@@ -162,4 +163,40 @@ test.case("tall grass gives seeds now and then", function()
 	end
 	local n = world.has(p, "Seeds")
 	test.check(n > 5 and n < 45, "about half of 49 give a seed, got " .. n)
+end)
+
+-- two wheat shoots on farmland, one at each end of a patch, the second
+-- under a roof of `roof`
+local function two_shoots(roof: string): (vector, vector)
+	local p = test.player("Ada", { survival = true, carrying = { Wheat = 2 } })
+	local mid = patch()
+	local open, covered = mid + vector.create(-2, 0, 0), mid + vector.create(2, 0, 0)
+	for _, at in { open, covered } do
+		world.set_block(at, "Farmland")
+		test.place(p, at + UP, "Wheat")
+	end
+	world.set_block(covered + vector.create(0, 3, 0), roof)
+	return open + UP, covered + UP
+end
+
+test.case("winter stops crops out under the sky, and a greenhouse keeps them growing", function()
+	sky.set_season("winter", 0.5)
+	local open, covered = two_shoots("Glass")
+	test.same(world.block(open), "Wheat shoots")
+	test.wait(300)
+	test.same(world.block(open), "Wheat shoots", "out in the winter, it waits")
+	test.same(world.block(covered), "Wheat", "under glass, it ripens")
+	-- and when spring comes, the one outside grows again
+	sky.set_season("spring", 0)
+	test.wait(250)
+	test.same(world.block(open), "Wheat", "in spring it ripens")
+end)
+
+test.case("rain waters the crops it falls on", function()
+	sky.set_season("autumn", 0.5)
+	sky.set_weather("rain", { strength = 1, over = 0 })
+	local open, covered = two_shoots("Stone")
+	test.wait(200)
+	test.same(world.block(open), "Wheat", "the one in the rain's ripe")
+	test.same(world.block(covered), "Wheat shoots", "the one under the roof isn't yet")
 end)

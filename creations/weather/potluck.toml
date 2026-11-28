@@ -1,0 +1,13 @@
+name = "Weather and seasons"
+by = "Potluck"
+kind = "mod"
+about = "Rain, storms, snow, fog and wind, and four seasons of a week each. Summer is mostly fine, autumn wet and foggy, and in winter it snows. Crops grow fast in spring and summer and stop outdoors in winter (a greenhouse keeps them growing), the leaves turn in autumn, rain waters crops and puts out fires, storms strike tall trees, and winter nights are cold without wool, leather or a fire. Knobs set the length of a season or hold the weather."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.23"
+sky = "0.1"
+tweak = "0.1"
+store = "0.1"

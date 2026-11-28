@@ -1212,6 +1212,10 @@ pub fn start_world(lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, ne
         sh.might.clear();
         sh.xp_left.clear();
         sh.worn.clear();
+        // and the sky's clear till its creations say otherwise
+        sh.sky = Default::default();
+        sh.sky_changed = true;
+        sh.strikes.clear();
     }
     let base: Vec<String> = lib.list.values().filter(|c| c.origin == Origin::Base).map(|c| c.id.clone()).collect();
     for id in base {

@@ -1,7 +1,7 @@
 name = "Farming"
 by = "Potluck"
 kind = "mod"
-about = "Grow your own: Interact on grass to dig farmland (a hoe digs a square at once), plant wheat, carrots, potatoes, beans or pumpkins on it, and harvest more than you sowed when they ripen. Crops grow faster by day and near water, and faster still with a watering can, and a sickle reaps a square of ripe ones at once. Tall grass gives seeds, oak leaves the odd apple, and wild crops and berry bushes come up round you."
+about = "Grow your own: Interact on grass to dig farmland (a hoe digs a square at once), plant wheat, carrots, potatoes, beans or pumpkins on it, and harvest more than you sowed. Crops grow faster by day, near water, in rain and in spring and summer, and stop outdoors in winter (a greenhouse keeps them going); a watering can brings them on and a sickle reaps a square at once. Tall grass gives seeds, oak leaves the odd apple, and wild crops and berry bushes come up round you."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
@@ -12,6 +12,7 @@ tweak = "0.1"
 store = "0.1"
 ui = "0.2"
 sound = "0.1"
+sky = "0.1"
 
 # The crops, their shoots and berry bushes, each drawn in letters: plants
 # are two crossed pictures, and a pumpkin a solid block with a top.

@@ -61,6 +61,8 @@ pub const SOUNDS: &[(&str, &str)] = &[
     ("rustle", "Leaves rustle"),
     ("shatter", "Glass breaks"),
     ("place", ""),
+    ("rain", "Rain"),
+    ("thunder", "Thunder"),
 ];
 
 pub fn caption_of(name: &str) -> Option<&'static str> {
@@ -438,6 +440,30 @@ pub fn synth(name: &str) -> Vec<f32> {
         "place" => {
             let mut v = tone(0.09, |t| 110.0 - 220.0 * t, |t| perc(t, 0.001, 0.025), sine);
             mix(&mut v, &noise(0.02, &mut rng, |t| perc(t, 0.0005, 0.006), |_| 2000.0), 0.0, 0.5);
+            v
+        }
+        "rain" => {
+            // a soft hiss that fades in and out, so one played every second
+            // and a half runs on as one sound, with drops in it
+            let secs = 1.9;
+            let edge = |t: f32| (t / 0.35).min(1.0).min((secs - t) / 0.35).max(0.0);
+            let mut v = noise(secs, &mut rng, |t| 0.6 * edge(t), |_| 5000.0);
+            highpass(&mut v, 700.0);
+            for _ in 0..40 {
+                let at = rng.next() * (secs - 0.05);
+                let f = 1800.0 + rng.next() * 2500.0;
+                let gain = 0.08 + rng.next() * 0.12;
+                mix(&mut v, &tone(0.03, move |_| f, |t| perc(t, 0.0005, 0.006), sine), at, gain * edge(at));
+            }
+            lowpass(&mut v, 7000.0);
+            v
+        }
+        "thunder" => {
+            // a low roll: a crack at the start, then rumbling that dies away
+            let roll = |t: f32| (t / 0.08).min(1.0) * (-t / 0.7).exp() * (0.65 + 0.35 * (TAU * 3.0 * t).sin().abs());
+            let mut v = noise(1.95, &mut rng, roll, |t| 260.0 - 80.0 * t);
+            mix(&mut v, &noise(1.95, &mut rng, |t| (t / 0.2).min(1.0) * (-t / 0.9).exp(), |_| 90.0), 0.0, 1.2);
+            mix(&mut v, &noise(0.25, &mut rng, |t| perc(t, 0.002, 0.06), |_| 1400.0), 0.0, 0.25);
             v
         }
         _ => vec![],

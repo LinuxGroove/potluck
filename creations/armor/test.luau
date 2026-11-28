@@ -1,8 +1,9 @@
 --!strict
 -- Armor's own tests: `potluck-server --test=armor`.
 
-local test = require("@potluck/test@0.6")
+local test = require("@potluck/test@0.8")
 local world = require("@potluck/world@0.18")
+local sky = require("@potluck/sky@0.1")
 
 test.case("using a piece on nothing puts it on, and it keeps off part of a hurt", function()
 	local p = test.player("Ada", { survival = true, carrying = { ["Iron coat"] = 1 } })
@@ -55,4 +56,57 @@ test.case("only armor goes on", function()
 	test.hold(p, "Iron pickaxe")
 	test.use_item(p)
 	test.same(world.has(p, "Iron pickaxe"), 1, "still in hand")
+end)
+
+-- a player out on a stone floor high in the sky, on a winter's night
+local function out_on_a_winter_night(carrying: { [string]: number }): any
+	test.danger("normal")
+	sky.set_season("winter", 0.5)
+	test.daytime(0)
+	local mid = vector.create(300.5, 110, 300.5)
+	for dx = -2, 2 do
+		for dz = -2, 2 do
+			world.set_block(mid + vector.create(dx, 0, dz), "Stone")
+		end
+	end
+	local p = test.player("Ada", { survival = true, carrying = carrying })
+	return test.move(p, mid + vector.create(0, 1, 0))
+end
+
+test.case("winter nights are cold out under the sky, but wool keeps them off", function()
+	local p = out_on_a_winter_night({ ["Wool cap"] = 1, ["Wool coat"] = 1 })
+	local told = false
+	for _ = 1, 32 do
+		test.wait(0.5)
+		told = told or string.find(test.shown(p, "armor") or "", "cold", 1, true) ~= nil
+	end
+	local h = test.health(p) :: number
+	test.check(h < 20 and h >= 6, "the cold hurts, a little: " .. h)
+	test.check(told, "and they're told why")
+	test.hold(p, "Wool cap")
+	test.use_item(p)
+	test.hold(p, "Wool coat")
+	test.use_item(p)
+	test.wait(6)
+	h = test.health(p) :: number
+	test.wait(16)
+	test.same(test.health(p), h, "dressed in wool, it doesn't")
+end)
+
+test.case("a light, a roof or the day keep the cold off too, and it never takes the last of your health", function()
+	local p = out_on_a_winter_night({})
+	world.set_block(p.position + vector.create(2, 0, 0), "Lantern")
+	test.wait(16)
+	test.same(test.health(p), 20, "a lantern beside them")
+	world.set_block(p.position + vector.create(2, 0, 0), "Air")
+	world.set_block(p.position + vector.create(0, 3, 0), "Stone")
+	test.wait(16)
+	test.same(test.health(p), 20, "a roof over them")
+	world.set_block(p.position + vector.create(0, 3, 0), "Air")
+	test.daytime(0.5)
+	test.wait(16)
+	test.same(test.health(p), 20, "and by day")
+	test.daytime(0)
+	test.wait(120)
+	test.same(test.health(p), 6, "never below 6")
 end)

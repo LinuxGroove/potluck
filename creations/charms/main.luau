@@ -1,11 +1,14 @@
 --!strict
 -- Charms, for survival. Use a charm table (Interact while aiming at it)
--- with a tool or a weapon in your hand, and it puts a charm on it for XP
+-- with a tool, a weapon or a piece of armor in your hand, and it puts a
+-- charm on it for XP
 -- (world.spend_xp) and a little of what wild creatures and the deep give:
 --   Swift: a tool digs faster (world.haste, while it's in your hand).
 --   Sturdy: a tool wears half as fast (the Tools creation reads it).
 --   Keen: a sword, bow, sling or spear hits harder (world.might, which
 --   wild creatures and shots read).
+--   Warm: a piece of armor keeps the winter's cold off (the Armor
+--   creation reads it).
 -- Charms go on that kind of thing (world.charm), so every iron pickaxe
 -- you carry is Swift once one is, and they're kept with the world. A tool
 -- that breaks takes its charms with it, unless you've another.
@@ -29,6 +32,7 @@ local TABLE = "Charm table"
 -- end of one ("Iron pickaxe"), any other the whole of it.
 local DIGS = { " pickaxe", " axe", " shovel", " hoe", "Shears", "Sickle", "Hammer" }
 local HITS = { " sword", "Bow", "Sling", "Spear" }
+local WEARS = { " cap", " helmet", " coat", " leggings", " boots" }
 
 -- A charm: its name, what it does, what it fits, the XP it takes and what
 -- else.
@@ -37,6 +41,7 @@ local CHARMS: { Charm } = {
 	{ name = "Swift", does = "digs faster", fits = DIGS, xp = 40, wants = { ["Gloom dust"] = 2, Crystal = 1 } },
 	{ name = "Sturdy", does = "wears half as fast", fits = DIGS, xp = 30, wants = { ["Gloom dust"] = 2, ["Iron ingot"] = 2 } },
 	{ name = "Keen", does = "hits harder", fits = HITS, xp = 50, wants = { ["Gloom dust"] = 3, ["Gold ingot"] = 1 } },
+	{ name = "Warm", does = "keeps the cold off", fits = WEARS, xp = 20, wants = { ["Gloom dust"] = 1, Ember = 1 } },
 }
 
 local function fits(name: string, list: { string }): boolean
@@ -117,7 +122,7 @@ local function offer(player, at: vector, said: string?)
 	if world.pockets(player) == nil then
 		ui.ask(player, {
 			title = TABLE,
-			text = "In survival, a charm table puts charms on tools and weapons, for XP.",
+			text = "In survival, a charm table puts charms on tools, weapons and armor, for XP.",
 			choices = { "OK" },
 		}, close)
 		return
@@ -137,7 +142,7 @@ local function offer(player, at: vector, said: string?)
 		end
 	end
 	if not held or not any then
-		ui.ask(player, { title = TABLE, text = text .. " Hold a tool or a weapon to charm it.", choices = { "Close" } }, close)
+		ui.ask(player, { title = TABLE, text = text .. " Hold a tool, a weapon or a piece of armor to charm it.", choices = { "Close" } }, close)
 		return
 	end
 	local name = string.lower(held)

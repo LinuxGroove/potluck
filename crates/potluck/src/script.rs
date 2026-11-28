@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 24), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 24), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 8), ("sky", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -79,6 +79,8 @@ fn thread_time() -> Option<Duration> {
 pub const MAX_TIMERS: usize = 64;
 /// Handlers one creation may give `world.on`.
 pub const MAX_HANDLERS: usize = 32;
+/// What `sky.on("strike")` is kept as among a creation's handlers.
+const SKY_STRIKE: &str = "sky:strike";
 /// What `world.on` can listen for.
 pub const EVENTS: &[&str] = &["player_joined", "player_left", "block_placed", "block_broken", "block_used", "item_used", "player_fell"];
 
@@ -354,6 +356,12 @@ pub struct GameShared {
     /// What each player is seen wearing (`world.wear`), in `WEAR_SLOTS`
     /// order, 0 for nothing; players wearing nothing aren't here.
     pub worn: HashMap<u32, [Thing; 5]>,
+    /// The weather and the season (`@potluck/sky`), as creations last said.
+    pub sky: crate::sky::Sky,
+    /// Whether `sky` changed since the host last sent it.
+    pub sky_changed: bool,
+    /// Lightning creations made since the last tick (`sky.strike`).
+    pub strikes: Vec<Vec3>,
 }
 
 /// Where a player can be seen wearing something (`world.wear`): a cap or
@@ -725,6 +733,8 @@ pub(crate) struct Waiting {
     notes: Vec<(u32, String, serde_json::Value)>,
     /// Messages it may still send, refilled like `sound_budget`.
     note_budget: f32,
+    /// Lightning it may still make (`sky.strike`), refilled a strike a second.
+    strike_budget: f32,
     /// Messages each player's client half may still send it.
     heard_from: HashMap<u32, f32>,
 }
@@ -882,6 +892,8 @@ pub struct Scripts {
     item_events: Vec<(u32, Vec3)>,
     /// Players in survival whose health ran out (`player_fell`), and where.
     fell_events: Vec<(u32, Vec3)>,
+    /// Lightning that struck since the host last looked, for every game.
+    strikes_out: Vec<Vec3>,
     /// Where each creature is with its kind's behaviours.
     behaving: HashMap<u64, crate::behaviours::Behaving>,
     /// Shots in the air (`world.shoot`).
@@ -1500,7 +1512,7 @@ impl Vm {
         });
         let own = crate::sound::Own::of(&creation.id, &creation.manifest.sounds)?;
         let state = Arc::new(Mutex::new(LoadState { saved: saved.clone(), ..default() }));
-        let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, note_budget: NOTES_A_SECOND, ..default() }));
+        let waiting = Arc::new(Mutex::new(Waiting { sound_budget: SOUNDS_A_SECOND, note_budget: NOTES_A_SECOND, strike_budget: crate::sky::STRIKES_AT_ONCE, ..default() }));
         let setup = || -> mlua::Result<(Table, Table, Table, Table)> {
             let world = lua.create_table()?;
             let game = lua.create_table()?;
@@ -2201,6 +2213,124 @@ impl Vm {
                 let o = own.clone();
                 sound.set("names", lua.create_function(move |_, ()| Ok(o.names()))?)?;
             }
+            // sky 0.1: the weather and the season, the same on every game
+            // here, and lightning
+            let sky = lua.create_table()?;
+            {
+                let sh = shared.clone();
+                sky.set(
+                    "weather",
+                    lua.create_function(move |lua, ()| {
+                        let s = sh.lock().unwrap().sky;
+                        let t = lua.create_table()?;
+                        t.set("kind", s.kind.name())?;
+                        t.set("strength", s.strength)?;
+                        t.set("wind", vector(Vec3::new(s.wind[0], 0.0, s.wind[1])))?;
+                        Ok(t)
+                    })?,
+                )?;
+                let sh = shared.clone();
+                sky.set(
+                    "set_weather",
+                    lua.create_function(move |_, (kind, opts): (String, Option<Table>)| {
+                        let k = crate::sky::Kind::named(&kind).ok_or_else(|| bad(format!("sky.set_weather: \"{kind}\" isn't weather (clear, cloudy, rain, storm, snow or fog)")))?;
+                        let mut s = sh.lock().unwrap().sky;
+                        s.kind = k;
+                        s.strength = if k == crate::sky::Kind::Clear { 0.0 } else { 0.6 };
+                        s.over = crate::sky::OVER;
+                        if let Some(o) = &opts {
+                            let num = |key: &str, hi: f32| -> mlua::Result<Option<f32>> {
+                                match o.get::<Option<f64>>(key)? {
+                                    None => Ok(None),
+                                    Some(v) if v.is_finite() && v >= 0.0 && v <= hi as f64 => Ok(Some(v as f32)),
+                                    Some(_) => Err(bad(format!("sky.set_weather: {key} is a number from 0 to {hi}"))),
+                                }
+                            };
+                            if let Some(v) = num("strength", 1.0)? {
+                                s.strength = v;
+                            }
+                            if let Some(v) = num("over", crate::sky::MAX_OVER)? {
+                                s.over = v;
+                            }
+                            match o.get::<Value>("wind")? {
+                                Value::Nil => {}
+                                v => {
+                                    let w = vec_of(&v).filter(|w| w.is_finite()).ok_or_else(|| bad("sky.set_weather: wind is a vector, blocks a second along x and z"))?;
+                                    s.wind = [w.x, w.z];
+                                }
+                            }
+                        }
+                        let s = s.tidy();
+                        let mut sh = sh.lock().unwrap();
+                        if sh.sky != s {
+                            sh.sky = s;
+                            sh.sky_changed = true;
+                        }
+                        Ok(())
+                    })?,
+                )?;
+                let sh = shared.clone();
+                sky.set(
+                    "season",
+                    lua.create_function(move |_, ()| {
+                        let s = sh.lock().unwrap().sky;
+                        Ok((s.season.name(), s.progress))
+                    })?,
+                )?;
+                let sh = shared.clone();
+                sky.set(
+                    "set_season",
+                    lua.create_function(move |_, (name, progress): (String, Option<f64>)| {
+                        let season = crate::sky::Season::named(&name).ok_or_else(|| bad(format!("sky.set_season: \"{name}\" isn't a season (spring, summer, autumn or winter)")))?;
+                        let progress = match progress {
+                            None => 0.0,
+                            Some(p) if p.is_finite() && (0.0..=1.0).contains(&p) => p as f32,
+                            Some(_) => return Err(bad("sky.set_season: how far through it is a number from 0 to 1")),
+                        };
+                        let mut sh = sh.lock().unwrap();
+                        let mut s = sh.sky;
+                        (s.season, s.progress) = (season, progress);
+                        if sh.sky != s {
+                            sh.sky = s;
+                            sh.sky_changed = true;
+                        }
+                        Ok(())
+                    })?,
+                )?;
+                let (sh, w) = (shared.clone(), waiting.clone());
+                sky.set(
+                    "strike",
+                    lua.create_function(move |_, at: Value| {
+                        let at = vec_of(&at).filter(|a| a.is_finite()).ok_or_else(|| bad("sky.strike needs a position"))?;
+                        let mut w = w.lock().unwrap();
+                        if w.strike_budget < 1.0 {
+                            return Ok(false);
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        if sh.strikes.len() >= 16 {
+                            return Ok(false);
+                        }
+                        w.strike_budget -= 1.0;
+                        sh.strikes.push(at);
+                        Ok(true)
+                    })?,
+                )?;
+                let w = waiting.clone();
+                sky.set(
+                    "on",
+                    lua.create_function(move |_, (event, f): (String, Function)| {
+                        if event != "strike" {
+                            return Err(bad(format!("sky.on: there's no \"{event}\" (there's strike)")));
+                        }
+                        let mut w = w.lock().unwrap();
+                        if w.handlers() >= MAX_HANDLERS {
+                            return Err(too_many_handlers());
+                        }
+                        w.on.push((SKY_STRIKE.to_string(), f));
+                        Ok(())
+                    })?,
+                )?;
+            }
             // net 0.1: messages to and from the creation's client half
             let net = lua.create_table()?;
             {
@@ -2299,6 +2429,7 @@ impl Vm {
                         "sound" => Value::Table(sound.clone()),
                         "net" => Value::Table(net.clone()),
                         "test" => Value::Table(t2.clone()),
+                        "sky" => Value::Table(sky.clone()),
                         _ => Value::Table(tweak_mod.clone()),
                     });
                 }
@@ -3238,6 +3369,22 @@ impl Scripts {
         self.shared.lock().unwrap().worn.get(&player).copied().unwrap_or_default()
     }
 
+    /// The sky, when a creation changed it since the host last looked.
+    pub fn sky_changes(&mut self) -> Option<crate::sky::Sky> {
+        let mut sh = self.shared.lock().unwrap();
+        std::mem::take(&mut sh.sky_changed).then_some(sh.sky)
+    }
+
+    /// The sky as creations last said, for a game joining.
+    pub fn sky(&self) -> crate::sky::Sky {
+        self.shared.lock().unwrap().sky
+    }
+
+    /// Where lightning struck since the host last looked.
+    pub fn strike_changes(&mut self) -> Vec<Vec3> {
+        std::mem::take(&mut self.strikes_out)
+    }
+
     /// The time of day creations see (`world.daytime`).
     pub fn set_day(&mut self, time: f32) {
         self.shared.lock().unwrap().day = Some(time.rem_euclid(1.0));
@@ -3455,6 +3602,13 @@ impl Scripts {
         };
         // and who fell
         let fell_events = std::mem::take(&mut self.fell_events);
+        // and where lightning struck, since the last tick
+        let struck = std::mem::take(&mut self.shared.lock().unwrap().strikes);
+        self.strikes_out.extend(struck.iter().copied());
+        if self.strikes_out.len() > 16 {
+            let extra = self.strikes_out.len() - 16;
+            self.strikes_out.drain(..extra);
+        }
         {
             let mut sh = self.shared.lock().unwrap();
             for p in &left {
@@ -3533,6 +3687,7 @@ impl Scripts {
                 let mut w = waiting.lock().unwrap();
                 w.sound_budget = (w.sound_budget + step * SOUNDS_A_SECOND).min(SOUNDS_A_SECOND);
                 w.note_budget = (w.note_budget + step * NOTES_A_SECOND).min(NOTES_A_SECOND);
+                w.strike_budget = (w.strike_budget + step * crate::sky::STRIKES_A_SECOND).min(crate::sky::STRIKES_AT_ONCE);
                 for b in w.heard_from.values_mut() {
                     *b += step * NOTES_UP_A_SECOND;
                 }
@@ -3586,6 +3741,15 @@ impl Scripts {
                         let Some(p) = players.iter().find(|p| p.id == *pid) else { continue };
                         for (_, f) in on.iter().filter(|(e, _)| e == "player_fell") {
                             f.call::<()>((player_table(lua, p)?, vector(*at)))?;
+                        }
+                    }
+                }
+                // lightning, wherever it struck (sky 0.1)
+                if !struck.is_empty() {
+                    let on = waiting.lock().unwrap().on.clone();
+                    for at in &struck {
+                        for (_, f) in on.iter().filter(|(e, _)| e == SKY_STRIKE) {
+                            f.call::<()>(vector(*at))?;
                         }
                     }
                 }

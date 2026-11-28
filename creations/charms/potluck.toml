@@ -1,7 +1,7 @@
 name = "Charms"
 by = "Potluck"
 kind = "mod"
-about = "A charm table puts charms on the tool or weapon in your hand, for XP and a little gloom dust: Swift digs faster, Sturdy wears half as fast and Keen hits harder. Make the table at a workbench from gold, a crystal and planks."
+about = "A charm table puts charms on the tool, weapon or armor in your hand, for XP and a little gloom dust: Swift digs faster, Sturdy wears half as fast, Keen hits harder and Warm keeps the winter cold off. Make the table at a workbench from gold, a crystal and planks."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"

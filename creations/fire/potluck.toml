@@ -1,7 +1,7 @@
 name = "Fire"
 by = "Potluck"
 kind = "mod"
-about = "Real fire: light it with a flint and steel or an ember, and it burns for a while and goes out. Beside wood, leaves, plants, hay or wool it spreads, slowly, and may burn them away. Water puts it out, and standing in it hurts. Knobs turn spreading off."
+about = "Real fire: light it with a flint and steel or an ember, and it burns for a while and goes out. Beside wood, leaves, plants, hay or wool it spreads, slowly, and may burn them away. Water and rain put it out, lightning can start one, and standing in it hurts. Knobs turn spreading off."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
@@ -11,6 +11,7 @@ world = "0.21"
 tweak = "0.1"
 store = "0.1"
 sound = "0.2"
+sky = "0.1"
 
 # The fire: two crossed pictures, like a plant's, that bodies walk through.
 # It shows the first picture and then each of its frames in turn, `speed` a
