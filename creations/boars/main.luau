@@ -8,7 +8,7 @@
 -- world's danger (world.danger, world 0.21) says how hard they hit and how
 -- soon they charge again; on Peaceful they never do, and run off when hit.
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local sound = require("@potluck/sound@0.2")
 
@@ -205,7 +205,8 @@ end
 
 function Boar:hit(player, shot)
 	local held = world.held(player)
-	local bop = if shot then shot.power else (held and SWORDS[held] or 1)
+	-- a Keen sword hits harder (world.might); a shot's power says already
+	local bop = if shot then shot.power else (held and SWORDS[held] or 1) * world.might(player)
 	self.bopped = (self.bopped or 0) + bop
 	if self.bopped >= knobs.bops then
 		sound.play("squeal", { at = self, pitch = 0.7, caption = "A boar falls" })
@@ -213,6 +214,7 @@ function Boar:hit(player, shot)
 			local n = math.floor(world.random(l.least, l.most + 0.999))
 			world.give(player, l.thing, n)
 		end
+		world.reward(player, 5)
 		gone(self)
 		return
 	end

@@ -13,12 +13,14 @@
 -- pickaxe (HAMMERED below says what it breaks).
 -- The anvil (made at a workbench from iron) makes iron and moonsilver
 -- tools and armor (for the Armor creation), and mends a worn tool with one
--- more of what it's made of.
+-- more of what it's made of, or with XP (world.spend_xp).
+-- A tool with the Sturdy charm (the Charms creation's, world.charms) wears
+-- half as fast.
 -- TOOLS below says what each does, so a remix can change them. Swords are
 -- for Gloomlings, who say what a sword does to them, and hoes till for the
 -- farming creation.
 
-local world = require("@potluck/world@0.17")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.2")
@@ -29,6 +31,7 @@ local knobs = tweak {
 	last = { 1, min = 0.5, max = 4, label = "How long tools last", order = 3 },
 	color = { "#a8b0b8", label = "Wear bar", order = 4 },
 	mend = { 1, min = 1, max = 3, label = "What mending takes", order = 5 },
+	mend_xp = { 20, min = 0, max = 100, label = "XP to mend a worn out tool (0 for none)", order = 7 },
 	hammer = { true, label = "A hammer breaks three by three", order = 6 },
 }
 
@@ -116,12 +119,20 @@ local function wear(player)
 	if not held or not t then
 		return
 	end
+	-- a Sturdy one wears half as fast
+	if table.find(world.charms(player, held), "Sturdy") and world.random() < 0.5 then
+		return
+	end
 	local mine = worn[player.id] or {}
 	worn[player.id] = mine
 	mine[held] = (mine[held] or 0) + 1
 	if mine[held] >= uses(t) then
 		mine[held] = 0
 		if world.take(player, held, 1) then
+			-- its charms go with it, unless they've another
+			if world.has(player, held) == 0 then
+				world.charm(player, held, {})
+			end
 			ui.show(player, "broke", "Your " .. string.lower(held) .. " broke.", { at = "bottom" })
 			world.after(3, function()
 				ui.hide(player, "broke")
@@ -260,6 +271,31 @@ local function make(player, at: vector, metal: string, kind: string, said: strin
 	end)
 end
 
+-- XP to mend a tool this worn: the knob's for a worn out one, less for
+-- one that's only a little worn, and never less than 1.
+local function mend_cost(t: Tool, used: number): number
+	return math.max(1, math.ceil(knobs.mend_xp * used / uses(t)))
+end
+
+-- Mends what's in their hand with XP, or says why not.
+local function mend_with_xp(player): string
+	local held = world.held(player)
+	local t = held and TOOLS[held]
+	if not held or not t then
+		return "Hold the tool you'd like mended."
+	end
+	local used = (worn[player.id] or {})[held] or 0
+	if used == 0 then
+		return "Your " .. string.lower(held) .. " is as good as new."
+	end
+	local cost = mend_cost(t, used)
+	if not world.spend_xp(player, cost) then
+		return "Mending your " .. string.lower(held) .. " takes " .. cost .. " XP."
+	end
+	worn[player.id][held] = 0
+	return "Mended your " .. string.lower(held) .. "."
+end
+
 -- Mends what's in their hand, or says why not.
 local function mend(player): string
 	local held = world.held(player)
@@ -293,10 +329,19 @@ function anvil(player, at: vector, said: string?)
 	local t = held and TOOLS[held]
 	local choices = {}
 	local text = if said then said .. "\n\n" else ""
+	-- with XP to mend with, a second way to mend
+	local by_xp = false
 	if held and t then
-		local left = uses(t) - ((worn[player.id] or {})[held] or 0)
-		text ..= "Your " .. string.lower(held) .. " has " .. left .. " of " .. uses(t) .. " uses left. Mending it takes " .. math.floor(knobs.mend) .. " " .. t.made .. "."
+		local used = (worn[player.id] or {})[held] or 0
+		local left = uses(t) - used
+		text ..= "Your " .. string.lower(held) .. " has " .. left .. " of " .. uses(t) .. " uses left. Mending it takes " .. math.floor(knobs.mend) .. " " .. t.made
 		table.insert(choices, "Mend your " .. string.lower(held))
+		if knobs.mend_xp > 0 and used > 0 then
+			by_xp = true
+			text ..= ", or " .. mend_cost(t, used) .. " XP"
+			table.insert(choices, "Mend it with XP")
+		end
+		text ..= "."
 	else
 		text ..= "Hold a worn tool to mend it, or make a new one."
 	end
@@ -311,15 +356,15 @@ function anvil(player, at: vector, said: string?)
 		if not choice then
 			return
 		end
-		if held and t and choice == 1 then
-			local result = mend(who)
+		if held and t and (choice == 1 or (by_xp and choice == 2)) then
+			local result = if choice == 1 then mend(who) else mend_with_xp(who)
 			if string.sub(result, 1, 6) == "Mended" then
 				sound.play("clink", { at = at })
 			end
 			anvil(who, at, result)
 			return
 		end
-		local m = makes[choice - (if held and t then 1 else 0)]
+		local m = makes[choice - (if held and t then 1 else 0) - (if by_xp then 1 else 0)]
 		if m then
 			make(who, at, m[1], m[2])
 		end

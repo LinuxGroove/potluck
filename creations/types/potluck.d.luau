@@ -121,6 +121,15 @@ export type World = {
 	aims: (item: string, on: boolean?) -> (),
 	-- 0.21
 	danger: () -> "peaceful" | "gentle" | "normal" | "hard",
+	-- 0.22
+	reward: (player: Player | number, xp: number) -> number,
+	xp: (player: Player | number) -> (number, number),
+	spend_xp: (player: Player | number, xp: number) -> boolean,
+	xp_for: (level: number) -> number,
+	haste: (player: Player | number, share: number?) -> number,
+	might: (player: Player | number, share: number?) -> number,
+	charms: (player: Player | number, item: string) -> { string },
+	charm: (player: Player | number, item: string, charms: { string }) -> boolean,
 }
 
 -- world.shoot's options (0.19), and the shot a creature's hit hears

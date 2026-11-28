@@ -11,8 +11,11 @@
 -- PRIZES below says what can be in one.
 --
 -- Breaking gravel turns up flint now and then, for a flint and steel.
+--
+-- Mining ore and opening old chests give XP (world.reward), the rarer the
+-- more.
 
-local world = require("@potluck/world@0.16")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -24,17 +27,17 @@ local knobs = tweak {
 	flint = { 0.15, min = 0, max = 1, label = "Chance gravel turns up flint", order = 4 },
 }
 
-type Ore = { gives: string, least: number, most: number, level: number }
+type Ore = { gives: string, least: number, most: number, level: number, xp: number }
 
--- What each ore gives, from least to most of it, and the level of pickaxe
--- it needs.
+-- What each ore gives, from least to most of it, the level of pickaxe it
+-- needs, and the XP for mining it.
 local ORES: { [string]: Ore } = {
-	["Coal ore"] = { gives = "Coal", least = 1, most = 2, level = 1 },
-	["Copper ore"] = { gives = "Raw copper", least = 1, most = 3, level = 2 },
-	["Iron ore"] = { gives = "Raw iron", least = 1, most = 1, level = 3 },
-	["Gold ore"] = { gives = "Raw gold", least = 1, most = 1, level = 4 },
-	["Crystal ore"] = { gives = "Crystal", least = 1, most = 2, level = 4 },
-	["Moonsilver ore"] = { gives = "Raw moonsilver", least = 1, most = 1, level = 4 },
+	["Coal ore"] = { gives = "Coal", least = 1, most = 2, level = 1, xp = 1 },
+	["Copper ore"] = { gives = "Raw copper", least = 1, most = 3, level = 2, xp = 2 },
+	["Iron ore"] = { gives = "Raw iron", least = 1, most = 1, level = 3, xp = 3 },
+	["Gold ore"] = { gives = "Raw gold", least = 1, most = 1, level = 4, xp = 5 },
+	["Crystal ore"] = { gives = "Crystal", least = 1, most = 2, level = 4, xp = 4 },
+	["Moonsilver ore"] = { gives = "Raw moonsilver", least = 1, most = 1, level = 4, xp = 8 },
 }
 
 for name, o in ORES do
@@ -76,6 +79,9 @@ type Find = { thing: string, n: number }
 
 -- what's still in chests players' pockets were too full for, by place
 local left: { [string]: { Find } } = {}
+
+-- XP for opening an old chest
+local CHEST_XP = 5
 
 local function key(at: vector): string
 	return string.format("%d,%d,%d", math.floor(at.x), math.floor(at.y), math.floor(at.z))
@@ -127,10 +133,14 @@ world.on("player_left", function(p)
 	shown[p.id] = nil
 end)
 
--- flint, now and then, as well as the gravel
+-- flint, now and then, as well as the gravel, and XP for ore
 world.on("block_broken", function(player, _at: vector, block: string)
 	if block == "Gravel" and world.pockets(player) ~= nil and world.random() < knobs.flint then
 		world.give(player, "Flint", 1)
+	end
+	local ore = ORES[block]
+	if ore then
+		world.reward(player, ore.xp)
 	end
 end)
 
@@ -161,6 +171,7 @@ world.on("block_used", function(player, at: vector, block: string)
 		return
 	end
 	left[k] = nil
+	world.reward(player, CHEST_XP)
 	world.set_block(at, "Air")
 	sound.play("sparkle", { at = at, caption = "An old chest opens" })
 	tell(player, "You found " .. say(got) .. ".")

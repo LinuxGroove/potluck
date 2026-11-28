@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.21")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.21. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.22")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.22. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.21
+### `@potluck/world` 0.22
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -161,6 +161,27 @@ end)
 - `world.danger()` is the world's danger: `"peaceful"`, `"gentle"` (the default), `"normal"` or `"hard"`. Players choose it for each world (Change or delete a world), and a server in its `server.toml`. What it means is up to each creation: the base game's hostile creatures don't come on Peaceful, and come fewer and gentler on Gentle.
 - `world.on("player_fell", fn)` hears a player in survival hurt too badly, with where they fell, as they go back to the hill. The Lost packs creation drops what they carry there on Normal and Hard.
 - A creature kind's `home = "here"` makes each one's home wherever it's spawned, so wandering keeps it there rather than drawing it back to a spot: for creatures a creation spawns near players.
+
+XP, and what it buys (new in 0.22), for rewards, charms and anything else worth working toward:
+
+```luau
+world.on("block_broken", function(player, _at, block)
+	if block == "Iron ore" then
+		world.reward(player, 3)                   -- 3 XP, if they're in survival
+	end
+end)
+local xp, level = world.xp(player)            -- 75 XP is level 3
+if world.spend_xp(player, 40) then            -- false, and nothing spent, if they haven't 40
+	world.charm(player, "Iron pickaxe", { "Swift" })
+end
+world.haste(player, 1.5)                      -- digs half as fast again, until it's 1 again
+world.might(player, 1.5)                      -- for creations to read: world.might(player) is every creation's together
+```
+
+- `world.reward(player, xp)` gives a player in survival 0 to 100 XP and returns how much they got: each creation can give each player 120 at once, and 4 a second after that, so a lot at once comes back smaller. Players keep XP by name in each world, the game shows it as a bar over the hotbar with their level, and says when they go up a level.
+- `world.xp(player)` returns their XP and level; level n takes `world.xp_for(n)` XP in all, 5 n (n + 1): 10 for the first, 30 for the second, 550 for the tenth. `world.spend_xp(player, xp)` takes that much if they have it and says whether it did.
+- `world.haste(player, share)` makes a player dig `share` times as fast (0.25 to 4; 1 is as usual), on top of their tools. `world.might(player, share)` says how much harder they hit, which the game doesn't use itself: creatures that count bops multiply by `world.might(player)`, every creation's shares together. Called without a share, each returns every creation's together. Both last until the creation sets 1, or stops.
+- `world.charm(player, item, charms)` puts a list of names on a kind of thing a player has (up to 4, each 1 to 16 letters; an empty list takes them off), and `world.charms(player, item)` returns them, from any creation: kept with the world, by name, so a tool's charms come back when they play again. The base game's Charms creation puts `"Swift"`, `"Sturdy"` and `"Keen"` on tools and weapons; the Tools creation wears a Sturdy tool slower.
 
 How fast players heal (new in 0.6), for hunger, rest and healing springs:
 

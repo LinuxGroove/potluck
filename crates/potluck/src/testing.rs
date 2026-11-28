@@ -550,6 +550,8 @@ impl Harness {
                 let p = PlayerInfo { id: FIRST_PLAYER + n, name, pos: at };
                 self.scripts.players.push(p.clone());
                 self.scripts.set_pockets(p.id, survival, &pockets.filled(), 0);
+                // known by name at once, for their XP and charms
+                self.scripts.shared.lock().unwrap().names.insert(p.id, p.name.clone());
                 self.health.insert(p.id, 20.0);
                 one(Value::Table(script::player_table(self.lua(), &p).map_err(fail)?))
             }

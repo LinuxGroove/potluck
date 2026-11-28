@@ -2,7 +2,7 @@
 -- The furnace creation's own tests: `potluck-server --test=furnace`.
 
 local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.20")
+local world = require("@potluck/world@0.22")
 
 -- a survival player beside a `block` they've put down
 local function beside(block: string, carrying: { [string]: number }): (any, vector)
@@ -44,6 +44,7 @@ test.case("a furnace smelts raw iron into ingots, burning coal", function()
 	test.same(world.block(at), "Furnace", "and went out when it was done")
 	test.use_block(p, at)
 	test.same(world.has(p, "Iron ingot"), 3, "the ingots, taken on using it")
+	test.same(world.xp(p), 3, "and an XP for each")
 	local q = test.asked(p)
 	test.check(q ~= nil and string.find(q.text, "You took 3 Iron ingot", 1, true) ~= nil, q and q.text or "")
 end)

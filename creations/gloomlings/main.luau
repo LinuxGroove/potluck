@@ -10,7 +10,7 @@
 -- Gentle. Players in creative have nothing to fear, and nothing comes near
 -- the Green.
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -196,7 +196,8 @@ end
 
 function Gloomling:hit(player, shot)
 	local held = world.held(player)
-	local bop = if shot then shot.power else (held and SWORDS[held] or 1)
+	-- a Keen sword hits harder (world.might); a shot's power says already
+	local bop = if shot then shot.power else (held and SWORDS[held] or 1) * world.might(player)
 	self.bopped = (self.bopped or 0) + bop
 	if self.bopped < knobs.bops then
 		-- knocked back: it hops off and keeps away a moment
@@ -213,6 +214,7 @@ function Gloomling:hit(player, shot)
 	sound.play("pop", { at = self, pitch = 0.7, caption = "A gloomling pops" })
 	-- what's left of it, for charms
 	world.give(player, "Gloom dust", 1)
+	world.reward(player, 2)
 	where[self.id] = nil
 	self:remove()
 end

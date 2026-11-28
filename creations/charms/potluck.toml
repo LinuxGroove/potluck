@@ -1,0 +1,83 @@
+name = "Charms"
+by = "Potluck"
+kind = "mod"
+about = "A charm table puts charms on the tool or weapon in your hand, for XP and a little gloom dust: Swift digs faster, Sturdy wears half as fast and Keen hits harder. Make the table at a workbench from gold, a crystal and planks."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.22"
+tweak = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# The charm table: a dark wooden top on a carved stone foot, with a
+# crystal on it that glows, in sixteenths of a block.
+[blocks.charm_table]
+name = "Charm table"
+kind = "wood"
+hardness = 2.5
+light = true
+glow = "cw"
+boxes = [
+	[1, 0, 1, 15, 2, 15],
+	[3, 2, 3, 13, 9, 13],
+	[0, 9, 0, 16, 12, 16],
+	[6, 12, 6, 10, 16, 10],
+]
+colors = { a = "#1e1622", b = "#34253a", d = "#4a3552", e = "#5d4566", g = "#b8903c", h = "#e2bf62", p = "#2b2b36", q = "#3d3d4c", r = "#56566a", c = "#6fd8f2", w = "#d6f8ff" }
+top = """
+ghhhhhhhhhhhhhhg
+hbbbbbbbbbbbbbbh
+hbddddddddddddbh
+hbdeeeeeeeeeedbh
+hbdeddddddddedbh
+hbdedbbbbbbdedbh
+hbdedbcccwbdedbh
+hbdedbcwwcbdedbh
+hbdedbcwcwbdedbh
+hbdedbwcccbdedbh
+hbdedbbbbbbdedbh
+hbdeddddddddedbh
+hbdeeeeeeeeeedbh
+hbddddddddddddbh
+hbbbbbbbbbbbbbbh
+ghhhhhhhhhhhhhhg
+"""
+side = """
+......cwcc......
+......wccw......
+......cwwc......
+......ccwc......
+hhhhhhhhhhhhhhhh
+bdbdbdbdbdbdbdbd
+aaaaaaaaaaaaaaaa
+...qqqqqqqqqq...
+...qprrrrrrpq...
+...qrpqqqqprq...
+...qrqpcwpqrq...
+...qrqpwcpqrq...
+...qrpqqqqprq...
+...qprrrrrrpq...
+.pppppppppppppp.
+.aaaaaaaaaaaaaa.
+"""
+bottom = """
+................
+.pppppppppppppp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pqqqqqqqqqqqqp.
+.pppppppppppppp.
+................
+"""

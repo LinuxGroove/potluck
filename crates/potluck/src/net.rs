@@ -30,7 +30,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 28;
+pub const PROTOCOL: u32 = 29;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -127,6 +127,10 @@ pub enum Msg {
     Health(f32),
     /// How fast you heal by yourself now (1 as usual, 0 not at all).
     Healing(f32),
+    /// Your XP here now (`world.reward`).
+    Xp(u32),
+    /// How much faster than usual you dig now (`world.haste`).
+    Haste(f32),
     /// A creation hurt you, but only down to some health: (how much, the
     /// least it leaves).
     HurtTo(f32, f32),
@@ -965,6 +969,15 @@ impl Net {
         }
     }
 
+    /// A player's XP, or how fast they dig, for their game alone.
+    pub fn send_to(&self, pid: u32, m: Msg) {
+        if let Role::Host(h) = &self.role {
+            if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
+                let _ = o.send(frame_msg(&m));
+            }
+        }
+    }
+
     pub fn send_note(&self, pid: u32, note: crate::script::Note) {
         if let Role::Host(h) = &self.role {
             if let Some(o) = h.players.get(&pid).and_then(|p| p.out.as_ref()) {
@@ -1405,6 +1418,8 @@ pub fn client_net(
                 }
                 Msg::Health(change) if change.is_finite() => me.health_due += change.clamp(-MAX_HEALTH, MAX_HEALTH),
                 Msg::Healing(rate) if rate.is_finite() => me.healing = rate.clamp(0.0, crate::script::MAX_HEALING as f32),
+                Msg::Xp(xp) => me.xp = Some(xp),
+                Msg::Haste(n) if n.is_finite() => me.haste = n.clamp(1.0 / crate::script::MAX_KNACK as f32, crate::script::MAX_KNACK as f32),
                 Msg::Digging(list) => {
                     let ok = |d: &crate::items::Digging| d.speeds.iter().all(|v| v.is_finite());
                     me.rules.digging = list

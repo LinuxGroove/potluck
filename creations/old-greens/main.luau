@@ -8,7 +8,7 @@
 -- and it gives you something back. Every Old Green is in GREENS below, so a
 -- remix can add its own, move them or change what they want.
 
-local world = require("@potluck/world@0.5")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.2")
@@ -437,6 +437,8 @@ world.on("block_used", function(player, at: vector, used: string)
 		tell(player, "It's lit! It gives you " .. g.gifts .. " " .. g.gift)
 	end
 	light(s)
+	-- and a good deal of XP for it (world.reward)
+	world.reward(player, 30)
 	world.say(player.name .. " lit " .. g.name .. ".")
 end)
 

@@ -1,8 +1,8 @@
 --!strict
 -- Mining's own tests: `potluck-server --test=mining`.
 
-local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.16")
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.22")
 
 -- the tools creation gives pickaxes their levels; its own tests don't run it
 world.digging("Wooden pickaxe", { hard = 2.5, level = 1 })
@@ -36,6 +36,18 @@ test.case("coal ore breaks into coal with a wooden pickaxe", function()
 	local coal = world.has(p, "Coal")
 	test.check(coal >= 1 and coal <= 2, "1 or 2 coal, not " .. coal)
 	test.same(world.has(p, "Coal ore"), 0, "not the ore itself")
+end)
+
+test.case("mining ore gives XP, the rarer the more", function()
+	local p, at = beside("Iron pickaxe", "Coal ore")
+	test.dig(p, at)
+	test.same(world.xp(p), 1, "coal")
+	world.set_block(at, "Moonsilver ore")
+	test.dig(p, at)
+	test.same(world.xp(p), 9, "and moonsilver")
+	world.set_block(at, "Stone")
+	test.dig(p, at)
+	test.same(world.xp(p), 9, "stone gives none")
 end)
 
 test.case("a stone pickaxe breaks copper ore but not iron ore", function()
