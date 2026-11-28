@@ -1,0 +1,7 @@
+#!/bin/bash
+# Publish the default settings so `snap get potluck-market` shows them, and
+# make the token the relay and the market share.
+set -euo pipefail
+token="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)"
+snapctl set nakama=https://play.linuxgroove.com invite-only=true hide-after-reports=5 store=folder \
+  relay.mode=here relay.port=8443 relay.rate=192 relay.token="$token"

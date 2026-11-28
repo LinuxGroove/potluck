@@ -1,9 +1,11 @@
 name: Snaps
 
-# Builds two snaps: the game (potluck, from snap/) and the always-on world
-# server (potluck-server, from packaging/potluck-server/snap/). Publishing
-# waits on both names being registered, the STORE_LOGIN secret and the
-# PUBLISH_SNAP variable set to true.
+# Builds three snaps: the game (potluck, from snap/), the always-on world
+# server (potluck-server, from packaging/potluck-server/snap/) and the market
+# with the relay (potluck-market, from packaging/potluck-market/snap/), which
+# is also installed on the runner and tried. Publishing waits on the names
+# being registered, the STORE_LOGIN secret and the PUBLISH_SNAP variable set
+# to true.
 on:
   push:
     branches: [main]
@@ -23,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        snap: [potluck, potluck-server]
+        snap: [potluck, potluck-server, potluck-market]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -59,10 +61,10 @@ jobs:
       - name: Choose the project
         id: project
         run: |
-          if [ "${{ matrix.snap }}" = potluck-server ]; then
-            tools/server-snap.sh build/potluck-server
-            cp VERSION build/potluck-server/VERSION
-            echo "path=build/potluck-server" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.snap }}" != potluck ]; then
+            tools/snap-project.sh "${{ matrix.snap }}" "build/${{ matrix.snap }}"
+            cp VERSION "build/${{ matrix.snap }}/VERSION"
+            echo "path=build/${{ matrix.snap }}" >> "$GITHUB_OUTPUT"
           else
             echo "path=." >> "$GITHUB_OUTPUT"
           fi
@@ -70,6 +72,45 @@ jobs:
         id: build
         with:
           path: ${{ steps.project.outputs.path }}
+      # Every part of the market answering on a machine of its own: Forgejo,
+      # the market with its account there (creations go up as it starts), its
+      # admin command, and the relay, with a certificate of its own since a
+      # runner has no domain.
+      - name: Try the market snap
+        if: matrix.snap == 'potluck-market'
+        run: |
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost -days 2 -keyout key.pem -out cert.pem 2>/dev/null
+          sudo cp cert.pem key.pem /var/snap/potluck-market/common/
+          sudo snap set potluck-market relay.cert=cert.pem relay.key=key.pem
+          up=""
+          for i in $(seq 180); do
+            if curl -sf -o /dev/null http://127.0.0.1:47180/api/key &&
+              curl -sfk -o /dev/null --resolve localhost:8443:127.0.0.1 https://localhost:8443/ping; then
+              up=yes
+              break
+            fi
+            sleep 1
+          done
+          sudo potluck-market.info
+          # the base game's creations, each a repository on Forgejo and a version on the market
+          base=0
+          for i in $(seq 180); do
+            base="$(curl -s http://127.0.0.1:47180/api/base | jq '[.[] | select(.version > 0)] | length' 2>/dev/null || echo 0)"
+            [ "${base:-0}" -ge 20 ] && break
+            sleep 1
+          done
+          echo "base creations on the market: $base"
+          token="$(sudo snap get potluck-market relay.token)"
+          answer="$(curl -s -X POST -H "Authorization: Bearer $token" -H "X-Iroh-Endpoint-Id: $(printf '%064d' 0)" http://127.0.0.1:47180/api/relay/allow)"
+          echo "the relay's check for a key the market never gave out: $answer"
+          invite="$(sudo potluck-market.admin invite 1 || true)"
+          echo "an invite code: $invite"
+          if [ -z "$up" ] || [ "${base:-0}" -lt 20 ] || [ "$answer" != false ] || [ -z "$invite" ]; then
+            sudo snap logs -n 300 potluck-market
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.snap }}-snap-${{ matrix.arch }}

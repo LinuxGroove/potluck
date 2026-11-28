@@ -1,36 +1,37 @@
-# potluck-share's config for the market at potluck.linuxgroove.com.
-# The secrets come from the environment: FORGEJO_TOKEN, RELAY_TOKEN, and for
-# S3 S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.
+# potluck-share's settings for running the market by hand on this machine,
+# against the Forgejo deploy/market/test.sh starts (port 3300, its token in
+# build/forgejo/token):
+#
+#   FORGEJO_TOKEN=$(cat build/forgejo/token) cargo run -p potluck-share -- --config deploy/market/share.toml
+#
+# The real market is the potluck-market snap, which writes its own from its
+# settings (docs/hosting.md). Secrets come from the environment: FORGEJO_TOKEN,
+# RELAY_TOKEN, and for S3 S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY.
 
-listen = "0.0.0.0:47180"
-public_url = "https://potluck.linuxgroove.com"
-data = "/var/lib/potluck-share"
-# the game server players sign in to: the market asks it who a session is
-nakama = "https://play.linuxgroove.com"
+listen = "127.0.0.1:47180"
+public_url = "http://localhost:47180"
+data = "build/market-data"
+# the game server players sign in to: a local one (see game-server's docs)
+nakama = "http://127.0.0.1:7350"
 # sharing to Everyone takes an invite while the market is new
 invite_only = true
 # different players' reports that hide a creation until a moderator looks
 hide_after_reports = 5
 # words names and descriptions may not use (one a line, word* for any word
 # starting so); without a list every share to Everyone waits for a person
-words = "/etc/potluck-share/words.txt"
-
-# the relay for worlds shared from home (deploy/relay), given to the game;
-# its access checks come with RELAY_TOKEN from the environment. Empty:
-# friends only reach each other on the same network.
-relay = "https://relay.potluck.linuxgroove.com"
+words = "deploy/market/words.txt"
+# accept dev:<id>:<name> sign-ins, since this market is on this machine only
+dev_accounts = true
+# the relay for worlds shared from home, given to the game; empty: friends
+# only reach each other on the same network
+relay = ""
 
 [forgejo]
-url = "http://forgejo:3000"
+url = "http://127.0.0.1:3300"
 # makers' git addresses; nothing is ever sent there
-email_domain = "users.potluck.linuxgroove.com"
+email_domain = "users.localhost"
 
 [store]
 # "folder" keeps files in data/files; "s3" puts them in a bucket, and with
 # public_url set the game fetches them from there (a CDN in front, say)
 kind = "folder"
-# kind = "s3"
-# endpoint = "https://s3.example.com"
-# bucket = "potluck"
-# region = "garage"
-# public_url = "https://files.potluck.linuxgroove.com"

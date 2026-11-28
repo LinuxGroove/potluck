@@ -1,0 +1,75 @@
+#!/bin/bash
+# Service: Forgejo, a git repository for every creation. Only the market
+# talks to it, on this machine; it's never public.
+. "$SNAP/bin/common.sh"
+
+mkdir -p "$FORGEJO/custom/conf" "$FORGEJO/data" "$FORGEJO/log" "$FORGEJO/home"
+mkdir -p -m 0700 "$SECRETS"
+chown -R "$DAEMON_UID:$DAEMON_UID" "$FORGEJO"
+cd "$FORGEJO"
+
+# Secrets made once by Forgejo's own generator and kept in $SECRETS, so the
+# config can be written afresh at every start.
+secret() {
+  local f="$SECRETS/forgejo-$1"
+  if [ ! -s "$f" ]; then
+    (umask 077 && as_daemon "$SNAP/bin/forgejo" generate secret "$1" >"$f.new" && mv "$f.new" "$f")
+  fi
+  cat "$f"
+}
+secret_key="$(secret SECRET_KEY)"
+internal_token="$(secret INTERNAL_TOKEN)"
+
+(
+  umask 077
+  cat >"$FORGEJO_INI" <<EOF
+; Written by the potluck-market snap at every start: changes here are lost.
+APP_NAME = Potluck market
+RUN_MODE = prod
+WORK_PATH = $FORGEJO
+
+[server]
+PROTOCOL = http
+HTTP_ADDR = 127.0.0.1
+HTTP_PORT = $FORGEJO_PORT
+ROOT_URL = http://127.0.0.1:$FORGEJO_PORT/
+APP_DATA_PATH = $FORGEJO/data
+DISABLE_SSH = true
+START_SSH_SERVER = false
+LFS_START_SERVER = false
+OFFLINE_MODE = true
+
+[database]
+DB_TYPE = sqlite3
+PATH = $FORGEJO/data/forgejo.db
+
+[repository]
+ROOT = $FORGEJO/data/repositories
+DEFAULT_BRANCH = main
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY = $secret_key
+INTERNAL_TOKEN = $internal_token
+
+[service]
+DISABLE_REGISTRATION = true
+REQUIRE_SIGNIN_VIEW = true
+
+[oauth2]
+ENABLED = false
+
+[log]
+MODE = console
+LEVEL = Warn
+ROOT_PATH = $FORGEJO/log
+
+[cron.update_checker]
+ENABLED = false
+EOF
+)
+chown "$DAEMON_UID:$DAEMON_UID" "$FORGEJO_INI"
+
+export HOME="$FORGEJO/home" USER=snap_daemon
+exec setpriv --clear-groups --reuid "$DAEMON_UID" --regid "$DAEMON_UID" -- \
+  "$SNAP/bin/forgejo" web --config "$FORGEJO_INI" --work-path "$FORGEJO"

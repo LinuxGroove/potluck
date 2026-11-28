@@ -32,7 +32,7 @@ pub struct Config {
     /// networks: for tests and a market on a LAN only.
     pub private_servers: bool,
     /// The relay that carries worlds shared from home when two players
-    /// can't reach each other directly (iroh-relay, deploy/relay): its
+    /// can't reach each other directly (iroh-relay, in the market's snap): its
     /// https address, given to the game. Empty: friends connect directly or
     /// not at all.
     pub relay: String,

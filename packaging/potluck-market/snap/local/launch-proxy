@@ -1,0 +1,54 @@
+#!/bin/bash
+# Service: Caddy in front of the market, with HTTPS from Let's Encrypt for
+# `domain`. The relay on this machine uses the same certificate.
+# Only enabled when `snap set potluck-market domain=potluck.example.org` is set.
+. "$SNAP/bin/common.sh"
+
+domain="$(cfg domain)"
+if [ -z "$domain" ]; then
+  log "No domain set; the HTTPS proxy is off."
+  exit 0
+fi
+
+mkdir -p "$SNAP_COMMON/caddy" "$SNAP_DATA/caddy"
+email="$(cfg email)"
+caddyfile="$SNAP_DATA/caddy/Caddyfile"
+{
+  echo "{"
+  echo "	admin off"
+  if [ -n "$email" ]; then
+    echo "	email $email"
+  fi
+  echo "	# Let's Encrypt only, so the relay knows where the certificate is"
+  echo "	cert_issuer acme"
+  echo "}"
+  echo ""
+  echo "$domain {"
+  echo "	encode zstd gzip"
+  echo "	reverse_proxy 127.0.0.1:$MARKET_PORT"
+  echo "}"
+  echo ""
+  # worlds on this machine (potluck-server snaps on their own ports)
+  for pair in $(cfg proxy.worlds); do
+    echo "${pair%%=*} {"
+    echo "	reverse_proxy 127.0.0.1:${pair#*=}"
+    echo "}"
+    echo ""
+  done
+  echo "http://$domain {"
+  if relay_here; then
+    echo "	# games look for a captive portal at the relay's host name on port 80"
+    echo "	handle /generate_204 {"
+    echo "		reverse_proxy 127.0.0.1:$RELAY_HTTP_PORT"
+    echo "	}"
+  fi
+  echo "	handle {"
+  echo "		redir https://{host}{uri} 308"
+  echo "	}"
+  echo "}"
+} >"$caddyfile"
+
+export XDG_DATA_HOME="$SNAP_COMMON/caddy"
+export XDG_CONFIG_HOME="$SNAP_DATA/caddy"
+export HOME="$SNAP_COMMON/caddy"
+exec "$SNAP/bin/caddy" run --config "$caddyfile" --adapter caddyfile

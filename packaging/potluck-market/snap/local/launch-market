@@ -1,0 +1,75 @@
+#!/bin/bash
+# Service: potluck-share, the market's service and its web pages.
+. "$SNAP/bin/common.sh"
+
+mkdir -p "$MARKET" "$SNAP_DATA/market"
+mkdir -p -m 0700 "$SECRETS"
+chown -R "$DAEMON_UID:$DAEMON_UID" "$MARKET"
+
+# Forgejo first, then an admin account and a token for the market, made once.
+if ! wait_for 120 "http://127.0.0.1:$FORGEJO_PORT/api/v1/version"; then
+  fail "Forgejo isn't answering yet; trying again shortly"
+fi
+token_file="$SECRETS/forgejo.token"
+if [ ! -s "$token_file" ]; then
+  log "Making the market's account on Forgejo"
+  forgejo_cli admin user create --admin --username market --email "market@$(public_host).invalid" \
+    --random-password --must-change-password=false >/dev/null 2>&1 || true
+  (umask 077 && forgejo_cli admin user generate-access-token --username market \
+    --token-name "market-$(date +%s)" --scopes all --raw >"$token_file.new" && mv "$token_file.new" "$token_file")
+fi
+
+# Your own word list in $SNAP_COMMON wins over the one in the snap.
+words="$SNAP_COMMON/words.txt"
+[ -f "$words" ] || words="$SNAP/share/words.txt"
+domain="$(cfg domain)"
+if [ -n "$domain" ]; then
+  listen="127.0.0.1:$MARKET_PORT" # behind Caddy
+else
+  listen="0.0.0.0:$MARKET_PORT"
+fi
+email_domain="$(cfg email-domain)"
+[ -n "$email_domain" ] || email_domain="users.$(public_host)"
+
+{
+  echo "# Written by the potluck-market snap from its settings at every start"
+  echo "# (snap get potluck-market): changes here are lost."
+  echo "listen = $(toml_str "$listen")"
+  echo "public_url = $(toml_str "$(public_url)")"
+  echo "data = $(toml_str "$MARKET")"
+  echo "nakama = $(toml_str "$(cfg nakama https://play.linuxgroove.com)")"
+  echo "invite_only = $(cfg invite-only true)"
+  echo "hide_after_reports = $(cfg hide-after-reports 5)"
+  echo "words = $(toml_str "$words")"
+  echo "relay = $(toml_str "$(relay_url)")"
+  echo ""
+  echo "[forgejo]"
+  echo "url = $(toml_str "http://127.0.0.1:$FORGEJO_PORT")"
+  echo "email_domain = $(toml_str "$email_domain")"
+  echo ""
+  echo "[store]"
+  echo "kind = $(toml_str "$(cfg store folder)")"
+  if [ "$(cfg store folder)" = s3 ]; then
+    echo "endpoint = $(toml_str "$(cfg s3.endpoint)")"
+    echo "bucket = $(toml_str "$(cfg s3.bucket potluck)")"
+    echo "region = $(toml_str "$(cfg s3.region garage)")"
+    echo "public_url = $(toml_str "$(cfg s3.public-url)")"
+  fi
+} >"$SHARE_TOML.new"
+mv "$SHARE_TOML.new" "$SHARE_TOML"
+chmod 0644 "$SHARE_TOML"
+
+# Secrets go by the environment, never into the config.
+FORGEJO_TOKEN="$(cat "$token_file")"
+RELAY_TOKEN=""
+if [ "$(cfg relay.mode here)" != off ]; then
+  RELAY_TOKEN="$(cfg relay.token)"
+fi
+S3_ACCESS_KEY_ID="$(cfg s3.key)"
+S3_SECRET_ACCESS_KEY="$(cfg s3.secret)"
+export FORGEJO_TOKEN RELAY_TOKEN S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY
+
+cd "$MARKET"
+export HOME="$MARKET"
+exec setpriv --clear-groups --reuid "$DAEMON_UID" --regid "$DAEMON_UID" -- \
+  "$SNAP/bin/potluck-share" --config "$SHARE_TOML"

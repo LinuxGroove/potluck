@@ -24,6 +24,13 @@ if [ -n "$domain" ] && ! [[ "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])
   fail "domain must be a host name like potluck.example.org"
 fi
 
+for pair in $(cfg proxy.worlds); do
+  if ! [[ "$pair" == *=* ]] || ! [[ "${pair%%=*}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || ! port_ok "${pair#*=}"; then
+    fail "proxy.worlds is a list of name=port, like \"w2.worlds.example.org=47202\""
+  fi
+done
+[ -z "$(cfg proxy.worlds)" ] || [ -n "$domain" ] || fail "proxy.worlds needs domain set: the other worlds go through this one's Caddy"
+
 cert="$(cfg tls.cert)"
 key="$(cfg tls.key)"
 if [ -n "$cert$key" ]; then
