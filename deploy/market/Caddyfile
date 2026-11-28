@@ -1,4 +1,0 @@
-potluck.linuxgroove.com {
-	encode zstd gzip
-	reverse_proxy market:47180
-}

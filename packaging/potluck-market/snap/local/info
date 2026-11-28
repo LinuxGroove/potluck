@@ -1,0 +1,39 @@
+#!/bin/bash
+# potluck-market.info: what's running, where, and what each part answers.
+. "$SNAP/bin/common.sh"
+
+answers() {
+  if curl -s -o /dev/null -m 5 "$@"; then echo "answering"; else echo "not answering"; fi
+}
+
+echo "Market:  $(public_url) ($(answers "http://127.0.0.1:$MARKET_PORT/api/key") on port $MARKET_PORT)"
+echo "Forgejo: http://127.0.0.1:$FORGEJO_PORT, this machine only ($(answers "http://127.0.0.1:$FORGEJO_PORT/api/v1/version"))"
+domain="$(cfg domain)"
+if [ -n "$domain" ]; then
+  echo "HTTPS:   Caddy on ports 80 and 443 for $domain"
+else
+  echo "HTTPS:   off (sudo snap set potluck-market domain=potluck.example.org email=you@example.org)"
+fi
+
+relay="$(relay_url)"
+case "$(cfg relay.mode here)" in
+  off) echo "Relay:   off: friends' games only meet directly" ;;
+  elsewhere) echo "Relay:   $relay, on another machine" ;;
+  *)
+    if relay_here; then
+      port="$(cfg relay.port 8443)"
+      state="$(answers -k --resolve "$(public_host):$port:127.0.0.1" "https://$(public_host):$port/ping")"
+      echo "Relay:   $relay ($state; UDP $RELAY_QUIC_PORT for address discovery)"
+      metrics="$(curl -s -m 5 "http://127.0.0.1:$RELAY_METRICS_PORT/metrics" 2>/dev/null || true)"
+      sent="$(echo "$metrics" | awk '/^relayserver_bytes_sent(_total)? / { print $2 }' | head -n 1)"
+      if [ -n "$sent" ]; then
+        echo "         $(awk -v b="$sent" 'BEGIN { printf "%.1f", b / 1e9 }') GB sent since it started"
+      fi
+    else
+      echo "Relay:   waiting for a domain (or relay.cert and relay.key)"
+    fi
+    ;;
+esac
+echo ""
+echo "Settings: sudo snap get potluck-market"
+echo "Logs:     sudo snap logs -n 100 potluck-market"

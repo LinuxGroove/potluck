@@ -24,6 +24,13 @@ caddyfile="$SNAP_DATA/caddy/Caddyfile"
   echo "	# The world's WebSocket and its status page are on the same port."
   echo "	reverse_proxy 127.0.0.1:$(cfg port 47126)"
   echo "}"
+  # other worlds on this machine (parallel installs of this snap)
+  for pair in $(cfg proxy.worlds); do
+    echo ""
+    echo "${pair%%=*} {"
+    echo "	reverse_proxy 127.0.0.1:${pair#*=}"
+    echo "}"
+  done
 } >"$caddyfile"
 
 export XDG_DATA_HOME="$SNAP_COMMON/caddy"

@@ -3,7 +3,7 @@
 //! family tree, a suggested change merged, reports, held versions, cloning
 //! and signing in on the web. Set POTLUCK_TEST_FORGEJO (its address) and
 //! POTLUCK_TEST_FORGEJO_TOKEN (an admin's token) to run it; without them it
-//! says it was skipped. deploy/market/test.sh starts a Forgejo in a container.
+//! says it was skipped. deploy/market/test.sh starts a Forgejo of its own.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

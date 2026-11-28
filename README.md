@@ -65,7 +65,7 @@ The first time a player does something that reaches other people (sharing, the m
 
 On the market, a moderator can mark a creation **Checked for all ages** (when they list it, or later on its page), and Explore has a filter for those. The base game's creations are checked for all ages, and a new version starts without the mark until someone looks again.
 
-The market's service is `potluck-share` ([crates/share-service](crates/share-service)): it keeps every creation as a git repository in [Forgejo](https://forgejo.org/) and its files by hash in a folder or S3, checks every version (size, the API it needs, that the code compiles, words), signs what it serves so the game knows a code brought what the market checked, and serves the web pages. [deploy/market](deploy/market) has its config and a compose file with Forgejo and Caddy; `deploy/market/test.sh` runs its tests against Forgejo in a container. `potluck-share check FOLDER` runs the market's checks on a creation before sharing it.
+The market's service is `potluck-share` ([crates/share-service](crates/share-service)): it keeps every creation as a git repository in [Forgejo](https://forgejo.org/) and its files by hash in a folder or S3, checks every version (size, the API it needs, that the code compiles, words), signs what it serves so the game knows a code brought what the market checked, and serves the web pages. It's deployed as the `potluck-market` snap ([packaging/potluck-market](packaging/potluck-market/snap)), with Forgejo, Caddy and the relay for worlds shared from home; `deploy/market/test.sh` runs its tests against a Forgejo of its own. `potluck-share check FOLDER` runs the market's checks on a creation before sharing it.
 
 ## potluck-server
 
@@ -128,7 +128,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json xvfb-run -a -s "-screen 0 
 
 ## Releases
 
-Pushing to `main` builds both snaps (`potluck` and `potluck-server`, for amd64 and arm64) and the Windows and macOS zips; publishing the snaps waits on the names being registered, the `STORE_LOGIN` secret and the `PUBLISH_SNAP` variable. Versions are `vYYYY.WW.MINOR` tags, derived by `tools/version.sh` as in the other LinuxGroove games.
+Pushing to `main` builds the three snaps (`potluck`, `potluck-server` and `potluck-market`, for amd64 and arm64; CI installs the market's and checks every part answers) and the Windows and macOS zips; publishing the snaps waits on the names being registered, the `STORE_LOGIN` secret and the `PUBLISH_SNAP` variable. Versions are `vYYYY.WW.MINOR` tags, derived by `tools/version.sh` as in the other LinuxGroove games.
 
 ## License
 

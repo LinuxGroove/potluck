@@ -1,0 +1,17 @@
+#!/bin/bash
+# potluck-market.admin: the market's own commands, on this machine's market.
+#
+#   sudo potluck-market.admin moderator <handle>   make a maker a moderator
+#   sudo potluck-market.admin trust <handle>       a maker whose shares skip review
+#   sudo potluck-market.admin invite [N]           N invite codes for sharing to Everyone
+. "$SNAP/bin/common.sh"
+
+[ "$(id -u)" = 0 ] || fail "Run it with sudo: sudo potluck-market.admin $*"
+case "${1:-}" in
+  moderator | trust | invite) ;;
+  *) fail "Usage: sudo potluck-market.admin moderator <handle> | trust <handle> | invite [N]" ;;
+esac
+[ -f "$SHARE_TOML" ] || fail "The market hasn't started yet: see sudo potluck-market.info"
+cd "$MARKET"
+HOME="$MARKET" exec setpriv --clear-groups --reuid "$DAEMON_UID" --regid "$DAEMON_UID" -- \
+  "$SNAP/bin/potluck-share" --config "$SHARE_TOML" "$@"
