@@ -712,6 +712,8 @@ pub fn build(
         if settings.survival && slot.empty() {
             return;
         }
+        // a block that turns faces the way the player looks
+        let id = blocks::turned(id, blocks::quarter_looking(-me.yaw.sin(), -me.yaw.cos()));
         let at = if blocks::shape(hit.id) == Shape::Cross { hit.block } else { hit.block + hit.normal };
         let here = voxels.at(at);
         if here != AIR && here != WATER && blocks::shape(here) != Shape::Cross {

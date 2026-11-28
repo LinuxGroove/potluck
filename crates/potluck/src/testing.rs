@@ -70,7 +70,7 @@ end
 function test.wait(seconds) ask("wait", seconds) end
 function test.player(name, opts) return ask("player", name, opts) end
 function test.move(player, at) return ask("move", player, at) end
-function test.place(player, at, block) ask("place", player, at, block) end
+function test.place(player, at, block, facing) ask("place", player, at, block, facing) end
 function test.dig(player, at) return ask("dig", player, at) end
 function test.use_block(player, at) ask("use_block", player, at) end
 function test.use(player, creature) ask("event", "used", player, creature) end
@@ -570,6 +570,12 @@ impl Harness {
                                 return Err(Stop::Problem(format!("test.place: {} isn't carrying any {name}", p.name)));
                             }
                         }
+                        // a block that turns faces the way it's told (test 0.5), or north
+                        let q = match arg(4).and_then(|v| v.as_string().map(|s| s.to_string_lossy())) {
+                            Some(f) => blocks::QUARTERS.iter().position(|q| *q == f.as_str()).ok_or_else(|| Stop::Problem(format!("test.place: facing is one of {}", blocks::QUARTERS.join(", "))))? as u8,
+                            None => 0,
+                        };
+                        let b = blocks::turned(b, q);
                         self.voxels.set(at, b);
                         self.scripts.player_block(p.id, at, old, b);
                     }

@@ -299,22 +299,32 @@ pub fn block_problems(blocks: &BTreeMap<String, toml::Value>) -> Vec<String> {
             }
         }
         if let Some(b) = t.get("boxes") {
-            let ok = b.as_array().is_some_and(|a| {
-                !a.is_empty()
-                    && a.len() <= MAX_BLOCK_BOXES
-                    && a.iter().all(|b| b.as_array().is_some_and(|n| n.len() == 6 && n.iter().all(|v| v.as_integer().is_some_and(|v| (0..=16).contains(&v)))))
-            });
+            // a box, or { box = [...], joins = "east" } (world 0.15)
+            let corners = |b: &toml::Value| -> bool {
+                let six = |b: Option<&toml::Value>| b.and_then(|b| b.as_array()).is_some_and(|n| n.len() == 6 && n.iter().all(|v| v.as_integer().is_some_and(|v| (0..=16).contains(&v))));
+                match b.as_table() {
+                    Some(t) => six(t.get("box")) && t.keys().all(|k| k == "box" || k == "joins") && t.get("joins").is_none_or(|j| j.as_str().is_some_and(|j| SIDE_NAMES.contains(&j))),
+                    None => six(Some(b)),
+                }
+            };
+            let ok = b.as_array().is_some_and(|a| !a.is_empty() && a.len() <= MAX_BLOCK_BOXES && a.iter().all(corners));
             if !ok {
-                out.push(format!("{what}'s boxes are 1 to {MAX_BLOCK_BOXES} lists of six sixteenths, [x, y, z, x, y, z]"));
+                out.push(format!("{what}'s boxes are 1 to {MAX_BLOCK_BOXES} lists of six sixteenths, [x, y, z, x, y, z], or {{ box = [x, y, z, x, y, z], joins = \"east\" }}"));
             }
+        }
+        if t.get("turns").is_some_and(|v| v.as_bool().is_none()) {
+            out.push(format!("{what}'s turns is true or false"));
         }
     }
     out
 }
 
+/// The sides a box can join toward (the game's `made::SIDE_NAMES`).
+const SIDE_NAMES: [&str; 6] = ["east", "west", "up", "down", "south", "north"];
+
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.14"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.4")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.15"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.5")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -794,6 +804,15 @@ mod tests {
             format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\n{eight}\n[[blocks.marble.frames]]\nshade = 1"),
             format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nspeed = 20\n{eight}\n[[blocks.marble.frames]]\n{eight}"),
             format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\n{eight}\n{}", (0..8).map(|_| format!("[[blocks.marble.frames]]\n{eight}\n")).collect::<String>()),
+        ] {
+            assert_eq!(find(&with(&bad), "Blocks").result, "fail", "{bad}");
+        }
+        let joined = with(&format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nturns = true\nboxes = [[6, 0, 6, 10, 1, 10], {{ box = [10, 0, 7, 16, 1, 9], joins = \"east\" }}]\n{eight}\n"));
+        assert_eq!(find(&joined, "Blocks").result, "pass", "{:?}", find(&joined, "Blocks"));
+        for bad in [
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nturns = \"yes\"\n{eight}"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nboxes = [{{ box = [0, 0, 0, 16, 8, 16], joins = \"upward\" }}]\n{eight}"),
+            format!("[blocks.marble]\ncolors = {{ a = \"#fff\" }}\nboxes = [{{ at = [0, 0, 0, 16, 8, 16] }}]\n{eight}"),
         ] {
             assert_eq!(find(&with(&bad), "Blocks").result, "fail", "{bad}");
         }

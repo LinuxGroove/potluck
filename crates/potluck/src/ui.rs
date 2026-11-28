@@ -453,7 +453,8 @@ pub const BLOCK_PAGES: &[&str] = &["Building", "Nature", "Things", "From creatio
 pub fn block_shelf(page: &str) -> Vec<blocks::BlockId> {
     use blocks::Shape;
     if page == "From creations" {
-        return crate::made::table().iter().map(|e| e.id).collect();
+        // a block that turns shows once, facing north
+        return crate::made::table().iter().map(|e| e.id).filter(|&id| blocks::base(id) == id).collect();
     }
     let ground = [blocks::GRASS, blocks::DIRT, blocks::SAND, blocks::GRAVEL, blocks::SNOW, blocks::FARMLAND];
     (1..blocks::BLOCKS.len() as blocks::BlockId)

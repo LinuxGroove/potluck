@@ -147,7 +147,7 @@ pub fn interact(
     }
     // the middle button: the block you aim at, into your hand
     if let Some(hit) = me.target.filter(|_| c.pick && !settings.survival && me.aim_body.is_none()) {
-        acts.0.push(Act::Hold(hit.id));
+        acts.0.push(Act::Hold(crate::blocks::base(hit.id)));
     }
     let pid = net.my_id;
     // Share: what you ride or aim at, straight to a code
