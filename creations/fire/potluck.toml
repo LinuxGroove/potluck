@@ -1,13 +1,13 @@
 name = "Fire"
 by = "Potluck"
 kind = "mod"
-about = "Real fire: light it with a flint and steel, and it burns for a while and goes out. Beside wood, leaves, plants, hay or wool it spreads, slowly, and may burn them away. Water puts it out, and standing in it hurts. Knobs turn spreading off."
+about = "Real fire: light it with a flint and steel or an ember, and it burns for a while and goes out. Beside wood, leaves, plants, hay or wool it spreads, slowly, and may burn them away. Water puts it out, and standing in it hurts. Knobs turn spreading off."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.18"
+world = "0.21"
 tweak = "0.1"
 store = "0.1"
 sound = "0.2"

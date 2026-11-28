@@ -10,7 +10,7 @@ use crate::creatures::{Body, Herd};
 use crate::world::Voxels;
 
 /// What a shot can look like, by number.
-pub const LOOKS: [&str; 3] = ["arrow", "stone", "spear"];
+pub const LOOKS: [&str; 4] = ["arrow", "stone", "spear", "ember"];
 
 /// How fast shots fall at `drop` 1, in blocks a second a second.
 pub const GRAVITY: f32 = 16.0;
@@ -55,6 +55,8 @@ impl Flying {
 pub enum Landed {
     /// A creature, by id, and where on it.
     Creature(u64, Vec3),
+    /// A player, by id, and where on them (only a creature's shots).
+    Player(u32, Vec3),
     /// A block, and where it went in.
     Block(IVec3, Vec3),
     /// Nothing: it flew too long, or out of the world.
@@ -63,8 +65,9 @@ pub enum Landed {
 
 /// Moves a shot on `dt` seconds, a little at a time, and says what it hit
 /// if it hit something: the first creature or solid block in its way.
-/// `skip` is a creature it can't hit (the one its shooter rides).
-pub fn advance(s: &mut Flying, voxels: &Voxels, herd: &Herd, skip: Option<u64>, dt: f32) -> Option<Landed> {
+/// `skip` is a creature it can't hit (the one its shooter rides, or the one
+/// that threw it), and `players` the players it can (a creature's shots).
+pub fn advance(s: &mut Flying, voxels: &Voxels, herd: &Herd, skip: Option<u64>, players: &[crate::script::PlayerInfo], dt: f32) -> Option<Landed> {
     let from = s.pos;
     s.fly(dt);
     let d = s.pos - from;
@@ -78,6 +81,10 @@ pub fn advance(s: &mut Flying, voxels: &Voxels, herd: &Herd, skip: Option<u64>, 
             s.pos = p;
             return Some(Landed::Creature(b.id, p));
         }
+        if let Some(q) = players.iter().find(|q| in_player(q.pos, p)) {
+            s.pos = p;
+            return Some(Landed::Player(q.id, p));
+        }
         let at = p.floor().as_ivec3();
         if crate::blocks::is_solid(voxels.at(at)) {
             s.pos = p;
@@ -88,6 +95,12 @@ pub fn advance(s: &mut Flying, voxels: &Voxels, herd: &Herd, skip: Option<u64>, 
         return Some(Landed::Nothing(s.pos));
     }
     None
+}
+
+/// Whether a point is inside a player standing at `feet` (their box, a
+/// little wider: 0.8 across and 1.9 high).
+fn in_player(feet: Vec3, p: Vec3) -> bool {
+    (p.x - feet.x).abs() <= 0.4 && (p.z - feet.z).abs() <= 0.4 && p.y >= feet.y - 0.05 && p.y <= feet.y + 1.9
 }
 
 /// Whether a point is inside a creature: the box round its parts, turned
@@ -131,6 +144,8 @@ fn parts(look: u8) -> &'static [([f32; 3], [f32; 3], [f32; 3])] {
     const FLETCH: [f32; 3] = [0.92, 0.88, 0.78];
     const STONE: [f32; 3] = [0.5, 0.5, 0.5];
     const IRON: [f32; 3] = [0.74, 0.76, 0.8];
+    const EMBER: [f32; 3] = [1.0, 0.55, 0.12];
+    const FLAME: [f32; 3] = [1.0, 0.32, 0.06];
     match look {
         0 => &[
             ([0.035, 0.035, 0.75], [0.0, 0.0, 0.0], WOOD),
@@ -139,6 +154,7 @@ fn parts(look: u8) -> &'static [([f32; 3], [f32; 3], [f32; 3])] {
             ([0.01, 0.12, 0.16], [0.0, 0.0, 0.3], FLETCH),
         ],
         2 => &[([0.05, 0.05, 1.5], [0.0, 0.0, 0.0], WOOD), ([0.1, 0.025, 0.24], [0.0, 0.0, -0.86], IRON)],
+        3 => &[([0.2, 0.2, 0.2], [0.0, 0.0, 0.0], EMBER), ([0.12, 0.12, 0.3], [0.0, 0.0, 0.2], FLAME)],
         _ => &[([0.16, 0.14, 0.16], [0.0, 0.0, 0.0], STONE)],
     }
 }
@@ -162,7 +178,9 @@ pub fn draw(
                 .iter()
                 .map(|(size, at, c)| {
                     let mesh = Mesh::from(Cuboid::new(size[0], size[1], size[2])).with_generated_tangents().expect("a box has UVs and normals");
-                    let mat = StandardMaterial { base_color: Color::srgb(c[0], c[1], c[2]), perceptual_roughness: 0.8, ..default() };
+                    // an ember glows
+                    let glow = if look == 3 { LinearRgba::rgb(c[0] * 6.0, c[1] * 4.0, c[2] * 2.0) } else { LinearRgba::BLACK };
+                    let mat = StandardMaterial { base_color: Color::srgb(c[0], c[1], c[2]), emissive: glow, perceptual_roughness: 0.8, ..default() };
                     (meshes.add(mesh), mats.add(mat), Vec3::from_array(*at))
                 })
                 .collect();

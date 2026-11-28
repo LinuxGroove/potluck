@@ -92,7 +92,9 @@ impl Body {
         self.rideable = k.rideable;
         self.seat = k.seat;
         self.flies = k.flies;
-        self.home = k.home;
+        if !k.home_here {
+            self.home = k.home;
+        }
         if !k.rideable {
             self.rider = None;
         }
@@ -181,6 +183,9 @@ impl Herd {
             phase: 0.0,
         };
         b.restyle(k);
+        if k.home_here {
+            b.home = at;
+        }
         self.bodies.insert(id, b);
         id
     }

@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.20")
+local world = require("@potluck/world@0.21")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.20"
+world = "0.21"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.20 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.21 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -31,7 +31,7 @@ store = "0.1"
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.2 | The game's sounds and the creation's own (made from numbers in `potluck.toml`), somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.2 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see, reading that game's copy of the world |
-| `@potluck/test` | 0.6 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
+| `@potluck/test` | 0.7 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
 Every module planned for the API is here, and client halves read the world as well as hear their creation.
 
@@ -103,6 +103,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.21**: `world.danger()` is the world's danger, Peaceful, Gentle (the default), Normal or Hard, which players set for each world and servers in `server.toml`; `world.on("player_fell", fn)` hears a player in survival hurt too badly, with where they fell. `self:throw(shot, landed?)` sends something flying from a creature, at a place or the way it aims, and its shots hit players (`landed` gets the player); shots can look like an `"ember"`. A kind's `home = "here"` makes each one's home where it's spawned. The game's items gain leather armor and what wild creatures leave: silk, leather, bristles, raw and cooked meat, embers, sentinel cores and gloom dust. The base game gains Cave Crawlers, Bramble Boars, Ember Imps, Stone Sentinels and Lost packs.
 - **0.20**: the game's items gain seeds, berries, apples, baked potatoes, fried eggs, pumpkin and berry pies, bean and fish stews, porridge, honey, honey cake, a milk bucket and feathers. Farming grows potatoes, beans, pumpkins and berry bushes too, Hunger eats them all, Furnaces and campfires gains a cooking pot, and the new Hens, Goats and Bees creations give eggs and feathers, milk and honey. Woollies, hens and goats have young when two are fed.
 - **0.19**: `world.shoot(player, shot, landed?)` sends an arrow, a stone or a spear flying the way a player aims; a creature it hits hears `hit(player, shot)` with it, and the creation hears where it landed. `world.aims(item)` makes Interact with a thing in hand always `item_used`, even at a block or a creature. The game's items gain a bow, arrows, a sling and a spear; the workbench makes them, and the new Bows, slings and spears creation shoots them. Gloomlings take a shot's power.
 - **0.18**: `world.on("item_used", fn)` hears a player Interact with nothing in reach, with what's in their hand and the way they look; `world.guard(player, share)` is how much of every `world.hurt` reaches a player (creations' shares multiply), and `world.hurt`'s `guarded = false` is a hurt it doesn't touch. The game's items gain caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver, and a shield. The game's workbench makes wool and copper armor and shields, the anvil makes iron and moonsilver armor, and the new Armor creation puts them on.
@@ -164,3 +165,4 @@ What a creation can never do, at any version: read or write files, reach the net
 - **0.4**: `test.dig` breaks with what the player holds, as the game does: a survival player gets what `world.drops` says, and it returns false (breaking nothing) when the block needs a better tool.
 - **0.5**: `test.place(player, pos, block, facing?)` puts down a block that turns facing that way.
 - **0.6**: `test.use_item(player, aim?)`, Interact with nothing in reach, heard as `item_used`.
+- **0.7**: `test.danger(level)`, the world's danger for the case; a survival player whose health runs out is heard as `player_fell`.

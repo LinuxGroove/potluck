@@ -114,6 +114,8 @@ pub struct Me {
     pub hurt: f32,
     /// Where the player was last hurt too badly, for the map's marker.
     pub fell_at: Option<Vec3>,
+    /// The same, for telling the host (creations' `player_fell`).
+    pub fell: Option<Vec3>,
 }
 
 impl Default for Me {
@@ -158,6 +160,7 @@ impl Default for Me {
             regen: 0.0,
             hurt: 9.0,
             fell_at: None,
+            fell: None,
         }
     }
 }
@@ -604,6 +607,7 @@ pub fn walk(
         let msg = if me.health <= 0.0 { "You were hurt too badly. Back to the hill." } else { "You fell out of the world. Back to the hill." };
         if me.health <= 0.0 && settings.survival {
             me.fell_at = Some(me.pos);
+            me.fell = Some(me.pos);
         }
         let w = &*voxels;
         me.respawn(w, None);
@@ -826,6 +830,10 @@ pub fn report_pockets(
     if last.as_ref() != Some(&now) {
         actions.0.push((net.my_id, crate::game::Action::Pockets { survival: now.1, slots: now.2.clone(), seen: now.3 }));
         *last = Some(now);
+    }
+    // where they fell, for `player_fell`, before what they carry changes
+    if let Some(at) = me.fell.take() {
+        actions.0.push((net.my_id, crate::game::Action::Fell(at.to_array())));
     }
     // what's in hand, for `world.held`
     let hand = (lib.world, me.held(settings.survival));

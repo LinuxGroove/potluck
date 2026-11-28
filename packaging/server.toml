@@ -40,6 +40,11 @@ teleport = true
 # filters it; younger players chat with quick lines.
 chat = true
 
+# How dangerous the world is: "peaceful" (no hostile creatures), "gentle",
+# "normal" or "hard". On normal and hard, players who fall leave what they
+# carry where they fell.
+danger = "gentle"
+
 # Tell the local network about this world.
 beacon = true
 

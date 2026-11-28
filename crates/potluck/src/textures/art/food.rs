@@ -6,6 +6,9 @@
 use super::ores::{clear, outline};
 use super::*;
 
+#[path = "drops.rs"]
+mod drops;
+
 const OUTLINE: &[u32] = &[0x121014, 0x1c1a1e];
 const SEED: &[u32] = &[0x5a4220, 0x7f6030, 0xa88446, 0xc9a866, 0xe4cc94];
 const BERRY: &[u32] = &[0x2a0a1e, 0x4a1032, 0x721a48, 0x9c2a5e, 0xc8487a, 0xea7ea4];
@@ -344,4 +347,7 @@ pub(super) fn tiles() -> Vec<(&'static str, Tex)> {
         ("feather", feather()),
         ("fried_egg", fried_egg()),
     ]
+    .into_iter()
+    .chain(drops::tiles())
+    .collect()
 }

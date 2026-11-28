@@ -1,13 +1,13 @@
 name = "Hunger"
 by = "Potluck"
 kind = "mod"
-about = "A food bar beside your health in survival. When you get hungry you eat what you carry, each food as filling as it is: pies, stews, bread, fish, baked potatoes, fried eggs, carrots, apples, berries, milk and honey. On an empty belly you stop healing, and it slowly hurts you down to half health."
+about = "A food bar beside your health in survival. When you get hungry you eat what you carry, each food as filling as it is: pies, stews, meat, bread, fish, baked potatoes, fried eggs, carrots, apples, berries, milk and honey. On an empty belly you stop healing, and it slowly hurts you down to half health."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.20"
+world = "0.21"
 tweak = "0.1"
 ui = "0.2"
 sound = "0.1"

@@ -4,10 +4,13 @@
 -- keep away from lanterns, braziers and candles (world.find_light), lurk
 -- at the edge of a lit place, and fade away in the morning. Bop one twice
 -- and it pops, or once with a sword (world.held); an arrow, a stone or a
--- spear bops it as hard as the shot's power says (world.shoot). Players in
--- creative have nothing to fear, and nothing comes near the Green.
+-- spear bops it as hard as the shot's power says (world.shoot). A popped
+-- one leaves gloom dust. How many come and how hard they nip go by the
+-- world's danger (world.danger, world 0.21): none on Peaceful, fewer on
+-- Gentle. Players in creative have nothing to fear, and nothing comes near
+-- the Green.
 
-local world = require("@potluck/world@0.19")
+local world = require("@potluck/world@0.21")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -15,11 +18,22 @@ local sound = require("@potluck/sound@0.1")
 local knobs = tweak {
 	colour = { "#221d36", label = "Gloomling colour", order = 1 },
 	eyes = { "#ffe27a", label = "Eye colour", order = 2 },
-	how_many = { 4, min = 0, max = 8, label = "How many follow you at night", order = 3 },
+	how_many = { 4, min = 0, max = 8, label = "How many follow you at night (0 for none)", order = 3 },
 	bite = { 1, min = 0, max = 4, label = "How hard they nip", order = 4 },
 	shy = { 6, min = 2, max = 12, label = "How far they keep from a light", order = 5 },
 	bops = { 2, min = 1, max = 5, label = "Bops to pop one by hand", order = 6 },
 }
+
+-- How many come and how hard they nip, by the world's danger.
+local DANGER: { [string]: { many: number, hurt: number } } = {
+	peaceful = { many = 0, hurt = 0 },
+	gentle = { many = 0.5, hurt = 0.5 },
+	normal = { many = 1, hurt = 1 },
+	hard = { many = 1.5, hurt = 1.5 },
+}
+local function danger()
+	return DANGER[world.danger()] or DANGER.gentle
+end
 
 -- How hard each sword bops (a hand bops 1): a remix can add its own.
 local SWORDS: { [string]: number } = {
@@ -34,7 +48,7 @@ local Gloomling = world.creature {
 	name = "Gloomling",
 	speed = 2.6,
 	count = 0,
-	home = "green",
+	home = "here",
 	body = {
 		{ "body", size = { 0.62, 0.5, 0.62 }, at = { 0, 0.32, 0 }, color = knobs.colour },
 		{ "tuft", size = { 0.3, 0.14, 0.3 }, at = { 0, 0.63, 0.04 }, color = knobs.colour, head = true },
@@ -104,6 +118,11 @@ end
 
 function Gloomling:tick(dt: number)
 	where[self.id] = self.position
+	-- none on a Peaceful world
+	if danger().many == 0 then
+		fade(self, "whoosh")
+		return
+	end
 	-- gone by morning, a few at a time
 	if world.daylight() > DAWN then
 		if world.random() < dt then
@@ -164,7 +183,7 @@ function Gloomling:tick(dt: number)
 		if self.nip_in <= 0 then
 			self.nip_in = NIP_EVERY
 			self:hop(0.5)
-			if knobs.bite > 0 and world.hurt(p, knobs.bite) then
+			if knobs.bite > 0 and world.hurt(p, knobs.bite * danger().hurt) then
 				sound.play("grumble", { at = self, volume = 0.7, pitch = 1.9, caption = "A gloomling nips" })
 			end
 		end
@@ -192,6 +211,8 @@ function Gloomling:hit(player, shot)
 		return
 	end
 	sound.play("pop", { at = self, pitch = 0.7, caption = "A gloomling pops" })
+	-- what's left of it, for charms
+	world.give(player, "Gloom dust", 1)
 	where[self.id] = nil
 	self:remove()
 end
@@ -234,7 +255,7 @@ world.every(2, function()
 				following += 1
 			end
 		end
-		if total < MOST and following < math.floor(knobs.how_many) and flat(p.position, green) > 30 then
+		if total < MOST and following < math.floor(knobs.how_many * danger().many + 0.5) and flat(p.position, green) > 30 then
 			local a = world.random(0, 2 * math.pi)
 			local r = world.random(NEAR, FAR)
 			local x, z = p.position.x + math.cos(a) * r, p.position.z + math.sin(a) * r

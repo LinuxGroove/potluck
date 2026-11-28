@@ -29,6 +29,8 @@ export type CreatureDef = {
 	size: { number }?,
 	speed: number?,
 	count: number?,
+	-- "green", "paddock", "creek", "start", a position, or (0.21) "here":
+	-- wherever each one is spawned
 	home: (string | Position)?,
 	rideable: boolean?,
 	seat: number?,
@@ -60,6 +62,8 @@ export type Creature = {
 	say: (self: Creature, text: string) -> (),
 	distance_to: (self: Creature, pos: Position) -> number,
 	throw_rider: (self: Creature, force: number?) -> boolean,
+	-- 0.21: something thrown from about its eyes, which hits players
+	throw: (self: Creature, opts: ThrowOptions, landed: ((at: vector, block: string?, creature: number?, player: Player?) -> ())?) -> number?,
 	remove: (self: Creature) -> (),
 	on_ground: (self: Creature) -> boolean,
 	climb: (self: Creature, speed: number) -> boolean,
@@ -90,7 +94,8 @@ export type World = {
 	cancel: (id: number) -> boolean,
 	on: ((event: "player_joined" | "player_left", fn: (player: Player) -> ()) -> ())
 		& ((event: "block_placed" | "block_broken" | "block_used", fn: (player: Player, at: vector, block: string) -> ()) -> ())
-		& ((event: "item_used", fn: (player: Player, item: string?, aim: vector) -> ()) -> ()),
+		& ((event: "item_used", fn: (player: Player, item: string?, aim: vector) -> ()) -> ())
+		& ((event: "player_fell", fn: (player: Player, at: vector) -> ()) -> ()),
 	-- 0.3
 	pockets: (player: Player | number) -> { [string]: number }?,
 	has: (player: Player | number, block: string) -> number,
@@ -114,10 +119,14 @@ export type World = {
 	-- 0.19
 	shoot: (player: Player | number, opts: ShotOptions, landed: ((at: vector, block: string?, creature: number?) -> ())?) -> number?,
 	aims: (item: string, on: boolean?) -> (),
+	-- 0.21
+	danger: () -> "peaceful" | "gentle" | "normal" | "hard",
 }
 
 -- world.shoot's options (0.19), and the shot a creature's hit hears
-export type ShotOptions = { aim: Position, look: ("arrow" | "stone" | "spear")?, speed: number?, drop: number?, power: number? }
+export type ShotOptions = { aim: Position, look: ("arrow" | "stone" | "spear" | "ember")?, speed: number?, drop: number?, power: number? }
+-- self:throw's (0.21): `aim` the way to throw, or `at` a place to throw at
+export type ThrowOptions = { aim: Position?, at: Position?, look: ("arrow" | "stone" | "spear" | "ember")?, speed: number?, drop: number?, power: number? }
 export type Shot = { id: number, look: string, power: number }
 
 export type Score = { name: string, value: number }
@@ -220,6 +229,7 @@ export type Test = {
 	answer: (player: Player, choice: number) -> (),
 	hold: (player: Player, block: string?) -> (),
 	from_half: (player: Player, topic: string, value: Stored?) -> (), -- 0.3
+	danger: (level: "peaceful" | "gentle" | "normal" | "hard") -> (), -- 0.7: the world's, for this case
 	-- these only look
 	kind: (name: string) -> any,
 	creature: (id: number | Creature) -> Creature?,

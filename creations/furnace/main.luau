@@ -16,7 +16,7 @@
 -- and how far fuel goes, so a remix can add its own. The blocks are in potluck.toml;
 -- the lit furnace and the campfire flicker through pictures of their own.
 
-local world = require("@potluck/world@0.20")
+local world = require("@potluck/world@0.21")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -52,6 +52,7 @@ local COOKS: { Recipe } = {
 	{ from = "Wheat", n = 3, gives = "Bread", count = 1 },
 	{ from = "Potatoes", n = 1, gives = "Baked potato", count = 1 },
 	{ from = "Egg", n = 1, gives = "Fried egg", count = 1 },
+	{ from = "Raw meat", n = 1, gives = "Cooked meat", count = 1 },
 }
 
 -- How many lots each fuel smelts, best first: the furnace burns the first
@@ -59,6 +60,8 @@ local COOKS: { Recipe } = {
 local FUELS: { { name: string, lots: number } } = {
 	{ name = "Coal", lots = 8 },
 	{ name = "Charcoal", lots = 8 },
+	-- an Ember Imp's ember burns long and hot
+	{ name = "Ember", lots = 6 },
 	{ name = "Oak log", lots = 2 },
 	{ name = "Birch log", lots = 2 },
 	{ name = "Planks", lots = 1 },

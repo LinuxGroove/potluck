@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 20), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 6)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 21), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -80,7 +80,53 @@ pub const MAX_TIMERS: usize = 64;
 /// Handlers one creation may give `world.on`.
 pub const MAX_HANDLERS: usize = 32;
 /// What `world.on` can listen for.
-pub const EVENTS: &[&str] = &["player_joined", "player_left", "block_placed", "block_broken", "block_used", "item_used"];
+pub const EVENTS: &[&str] = &["player_joined", "player_left", "block_placed", "block_broken", "block_used", "item_used", "player_fell"];
+
+/// How dangerous a world is (`world.danger`, world 0.21): what its hostile
+/// creatures do is up to them, and whether a fallen player loses what they
+/// carry is up to the Lost packs creation. Gentle unless the world says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Danger {
+    Peaceful,
+    #[default]
+    Gentle,
+    Normal,
+    Hard,
+}
+
+impl Danger {
+    pub const ALL: [Danger; 4] = [Danger::Peaceful, Danger::Gentle, Danger::Normal, Danger::Hard];
+
+    /// Its name as creations see it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Danger::Peaceful => "peaceful",
+            Danger::Gentle => "gentle",
+            Danger::Normal => "normal",
+            Danger::Hard => "hard",
+        }
+    }
+
+    /// Its name as players see it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Danger::Peaceful => "Peaceful",
+            Danger::Gentle => "Gentle",
+            Danger::Normal => "Normal",
+            Danger::Hard => "Hard",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Danger> {
+        Danger::ALL.into_iter().find(|d| d.as_str().eq_ignore_ascii_case(s.trim()))
+    }
+
+    /// The next one round, for a button that changes it.
+    pub fn next(self) -> Danger {
+        Danger::ALL[(Danger::ALL.iter().position(|d| *d == self).unwrap_or(0) + 1) % Danger::ALL.len()]
+    }
+}
 /// The most block events (`block_placed`, `block_broken`, `block_used`)
 /// creations hear in one tick; past it they wait for the next.
 pub const BLOCK_EVENTS_A_TICK: usize = 64;
@@ -147,6 +193,9 @@ pub struct KindDef {
     pub flies: bool,
     pub count: u32,
     pub home: Vec3,
+    /// `home = "here"` (world 0.21): each one's home is wherever it was
+    /// spawned, for creatures that turn up near players.
+    pub home_here: bool,
     /// What it does by itself, before any code (world 0.10).
     pub behaviours: Option<crate::behaviours::Behaviours>,
 }
@@ -172,13 +221,17 @@ pub struct Outbox {
     pub shots: Vec<Shot>,
 }
 
-/// A shot in the air (`world.shoot`): how it flies, who shot it, which
-/// creation, and how hard it hits.
+/// A shot in the air (`world.shoot`, `self:throw`): how it flies, who shot
+/// it, which creation, and how hard it hits.
 #[derive(Clone, Debug)]
 pub struct Shot {
     pub fly: crate::shots::Flying,
     pub creation: String,
+    /// The player who shot it (0 for a creature's).
     pub shooter: u32,
+    /// The creature that threw it (`self:throw`, world 0.21), which it
+    /// can't hit; a creature's shots hit players, and players' don't.
+    pub by: Option<u64>,
     pub power: f32,
 }
 
@@ -209,6 +262,8 @@ pub struct GameShared {
     /// The time of day (`render::Clock::time`), set by the host each frame;
     /// none yet is the clock's own start.
     pub day: Option<f32>,
+    /// How dangerous this world is (`world.danger`).
+    pub danger: Danger,
     /// Hurts (less than 0) and heals creations gave players since the host
     /// last looked, and the least health each hurt leaves (0 for none).
     pub health: Vec<(u32, f32, f32)>,
@@ -757,6 +812,8 @@ pub struct Scripts {
     /// Players who used what's in their hand on nothing (`item_used`), and
     /// which way they looked.
     item_events: Vec<(u32, Vec3)>,
+    /// Players in survival whose health ran out (`player_fell`), and where.
+    fell_events: Vec<(u32, Vec3)>,
     /// Where each creature is with its kind's behaviours.
     behaving: HashMap<u64, crate::behaviours::Behaving>,
     /// Shots in the air (`world.shoot`).
@@ -782,6 +839,43 @@ pub(crate) fn vec_of(v: &Value) -> Option<Vec3> {
 
 pub(crate) fn vector(p: Vec3) -> Value {
     Value::Vector(Vector::new(p.x, p.y, p.z))
+}
+
+/// Sets a shot off from `pos` the way `aim` says (normalized), with the
+/// look, speed, drop and power in `opts`: `world.shoot` for a player, or
+/// `self:throw` for a creature (`by`, world 0.21).
+#[allow(clippy::too_many_arguments)]
+fn launch(ctx: &mut Ctx, sh: &Mutex<GameShared>, w: &Mutex<Waiting>, opts: &Table, pos: Vec3, aim: Vec3, shooter: u32, by: Option<u64>, landed: Option<Function>) -> mlua::Result<u32> {
+    let look = match opts.get::<Option<String>>("look")? {
+        None => 1,
+        Some(l) => crate::shots::LOOKS.iter().position(|k| *k == l).ok_or_else(|| bad(format!("a shot looks like one of: {}", crate::shots::LOOKS.join(", "))))? as u8,
+    };
+    let number = |key: &str, default: f64, lo: f64, hi: f64, what: &str| -> mlua::Result<f32> {
+        match opts.get::<Option<f64>>(key)? {
+            None => Ok(default as f32),
+            Some(n) if n.is_finite() && (lo..=hi).contains(&n) => Ok(n as f32),
+            Some(_) => Err(bad(format!("a shot's {key} is {lo} to {hi} ({what})"))),
+        }
+    };
+    let speed = number("speed", 30.0, 4.0, 60.0, "blocks a second")?;
+    let drop = number("drop", 1.0, 0.0, 2.0, "how strongly it falls")?;
+    let power = number("power", 1.0, 0.0, 20.0, "what the creature it hits is told")?;
+    let creation = ctx.creation.to_string();
+    let flying = ctx.out.shots.iter().filter(|s| s.creation == creation).count() + sh.lock().unwrap().shots_flying.get(&creation).copied().unwrap_or(0);
+    if flying >= crate::shots::MAX_FLYING {
+        return Err(bad(format!("a creation can have at most {} shots in the air", crate::shots::MAX_FLYING)));
+    }
+    let id = {
+        let mut sh = sh.lock().unwrap();
+        sh.shots_made = sh.shots_made.wrapping_add(1).max(1);
+        sh.shots_made
+    };
+    let fly = crate::shots::Flying { id, look, pos, vel: aim * speed, drop, age: 0.0, stuck: false };
+    ctx.out.shots.push(Shot { fly, creation, shooter, by, power });
+    if let Some(f) = landed {
+        w.lock().unwrap().landed.push((id, f));
+    }
+    Ok(id)
 }
 
 pub(crate) fn bad(msg: impl Into<String>) -> mlua::Error {
@@ -1263,8 +1357,10 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
         }
     };
     let half = half.clamp(Vec3::new(0.1, 0.2, 0.1), Vec3::new(1.5, 4.0, 1.5));
+    let home_here = matches!(def.get::<Value>("home")?, Value::String(s) if s.to_str().is_ok_and(|s| s == "here"));
     let home = match def.get::<Value>("home")? {
-        Value::String(s) => spot(&s.to_str()?).ok_or_else(|| bad(format!("no spot called \"{}\" (try \"green\", \"paddock\", \"creek\" or \"start\")", s.to_str().map(|s| s.to_string()).unwrap_or_default())))?,
+        _ if home_here => spot("green").unwrap(),
+        Value::String(s) => spot(&s.to_str()?).ok_or_else(|| bad(format!("no spot called \"{}\" (try \"green\", \"paddock\", \"creek\", \"start\" or \"here\")", s.to_str().map(|s| s.to_string()).unwrap_or_default())))?,
         v => vec_of(&v).unwrap_or_else(|| spot("green").unwrap()),
     };
     Ok(KindDef {
@@ -1276,6 +1372,7 @@ fn parse_kind(def: &Table, own: &crate::sound::Own) -> mlua::Result<KindDef> {
         flies: def.get::<Option<bool>>("flies")?.unwrap_or(false),
         count: def.get::<Option<u32>>("count")?.unwrap_or(1).min(32),
         home,
+        home_here,
         parts,
         behaviours: match def.get::<Option<Table>>("behaviours")? {
             Some(t) => Some(crate::behaviours::parse(&t, own)?),
@@ -1450,6 +1547,9 @@ impl Vm {
                         Ok(crate::render::Clock { time, running: true }.daylight())
                     })?,
                 )?;
+                // world 0.21: how dangerous the world is
+                let sh = shared.clone();
+                world.set("danger", lua.create_function(move |_, ()| Ok(sh.lock().unwrap().danger.as_str()))?)?;
                 for (name, sign) in [("hurt", -1.0f32), ("heal", 1.0)] {
                     let sh = shared.clone();
                     world.set(
@@ -2108,38 +2208,9 @@ impl Vm {
                 let Some(p) = ctx.players.iter().find(|p| p.id == pid) else { return Ok(None) };
                 let from = p.pos;
                 let aim = opts.get::<Value>("aim").ok().as_ref().and_then(vec_of).filter(|a| a.is_finite() && a.length() > 1e-3).ok_or_else(|| bad("world.shoot needs an aim, the way to shoot"))?.normalize();
-                let look = match opts.get::<Option<String>>("look")? {
-                    None => 1,
-                    Some(l) => crate::shots::LOOKS.iter().position(|k| *k == l).ok_or_else(|| bad(format!("a shot looks like one of: {}", crate::shots::LOOKS.join(", "))))? as u8,
-                };
-                let number = |key: &str, default: f64, lo: f64, hi: f64, what: &str| -> mlua::Result<f32> {
-                    match opts.get::<Option<f64>>(key)? {
-                        None => Ok(default as f32),
-                        Some(n) if n.is_finite() && (lo..=hi).contains(&n) => Ok(n as f32),
-                        Some(_) => Err(bad(format!("a shot's {key} is {lo} to {hi} ({what})"))),
-                    }
-                };
-                let speed = number("speed", 30.0, 4.0, 60.0, "blocks a second")?;
-                let drop = number("drop", 1.0, 0.0, 2.0, "how strongly it falls")?;
-                let power = number("power", 1.0, 0.0, 20.0, "what the creature it hits is told")?;
-                let creation = ctx.creation.to_string();
-                let flying = ctx.out.shots.iter().filter(|s| s.creation == creation).count() + sh.lock().unwrap().shots_flying.get(&creation).copied().unwrap_or(0);
-                if flying >= crate::shots::MAX_FLYING {
-                    return Err(bad(format!("a creation can have at most {} shots in the air", crate::shots::MAX_FLYING)));
-                }
-                let id = {
-                    let mut sh = sh.lock().unwrap();
-                    sh.shots_made = sh.shots_made.wrapping_add(1).max(1);
-                    sh.shots_made
-                };
                 // from about the eyes, a little ahead
                 let pos = from + Vec3::Y * 1.5 + aim * 0.4;
-                let fly = crate::shots::Flying { id, look, pos, vel: aim * speed, drop, age: 0.0, stuck: false };
-                ctx.out.shots.push(Shot { fly, creation, shooter: pid, power });
-                if let Some(f) = landed {
-                    w.lock().unwrap().landed.push((id, f));
-                }
-                Ok(Some(id))
+                launch(&mut ctx, &sh, &w, &opts, pos, aim, pid, None, landed).map(Some)
             })?)?;
             world.set("say", s.create_function(move |_, text: String| {
                 c.borrow_mut().out.toasts.push(text.chars().take(120).collect());
@@ -2294,6 +2365,25 @@ impl Vm {
                 let id = id_of(&me)?;
                 let p = vec_of(&p).ok_or_else(|| bad("distance_to needs a position"))?;
                 Ok(c.borrow().herd.bodies.get(&id).map(|b| b.pos.distance(p)).unwrap_or(f32::MAX))
+            })?)?;
+            // world 0.21: a creature throws something, at a player or a place
+            let (sh, w) = (shared.clone(), waiting.clone());
+            base.set("throw", s.create_function(move |_, (me, opts, landed): (Table, Table, Option<Function>)| {
+                let id = id_of(&me)?;
+                let mut ctx = c.borrow_mut();
+                let Some(b) = ctx.herd.bodies.get(&id) else { return Ok(None) };
+                // from about its eyes: most of the way up its body
+                let (_, hi) = b.bounds();
+                let eyes = b.pos + Vec3::Y * (hi.y * 0.8).max(0.3);
+                let aim = match (opts.get::<Value>("aim")?, opts.get::<Value>("at")?) {
+                    (a, _) if !a.is_nil() => vec_of(&a),
+                    (_, t) if !t.is_nil() => vec_of(&t).map(|t| t - eyes),
+                    _ => None,
+                }
+                .filter(|a| a.is_finite() && a.length() > 1e-3)
+                .ok_or_else(|| bad("self:throw needs an aim (the way to throw) or at (a place to throw at)"))?
+                .normalize();
+                launch(&mut ctx, &sh, &w, &opts, eyes + aim * 0.3, aim, 0, Some(id), landed).map(Some)
             })?)?;
             base.set("throw_rider", s.create_function(move |_, (me, force): (Table, Option<f32>)| {
                 let id = id_of(&me)?;
@@ -2750,6 +2840,23 @@ impl Scripts {
         }
     }
 
+    /// A player in survival was hurt too badly and went back to the hill,
+    /// from `at`: creations hear `player_fell` (world 0.21).
+    pub fn fell(&mut self, player: u32, at: Vec3) {
+        if at.is_finite() && self.fell_events.len() < BLOCK_EVENTS_WAITING {
+            self.fell_events.push((player, at));
+        }
+    }
+
+    /// How dangerous the world is, for `world.danger`.
+    pub fn set_danger(&mut self, d: Danger) {
+        self.shared.lock().unwrap().danger = d;
+    }
+
+    pub fn danger(&self) -> Danger {
+        self.shared.lock().unwrap().danger
+    }
+
     /// How fast players heal by themselves now, for those it changed for:
     /// every creation's `world.healing` multiplied together.
     pub fn healing_changes(&mut self) -> Vec<(u32, f32)> {
@@ -2915,9 +3022,11 @@ impl Scripts {
         let mut landed = Vec::new();
         let mut i = 0;
         while i < self.shots.len() {
-            // never the creature its shooter rides
-            let skip = herd.bodies.values().find(|b| b.rider == Some(self.shots[i].shooter)).map(|b| b.id);
-            match crate::shots::advance(&mut self.shots[i].fly, voxels, herd, skip, step) {
+            // never the creature its shooter rides, or the one that threw it;
+            // and only a creature's shots hit players
+            let skip = self.shots[i].by.or_else(|| herd.bodies.values().find(|b| self.shots[i].shooter != 0 && b.rider == Some(self.shots[i].shooter)).map(|b| b.id));
+            let targets: &[PlayerInfo] = if self.shots[i].by.is_some() { players } else { &[] };
+            match crate::shots::advance(&mut self.shots[i].fly, voxels, herd, skip, targets, step) {
                 Some(l) => {
                     let s = self.shots.swap_remove(i);
                     self.shot_news.push(ShotNews::Gone(s.fly.id));
@@ -2942,12 +3051,13 @@ impl Scripts {
     /// and the creation that shot it hears where it landed.
     fn shot_landed(&mut self, voxels: &mut Voxels, herd: &mut Herd, players: &[PlayerInfo], time: f64, s: Shot, l: crate::shots::Landed) {
         use crate::shots::Landed;
-        let (at, block, creature) = match &l {
-            Landed::Creature(id, at) => (*at, None, Some(*id)),
-            Landed::Block(b, at) => (*at, Some(blocks::block(voxels.at(*b)).name), None),
-            Landed::Nothing(at) => (*at, None, None),
+        let (at, block, creature, player) = match &l {
+            Landed::Creature(id, at) => (*at, None, Some(*id), None),
+            Landed::Block(b, at) => (*at, Some(blocks::block(voxels.at(*b)).name), None, None),
+            Landed::Player(pid, at) => (*at, None, None, players.iter().find(|p| p.id == *pid).cloned()),
+            Landed::Nothing(at) => (*at, None, None, None),
         };
-        if let (Some(id), Some(p)) = (creature, players.iter().find(|p| p.id == s.shooter)) {
+        if let (Some(id), Some(p)) = (creature, players.iter().find(|p| s.shooter != 0 && p.id == s.shooter)) {
             self.event_with(voxels, herd, id, "hit", &p.clone(), Some(&s));
         }
         let Some(vm) = self.vms.get_mut(&s.creation) else { return };
@@ -2960,7 +3070,10 @@ impl Scripts {
             return;
         }
         let mut log = Vec::new();
-        let r = vm.session(voxels, herd, players, &mut self.out, &s.creation, time.max(0.001), &mut log, |_, _| f.call::<()>((vector(at), block, creature)));
+        let r = vm.session(voxels, herd, players, &mut self.out, &s.creation, time.max(0.001), &mut log, |lua, _| {
+            let player = player.as_ref().map(|p| player_table(lua, p)).transpose()?;
+            f.call::<()>((vector(at), block, creature, player))
+        });
         vm.log.extend(log);
         if let Err(e) = r {
             vm.failed(&s.creation, e, &mut self.out);
@@ -3019,6 +3132,8 @@ impl Scripts {
             let sh = self.shared.lock().unwrap();
             self.item_events.drain(..n).map(|(p, aim)| (p, aim, sh.held.get(&p).copied().unwrap_or(0))).collect()
         };
+        // and who fell
+        let fell_events = std::mem::take(&mut self.fell_events);
         {
             let mut sh = self.shared.lock().unwrap();
             for p in &left {
@@ -3128,6 +3243,16 @@ impl Scripts {
                         let Some(p) = players.iter().find(|p| p.id == *pid) else { continue };
                         for (_, f) in on.iter().filter(|(e, _)| e == "item_used") {
                             f.call::<()>((player_table(lua, p)?, (*held != 0).then(|| items::name(*held)), vector(*aim)))?;
+                        }
+                    }
+                }
+                // players whose health ran out, and where (world 0.21)
+                if !fell_events.is_empty() {
+                    let on = waiting.lock().unwrap().on.clone();
+                    for (pid, at) in &fell_events {
+                        let Some(p) = players.iter().find(|p| p.id == *pid) else { continue };
+                        for (_, f) in on.iter().filter(|(e, _)| e == "player_fell") {
+                            f.call::<()>((player_table(lua, p)?, vector(*at)))?;
                         }
                     }
                 }

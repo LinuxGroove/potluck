@@ -261,6 +261,7 @@ fn main() {
         shared.boards = hosting::Boards::load(&boards_file());
         shared.store = script::Store::load(&store_file());
         shared.links = cfg.links.keys().cloned().collect();
+        shared.danger = cfg.danger;
     }
     {
         // every line of chat, for the operator; their own word list, if they keep one

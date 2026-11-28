@@ -61,6 +61,13 @@ pub const SPEAR: Thing = 323;
 /// Food, and what farm animals give (world 0.20): seeds to the fried egg.
 pub const SEEDS: Thing = 324;
 pub const FRIED_EGG: Thing = 337;
+/// What hostile creatures leave (world 0.21), and meat cooked: silk to
+/// gloom dust.
+pub const SILK: Thing = 338;
+pub const GLOOM_DUST: Thing = 345;
+/// Leather armor (346 to 349: a cap, a coat, leggings and boots).
+pub const LEATHER_CAP: Thing = 346;
+pub const LEATHER_BOOTS: Thing = 349;
 
 /// How many of a block go in one slot.
 pub const BLOCK_STACK: u32 = 99;
@@ -184,6 +191,18 @@ pub static ITEMS: &[Item] = &[
     stuff("Feather", "feather"),
     tool("Milk bucket", "bucket_milk"),
     stuff("Fried egg", "fried_egg"),
+    stuff("Silk", "silk"),
+    stuff("Leather", "leather"),
+    stuff("Bristles", "bristles"),
+    stuff("Raw meat", "raw_meat"),
+    stuff("Cooked meat", "cooked_meat"),
+    stuff("Ember", "ember"),
+    stuff("Sentinel core", "sentinel_core"),
+    stuff("Gloom dust", "gloom_dust"),
+    tool("Leather cap", "armor_leather_head"),
+    tool("Leather coat", "armor_leather_body"),
+    tool("Leather leggings", "armor_leather_legs"),
+    tool("Leather boots", "armor_leather_feet"),
 ];
 
 /// A block as a thing to carry.

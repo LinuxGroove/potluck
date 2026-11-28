@@ -7,7 +7,7 @@
 -- but never below half your health (world.hurt's down_to), and armor
 -- doesn't help (guarded = false). When you're well fed you heal faster.
 
-local world = require("@potluck/world@0.20")
+local world = require("@potluck/world@0.21")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -35,6 +35,7 @@ local FOODS: { Food } = {
 	{ name = "Fish stew", fills = 10, says = "You ate some fish stew." },
 	{ name = "Berry pie", fills = 10, says = "You ate some berry pie." },
 	{ name = "Bean stew", fills = 9, says = "You ate some bean stew." },
+	{ name = "Cooked meat", fills = 9, says = "You ate some cooked meat." },
 	{ name = "Cooked fish", fills = 8, says = "You ate some cooked fish." },
 	{ name = "Bread", fills = 8, says = "You ate some bread." },
 	{ name = "Porridge", fills = 8, says = "You ate some porridge." },
@@ -46,6 +47,7 @@ local FOODS: { Food } = {
 	{ name = "Berries", fills = 3, says = "You ate some berries." },
 	{ name = "Beans", fills = 3, says = "You ate some beans." },
 	{ name = "Raw fish", fills = 3, says = "You ate some raw fish." },
+	{ name = "Raw meat", fills = 2, says = "You ate some raw meat. Cooked would be better." },
 	{ name = "Potatoes", fills = 2, says = "You ate a raw potato." },
 	{ name = "Wheat", fills = 2, says = "You chewed some wheat." },
 	-- last of all, since they're for cooking

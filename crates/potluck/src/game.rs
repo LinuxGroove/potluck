@@ -42,6 +42,9 @@ pub enum Action {
     /// Interact on nothing in reach, for creations' `item_used`: the way
     /// they looked.
     UseItem([f32; 3]),
+    /// Hurt too badly in survival, from here, and back to the hill now
+    /// (creations' `player_fell`).
+    Fell([f32; 3]),
 }
 
 /// How far from a player a block they use can be.
@@ -285,6 +288,7 @@ pub fn host_step(
             Action::Net(note) => scripts.hear(pid, note),
             Action::Pockets { survival, slots, seen } => scripts.set_pockets(pid, survival, &slots[..slots.len().min(crate::items::POCKETS)], seen),
             Action::Held(b) => scripts.set_held(pid, b),
+            Action::Fell(at) => scripts.fell(pid, Vec3::from_array(at)),
             Action::UseItem(aim) => {
                 let aim = Vec3::from_array(aim);
                 if aim.is_finite() {
