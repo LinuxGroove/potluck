@@ -224,7 +224,7 @@ fn main() {
             Update,
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
-                (focus_mesh, view_distance, mesh::show, mesh::remesh, render::follow_sea, mesh::wind).chain(),
+                (focus_mesh, view_distance, mesh::show, mesh::remesh, render::far::follow, mesh::wind).chain(),
                 (render::sky, render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
                 (map::refresh, map::draw_hud, map::make_room, map::draw_map, chat::draw_feed, keyboard::draw),
             )
@@ -522,8 +522,8 @@ fn setup(
     commands.insert_resource(mesh::Cover::of(render::Tier::of(&settings.lighting)));
     mesh::spawn_wind(&mut commands);
     let off = offscreen.map(|o| render::Offscreen::new(&mut images, o.0));
-    render::spawn_sky(&mut commands, &settings, &mut media, rt, off.as_ref());
-    render::spawn_sea(&mut commands, &mut meshes, &mut mats);
+    render::spawn_sky(&mut commands, &settings, &mut media, &mut meshes, &mut mats, rt, off.as_ref());
+    render::far::spawn(&mut commands, &mut mats, &mut waters);
     render::clouds::spawn(&mut commands, &mut meshes, &mut mats, &mut images);
     if render::Tier::of(&settings.lighting) == render::Tier::Low {
         render::dome::spawn(&mut commands, &mut meshes, &mut mats);

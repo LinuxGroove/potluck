@@ -6435,3 +6435,88 @@ fn creatures_near_the_start_neither_hop_by_themselves_nor_float() {
         }
     }
 }
+
+/// The climate's tint leaves the island and the lands near it exactly as
+/// they were, and shifts grass and leaves further out.
+#[test]
+fn climate_tints_spare_the_island() {
+    use crate::mesh::{climate_tint, leaf_tint, Tints};
+    for seed in [crate::SEED, 7, 99_991] {
+        for z in (-140..520).step_by(23) {
+            for x in (-140..520).step_by(29) {
+                let t = climate_tint(world::climate(seed, x as f32, z as f32));
+                assert_eq!(t, Vec3::ONE, "tint at {x}, {z} with seed {seed}");
+                assert_eq!(leaf_tint(t), Vec3::ONE);
+            }
+        }
+        for k in [IVec2::ZERO, IVec2::new(5, 7), IVec2::new(-3, 14)] {
+            let t = Tints::of(seed, k);
+            for (dx, dz) in [(0.0, 0.0), (7.5, 31.0), (16.0, 16.0)] {
+                assert_eq!(t.at(k.x as f32 * 32.0 + dx, k.y as f32 * 32.0 + dz), Vec3::ONE, "column {k}");
+            }
+        }
+    }
+    // far out, somewhere is yellower (warm and dry) and somewhere cooler
+    let (mut dry, mut cold) = (false, false);
+    for i in 0..60 {
+        for j in 0..60 {
+            let t = climate_tint(world::climate(crate::SEED, -9000.0 + i as f32 * 300.0, -9000.0 + j as f32 * 300.0));
+            dry |= t.z < 0.85 && t.x > 1.05;
+            cold |= t.x < 0.9 && t.z >= 0.95;
+        }
+    }
+    assert!(dry && cold, "dry {dry}, cold {cold}");
+}
+
+/// The far land fills every column in reach that isn't drawn, with holes
+/// where columns are, ground where the seed puts it, the sea over what's
+/// under it, and the open sea on past.
+#[test]
+fn far_land_fills_what_isnt_drawn() {
+    use crate::render::far::{Job, Spot, STEP};
+    let seed = crate::SEED;
+    let palette = crate::map::Palette::default();
+    let at = Vec2::new(190.0, 190.0);
+    let drawn: std::collections::HashSet<IVec2> = (4..8).flat_map(|z| (4..8).map(move |x| IVec2::new(x, z))).collect();
+    let job = |spots| Job { seed, at, reach: 300.0, sea: 2000.0, drawn: drawn.clone(), spots, colours: crate::render::far::Colours::from_palette(&palette) };
+    let built = job(Default::default()).build();
+    let pos = |m: &Mesh| match m.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) => p.clone(),
+        _ => vec![],
+    };
+    let land = pos(&built.land);
+    assert!(!land.is_empty());
+    // nothing inside a drawn column (its edges are shared with skirts)
+    for p in &land {
+        let k = IVec2::new((p[0] / 32.0).floor() as i32, (p[2] / 32.0).floor() as i32);
+        let inside = p[0] % 32.0 != 0.0 && p[2] % 32.0 != 0.0;
+        assert!(!(inside && drawn.contains(&k)), "far land at {p:?} in a drawn column");
+    }
+    // the ground where the seed puts it (the canopy over it where there are
+    // trees), short of where it starts sinking toward the far end
+    let mut matched = 0;
+    for p in land.iter().filter(|p| Vec2::new(p[0], p[2]).distance(at) < 240.0 && p[0] as i32 % STEP == 0 && p[2] as i32 % STEP == 0) {
+        let s = Spot::at(seed, p[0] as i32, p[2] as i32);
+        if s.trees.0 <= 0.0 && (p[1] - s.ground).abs() < 0.01 {
+            matched += 1;
+        }
+        assert!(p[1] >= s.ground - crate::render::far::SKIRT - 0.01, "far land at {p:?} under the ground at {}", s.ground);
+    }
+    assert!(matched > 20, "only {matched} points at the seed's ground");
+    // the water: over the sea round the island, and on out past the land
+    let water = pos(&built.water);
+    assert!(water.iter().all(|p| (p[1] - (world::SEA as f32 + 0.88)).abs() < 1e-4));
+    assert!(water.iter().any(|p| Vec2::new(p[0], p[2]).distance(at) > 1500.0), "the open sea goes on");
+    // what was worked out is kept: a second go round the same spot needs nothing new
+    let n = built.spots.len();
+    let again = job(built.spots).build();
+    assert_eq!(again.spots.len(), n);
+}
+
+/// Under water it's darker the deeper you go, and dark at night.
+#[test]
+fn under_water_darkens() {
+    use crate::render::under_water_colour as c;
+    assert!(c(1.0, 0.0).length() > c(1.0, 20.0).length());
+    assert!(c(1.0, 0.0).length() > 4.0 * c(0.0, 0.0).length());
+}

@@ -17,6 +17,7 @@ use bevy::prelude::*;
 
 pub mod clouds;
 pub mod dome;
+pub mod far;
 pub mod timings;
 pub mod motes;
 
@@ -143,6 +144,16 @@ pub struct Sun;
 #[derive(Component)]
 pub struct Haze;
 
+/// The water round the eye when it's under the surface: a ball the fog
+/// colours whole, so the sky and the far land don't show through the
+/// murk (`sky` shows it, and closes the fog in).
+#[derive(Component)]
+pub struct UnderSea;
+
+/// How far you see under water: the fog is whole by here, and the ball
+/// round the eye a little further out.
+const UNDER_SEA: f32 = 26.0;
+
 /// A real light for a lantern, candle or brazier near the player: its
 /// steady brightness, how much its flame flickers, and a number that keeps
 /// neighbouring flames out of step.
@@ -225,85 +236,6 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
     let own = waters.add(WaterMaterial { base: water.clone(), extension: OwnNormals {} });
     let canopy = mats.add(StandardMaterial { base_color: Color::srgb(0.22, 0.4, 0.15), perceptual_roughness: 0.9, ..default() });
     BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under)], canopy, water: own }
-}
-
-/// The open sea past the columns that are drawn, out to the far end of the
-/// view: a sheet at the water's height round the player, with a hole where
-/// columns are drawn (their own water shows there), made again as the
-/// player goes and columns come in (`follow_sea`).
-#[derive(Component)]
-pub struct Sea {
-    looked: (u64, IVec2),
-}
-
-/// How far the sheet reaches from the player's column, in blocks: inside
-/// the camera's far end and Low's sky dome.
-const SEA_FAR: f32 = 830.0;
-
-pub fn spawn_sea(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>) {
-    let [r, g, b, _] = crate::mesh::water_tint(8.0);
-    let sea = mats.add(StandardMaterial { base_color: LinearRgba::rgb(r, g, b).into(), perceptual_roughness: 0.07, reflectance: 0.35, ..default() });
-    commands.spawn((
-        Mesh3d(meshes.add(sea_mesh(&Default::default(), IVec2::ZERO))),
-        MeshMaterial3d(sea),
-        Transform::IDENTITY,
-        bevy::light::NotShadowCaster,
-        bevy::camera::visibility::NoFrustumCulling,
-        NotRaytraced,
-        Sea { looked: (u64::MAX, IVec2::MAX) },
-    ));
-}
-
-/// Makes the sea again when the drawn columns change or the player moves
-/// into another column.
-pub fn follow_sea(chunks: Res<crate::mesh::ChunkEntities>, focus: Res<crate::mesh::MeshFocus>, mut seas: Query<(&Mesh3d, &mut Sea)>, mut meshes: ResMut<Assets<Mesh>>) {
-    let at = crate::world::stream::column_of(focus.0);
-    let now = (chunks.shown_rev, at);
-    for (m, mut sea) in &mut seas {
-        if sea.looked == now {
-            continue;
-        }
-        sea.looked = now;
-        if let Some(mut mesh) = meshes.get_mut(&m.0) {
-            *mesh = sea_mesh(&chunks.shown, at);
-        }
-    }
-}
-
-/// The sheet of sea round column `at`, leaving out the `shown` columns: a
-/// quad for each run of columns along a row.
-pub fn sea_mesh(shown: &std::collections::HashSet<IVec2>, at: IVec2) -> Mesh {
-    use crate::world::{CHUNK, SEA};
-    let c = CHUNK as f32;
-    let r = (SEA_FAR / c).ceil() as i32;
-    let y = SEA as f32 + 0.88;
-    let reach = |dx: i32, dz: i32| ((dx.abs() as f32 * c + c / 2.0).powi(2) + (dz.abs() as f32 * c + c / 2.0).powi(2)).sqrt() <= SEA_FAR;
-    let (mut pos, mut uv, mut idx): (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>) = (vec![], vec![], vec![]);
-    for dz in -r..=r {
-        let mut dx = -r;
-        while dx <= r {
-            if !reach(dx, dz) || shown.contains(&(at + IVec2::new(dx, dz))) {
-                dx += 1;
-                continue;
-            }
-            let from = dx;
-            while dx <= r && reach(dx, dz) && !shown.contains(&(at + IVec2::new(dx, dz))) {
-                dx += 1;
-            }
-            let (x0, x1) = ((at.x + from) as f32 * c, (at.x + dx) as f32 * c);
-            let (z0, z1) = ((at.y + dz) as f32 * c, (at.y + dz + 1) as f32 * c);
-            let n = pos.len() as u32;
-            pos.extend([[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]]);
-            uv.extend([[x0 / c, z0 / c], [x1 / c, z0 / c], [x1 / c, z1 / c], [x0 / c, z1 / c]]);
-            idx.extend([n, n + 2, n + 1, n, n + 3, n + 2]);
-        }
-    }
-    let normals = vec![[0.0, 1.0, 0.0]; pos.len()];
-    Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_indices(bevy::mesh::Indices::U32(idx))
 }
 
 /// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked
@@ -397,7 +329,8 @@ pub fn screenshot(off: Option<&Offscreen>) -> bevy::render::view::screenshot::Sc
     }
 }
 
-pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Assets<ScatteringMedium>, rt: Raytraced, off: Option<&Offscreen>) {
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Assets<ScatteringMedium>, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, rt: Raytraced, off: Option<&Offscreen>) {
     let tier = Tier::of(&settings.lighting);
     let medium = tier >= Tier::Medium;
     // ray tracing does the shadows, corners and bounced light itself
@@ -421,6 +354,21 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
             falloff: if medium { FogFalloff::Linear { start: 160.0, end: 520.0 } } else { FogFalloff::Linear { start: 140.0, end: 330.0 } },
         },
     )).id();
+    let murk = mats.add(StandardMaterial { base_color: Color::BLACK, unlit: true, cull_mode: None, ..default() });
+    let ball = commands
+        .spawn((
+            Mesh3d(meshes.add(Sphere::new(UNDER_SEA + 4.0).mesh().ico(2).unwrap())),
+            MeshMaterial3d(murk),
+            Transform::IDENTITY,
+            Visibility::Hidden,
+            bevy::light::NotShadowCaster,
+            bevy::light::NotShadowReceiver,
+            bevy::camera::visibility::NoFrustumCulling,
+            NotRaytraced,
+            UnderSea,
+        ))
+        .id();
+    commands.entity(cam).add_child(ball);
     if let Some(off) = off {
         commands.entity(cam).insert((bevy::camera::RenderTarget::Image(off.image.clone().into()), IsDefaultUiCamera));
         off.show(commands);
@@ -525,6 +473,15 @@ pub(crate) fn fog_colour(day: f32, low: f32) -> Vec3 {
     night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day)
 }
 
+/// The colour of the water round the eye (sRGB) at daylight `day`, `deep`
+/// blocks under the surface: green-blue near the top by day, bluer and
+/// darker going down, and nearly black at night.
+pub(crate) fn under_water_colour(day: f32, deep: f32) -> Vec3 {
+    let top = Vec3::new(0.12, 0.43, 0.44);
+    let down = Vec3::new(0.02, 0.1, 0.16);
+    top.lerp(down, 1.0 - (-deep / 14.0).exp()) * (0.06 + 0.94 * day)
+}
+
 /// Toward the sun (unit length; below the horizon at night), the daylight,
 /// and how low the sun is (1 at sunset), as `sky` works them out.
 pub(crate) fn sun_now(clock: &Clock) -> (Vec3, f32, f32) {
@@ -551,6 +508,8 @@ pub fn sky(
     me: Res<Me>,
     rt: Res<Raytraced>,
     voxels: Res<crate::world::Voxels>,
+    mut under: Query<(&mut Visibility, &MeshMaterial3d<StandardMaterial>), With<UnderSea>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
     mut eye: Local<Option<(f32, f32)>>,
 ) {
     // how open the sky over the player is, looked at a few times a second
@@ -613,7 +572,7 @@ pub fn sky(
         // the haze sits on the ground round the player, thickest at dawn and dusk
         t.translation = Vec3::new(me.pos.x, (me.pos.y - 20.0).max(0.0) + HAZE.y * 0.5, me.pos.z);
         let low_sun = 1.0 - (up.abs() * 2.5).min(1.0);
-        v.density_factor = (0.0025 + 0.0055 * low_sun) * haze_lit;
+        v.density_factor = if me.under_water { 0.0 } else { (0.0025 + 0.0055 * low_sun) * haze_lit };
     }
     if let Ok((mut ex, mut fog, mut proj, mut grade)) = cam.single_mut() {
         // the day's grade: golden and a little richer as the sun goes down,
@@ -638,8 +597,35 @@ pub fn sky(
         ex.ev100 -= day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
         let f = fog_colour(day, low);
         fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });
+        fog.directional_light_color = Color::srgba(1.0, 0.93, 0.8, 0.4);
+        fog.directional_light_exponent = 24.0;
+        fog.falloff = if medium { FogFalloff::Linear { start: 160.0, end: 520.0 } } else { FogFalloff::Linear { start: 140.0, end: 330.0 } };
+        if me.under_water {
+            // under water the murk closes in, darker the deeper you go and
+            // brighter toward the sun; the grade turns cool and quiet. It
+            // only changes as the eye goes under, never sways
+            let deep = (crate::player::surface(&voxels, me.eye()) - me.eye().y).max(0.0);
+            let w = under_water_colour(day, deep);
+            fog.color = Color::srgb(w.x, w.y, w.z);
+            fog.directional_light_color = Color::srgba(0.45, 0.75, 0.72, 0.5 * day * (-deep / 16.0).exp());
+            fog.directional_light_exponent = 6.0;
+            fog.falloff = FogFalloff::Linear { start: 1.0, end: UNDER_SEA };
+            grade.global.temperature -= 0.1;
+            grade.global.post_saturation *= 0.85;
+        }
         if let Projection::Perspective(p) = &mut *proj {
             p.fov = settings.fov.clamp(70.0, 110.0).to_radians() * 0.75;
+        }
+    }
+    for (mut v, m) in &mut under {
+        v.set_if_neq(if me.under_water { Visibility::Inherited } else { Visibility::Hidden });
+        // the fog colours it whole; and where nothing's fogged (ray traced),
+        // it's the fog's colour itself
+        if me.under_water {
+            let c = cam.single().map(|(_, f, _, _)| f.color).unwrap_or(Color::BLACK);
+            if let Some(mut mat) = mats.get_mut(&m.0) {
+                mat.base_color = c.with_alpha(1.0);
+            }
         }
     }
     // Low's sky, under its dome (`dome`)

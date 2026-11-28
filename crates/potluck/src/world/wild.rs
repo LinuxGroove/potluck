@@ -296,6 +296,30 @@ fn tree_at(seed: u32, x: i32, z: i32, b: Biome) -> Option<Tree> {
     (v < chance).then_some(kind)
 }
 
+/// Trees round a spot as they look from far off, for the land past the
+/// drawn columns (`render::far`): how much of the ground their crowns cover
+/// (0 to 1), how high the canopy stands, and the share of oak, birch and pine
+/// leaves in it. Worked out from the same chances as `tree_at`, so keep the
+/// two in step.
+pub fn tree_cover(seed: u32, x: f32, z: f32, b: Biome) -> (f32, f32, [f32; 3]) {
+    let s = salt(seed);
+    let forest = fbm(x / 30.0, z / 30.0, s + 112, 4);
+    let glade = fbm(x / 13.0, z / 13.0, s + 117, 3) > 0.62;
+    // chance per block, crown area, canopy height and leaves (oak, birch, pine)
+    let (chance, area, tall, leaves) = match b {
+        Biome::Meadow => (0.0016 + 0.01 * smooth(0.6, 0.85, forest), 40.0, 8.0, [0.75, 0.25, 0.0]),
+        Biome::Forest => (if glade { 0.0 } else { 0.012 + 0.022 * forest }, 40.0, 8.5, [0.68, 0.32, 0.0]),
+        Biome::Birchwood => (if glade { 0.0 } else { 0.022 + 0.012 * forest }, 22.0, 11.0, [0.15, 0.85, 0.0]),
+        Biome::Pinewood => (if glade { 0.004 } else { 0.022 + 0.02 * forest }, 26.0, 11.5, [0.0, 0.0, 1.0]),
+        Biome::Snowfield => (0.003 + 0.01 * smooth(0.6, 0.85, forest), 26.0, 11.5, [0.0, 0.0, 1.0]),
+        Biome::Mountain => (0.008, 26.0, 11.0, [0.0, 0.0, 1.0]),
+        Biome::Savanna => (0.0022, 60.0, 9.0, [1.0, 0.0, 0.0]),
+        Biome::Marsh => (0.006, 40.0, 7.5, [1.0, 0.0, 0.0]),
+        _ => (0.0, 0.0, 0.0, [1.0, 0.0, 0.0]),
+    };
+    (1.0 - (-chance * area).exp(), tall, leaves)
+}
+
 #[derive(Clone, Copy)]
 enum Tree {
     Oak(bool),
