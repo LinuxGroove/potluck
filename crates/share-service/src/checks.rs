@@ -197,7 +197,7 @@ pub fn sound_problems(sounds: &BTreeMap<String, toml::Value>) -> Vec<String> {
 
 /// The most blocks a creation can make, and the most boxes in one (the
 /// game's `made`).
-pub const MAX_BLOCKS: usize = 16;
+pub const MAX_BLOCKS: usize = 32;
 const MAX_BLOCK_BOXES: usize = 16;
 /// A moving block's pictures, its own included (the game's `made::MOST_FRAMES`).
 const MAX_BLOCK_FRAMES: usize = 8;
@@ -324,7 +324,7 @@ const SIDE_NAMES: [&str; 6] = ["east", "west", "up", "down", "south", "north"];
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.22"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.7")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.23"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.7")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 

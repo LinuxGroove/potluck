@@ -128,11 +128,16 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Copper ingot"] = 7 }, give = "Copper leggings", n = 1 },
 		{ want = { ["Copper ingot"] = 4 }, give = "Copper boots", n = 1 },
 	},
-	-- put down, a basket fills up into a hot air balloon (the balloon creation)
+	-- put down, a basket fills up into a hot air balloon (the balloon
+	-- creation); rails and carts are the rails creation's
 	Travel = {
 		{ want = { ["Cream wool"] = 6, Planks = 4, Lantern = 1 }, give = "Balloon basket", n = 1 },
+		{ want = { ["Iron ingot"] = 6, Planks = 1 }, give = "Rail", n = 16 },
+		{ want = { ["Gold ingot"] = 6, ["Copper wire"] = 1 }, give = "Powered rail", n = 6 },
+		{ want = { ["Iron ingot"] = 5 }, give = "Cart", n = 1 },
 	},
-	-- the circuits creation's parts
+	-- the circuits creation's parts and machines, and storage's dispensers
+	-- and chutes
 	Circuits = {
 		{ want = { ["Copper ingot"] = 1 }, give = "Copper wire", n = 8 },
 		{ want = { Cobblestone = 1, Planks = 1 }, give = "Lever", n = 1 },
@@ -142,6 +147,11 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Copper wire"] = 1, Torch = 1, Stone = 1 }, give = "Inverter", n = 1 },
 		{ want = { ["Copper wire"] = 1, Torch = 2, Stone = 2 }, give = "Delay", n = 1 },
 		{ want = { ["Copper ingot"] = 1, Glass = 1, Coal = 1 }, give = "Copper lamp", n = 1 },
+		{ want = { Planks = 3, Cobblestone = 4, ["Iron ingot"] = 1, ["Copper wire"] = 1 }, give = "Piston", n = 1 },
+		{ want = { Planks = 3, Cobblestone = 4, ["Iron ingot"] = 1, ["Copper wire"] = 1 }, give = "Up piston", n = 1 },
+		{ want = { Planks = 8, ["Copper wire"] = 1 }, give = "Note block", n = 1 },
+		{ want = { Cobblestone = 7, ["Copper wire"] = 1 }, give = "Dispenser", n = 1 },
+		{ want = { ["Iron ingot"] = 5, Crate = 1 }, give = "Chute", n = 1 },
 	},
 }
 

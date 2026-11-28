@@ -1,8 +1,8 @@
 --!strict
 -- Circuits' own tests: `potluck-server --test=circuits`.
 
-local test = require("@potluck/test@0.5")
-local world = require("@potluck/world@0.15")
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.23")
 
 -- a row of spots in the air east of a player, clear to build in
 local function row(p, n: number): { vector }
@@ -22,7 +22,7 @@ local function lit(at: vector): boolean
 end
 
 test.case("its blocks are in the world", function()
-	for _, name in { "Copper wire", "Live wire", "Lever", "Pulled lever", "Button", "Pressure plate", "Daylight sensor", "Inverter", "Lit inverter", "Delay", "Lit delay", "Copper lamp", "Lit copper lamp", "Copper gate", "Open copper gate" } do
+	for _, name in { "Copper wire", "Live wire", "Lever", "Pulled lever", "Button", "Pressure plate", "Daylight sensor", "Inverter", "Lit inverter", "Delay", "Lit delay", "Copper lamp", "Lit copper lamp", "Copper gate", "Open copper gate", "Piston", "Piston head", "Up piston", "Up piston head", "Note block" } do
 		test.check(pcall(world.kind, name), name)
 	end
 end)
@@ -202,4 +202,98 @@ test.case("an inverter fed its own power ticks, and a lamp on it blinks no faste
 	end
 	test.check(flips >= 3, "it ticks: " .. flips)
 	test.check(flips <= 13, "but no faster than four times a second: " .. flips)
+end)
+
+local UP = vector.create(0, 1, 0)
+
+test.case("a piston pushes a line of blocks along, and pulls its head back", function()
+	local p = test.player("Kit")
+	local at = row(p, 6)
+	test.place(p, at[1], "Lever")
+	test.place(p, at[2], "Piston", "east")
+	world.set_block(at[3], "Stone")
+	world.set_block(at[4], "Cobblestone")
+	test.wait(0.3)
+	test.same(world.block(at[3]), "Stone", "nothing moves without power")
+	test.use_block(p, at[1])
+	test.wait(0.3)
+	test.same(world.block(at[3]), "Piston head", "the head is out")
+	test.same(world.facing(at[3]), "east", "facing the way the piston does")
+	test.same(world.block(at[4]), "Stone", "the stone pushed one along")
+	test.same(world.block(at[5]), "Cobblestone", "and the cobblestone past it")
+	test.same(test.heard("push"), 1, "a push")
+	test.use_block(p, at[1])
+	test.wait(0.3)
+	test.same(world.block(at[3]), "Air", "the head back in")
+	test.same(world.block(at[4]), "Stone", "what it pushed stays")
+	test.same(test.heard("pull"), 1, "a pull")
+end)
+
+test.case("a piston can't push what keeps things, and takes its head when it's broken", function()
+	local p = test.player("Lu", { survival = true, carrying = { Lever = 1, Piston = 1 } })
+	local at = row(p, 4)
+	test.place(p, at[1], "Lever")
+	test.place(p, at[2], "Piston", "east")
+	world.set_block(at[3], "Crate")
+	test.use_block(p, at[1])
+	test.wait(0.3)
+	test.same(world.block(at[3]), "Crate", "the crate stays")
+	test.same(test.heard("push"), 0, "no push")
+	world.set_block(at[3], "Air")
+	test.use_block(p, at[1])
+	test.wait(0.3)
+	test.use_block(p, at[1])
+	test.wait(0.3)
+	test.same(world.block(at[3]), "Piston head", "with room, it pushes")
+	test.check(test.dig(p, at[2]), "the piston breaks")
+	test.same(world.block(at[3]), "Air", "and its head goes with it")
+	test.same(world.has(p, "Piston"), 1, "it's given back")
+	test.same(world.has(p, "Piston head"), 0, "but no head")
+end)
+
+test.case("an up piston lifts what's on it", function()
+	local p = test.player("Mo")
+	local at = row(p, 2)
+	for h = 1, 3 do
+		world.set_block(at[1] + UP * h, "Air")
+	end
+	test.place(p, at[2], "Lever")
+	test.place(p, at[1], "Up piston")
+	world.set_block(at[1] + UP, "Stone")
+	test.use_block(p, at[2])
+	test.wait(0.3)
+	test.same(world.block(at[1] + UP), "Up piston head")
+	test.same(world.block(at[1] + UP * 2), "Stone", "lifted")
+	test.use_block(p, at[2])
+	test.wait(0.3)
+	test.same(world.block(at[1] + UP), "Air", "the head back down")
+end)
+
+test.case("a note block plays as power reaches it, a step higher each use, in a voice from what it stands on", function()
+	local p = test.player("Ned")
+	local at = row(p, 2)
+	world.set_block(at[2] - UP, "Stone")
+	test.place(p, at[1], "Lever")
+	test.place(p, at[2], "Note block")
+	test.wait(0.3)
+	test.same(test.heard("bell"), 0, "quiet with no power")
+	test.use_block(p, at[2])
+	test.same(test.shown(p, "note"), "Tuned to G4", "a step up from F#4")
+	test.same(test.heard("bell"), 1, "a bell on stone")
+	test.use_block(p, at[1])
+	test.wait(0.5)
+	test.same(test.heard("bell"), 2, "power plays it once")
+	test.use_block(p, at[1])
+	test.wait(0.3)
+	test.same(test.heard("bell"), 2, "and not as power goes")
+	world.set_block(at[2] - UP, "Planks")
+	test.use_block(p, at[2])
+	test.same(test.heard("bass"), 1, "a bass on wood")
+	world.set_block(at[2] - UP, "Glass")
+	test.use_block(p, at[2])
+	test.same(test.heard("chime"), 1, "a chime on glass")
+	for _ = 1, 10 do
+		test.use_block(p, at[2])
+	end
+	test.same(test.shown(p, "note"), "Tuned to F#3", "round to the bottom after F#5")
 end)

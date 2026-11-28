@@ -1,13 +1,13 @@
 --!strict
 -- Storage's own tests: `potluck-server --test=storage`.
 
-local test = require("@potluck/test@0.2")
-local world = require("@potluck/world@0.8")
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.15")
 local store = require("@potluck/store@0.1")
 
 -- a survival player beside a crate they've put down
 local function crate(carrying: { [string]: number }): (any, vector)
-	carrying.Crate = 1
+	carrying.Crate = (carrying.Crate or 0) + 1
 	local p = test.player("Ada", { survival = true, carrying = carrying })
 	local x, z = p.position.x + 2, p.position.z
 	local at = vector.create(x, world.top(x, z) + 1, z)
@@ -62,4 +62,60 @@ test.case("in creative, it says what it's for", function()
 	test.use_block(p, at)
 	local q = test.asked(p)
 	test.check(q ~= nil and string.find(q.text, "In creative", 1, true) ~= nil, "told")
+end)
+
+local UP = vector.create(0, 1, 0)
+
+local function held(at: vector): { [string]: number }
+	local kept = store.get("boxes") or {}
+	return kept[math.floor(at.x) .. "," .. math.floor(at.y) .. "," .. math.floor(at.z)] or {}
+end
+
+-- puts what's in their hand into the holder at `at`
+local function put(p, at: vector, thing: string)
+	test.hold(p, thing)
+	test.use_block(p, at)
+	test.answer(p, 1)
+end
+
+test.case("a chute moves things down from one crate into another", function()
+	local p, low = crate({ Crate = 1, Chute = 1, Stone = 3 })
+	local chute, high = low + UP, low + UP * 2
+	world.set_block(chute, "Air")
+	world.set_block(high, "Air")
+	test.place(p, chute, "Chute")
+	test.place(p, high, "Crate")
+	put(p, high, "Stone")
+	test.same(held(high).Stone, 3, "three in the top crate")
+	-- two a second, and kept in the store every two seconds
+	test.wait(5)
+	test.same(held(low).Stone, 3, "all three moved down")
+	test.same(next(held(high)), nil, "the top crate's empty")
+	test.same(next(held(chute)), nil, "and the chute")
+end)
+
+test.case("a chute holds one kind of thing", function()
+	local p, at = crate({ Chute = 1, Stone = 2, Planks = 2 })
+	local chute = at + vector.create(0, 0, 2)
+	world.set_block(chute, "Air")
+	world.set_block(chute - UP, "Stone")
+	test.place(p, chute, "Chute")
+	put(p, chute, "Stone")
+	test.same(world.has(p, "Stone"), 0, "the stone's in")
+	put(p, chute, "Planks")
+	local q = test.asked(p)
+	test.check(q ~= nil and string.find(q.text, "one kind of thing", 1, true) ~= nil, q and q.text or "asked")
+	test.same(world.has(p, "Planks"), 2, "the planks stay in hand")
+end)
+
+test.case("a dispenser faces away from whoever put it down, and keeps things", function()
+	local p, at = crate({ Dispenser = 1, Planks = 4 })
+	local d = at + vector.create(0, 0, 2)
+	world.set_block(d, "Air")
+	test.place(p, d, "Dispenser", "east")
+	test.same(world.facing(d), "east")
+	put(p, d, "Planks")
+	test.same(held(d).Planks, 4, "it holds them")
+	test.wait(1)
+	test.same(world.block(d + vector.create(1, 0, 0)), "Air", "and gives nothing out without power")
 end)

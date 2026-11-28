@@ -22,7 +22,7 @@ Modules are versioned on their own, never by the game's version: `require("@potl
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
 - `world.creature(def)` defines a kind of creature and returns it, to add handlers to. `def` has:
-  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near; or, new in 0.21, `"here"`: wherever each is spawned), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
+  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near; or, new in 0.21, `"here"`: wherever each is spawned), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says), `steer` (new in 0.23: false so a rider's movement doesn't steer it, for a cart that goes where its rails go)
   - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z. Or (new in 0.11) the name of a Blockbench model in the creation's folder, `body = "hedgehog.bbmodel"`: see `world.model`.
   - `size = { w, h, d }`: the box it bumps into things with and stands on. Left out, it's worked out from the body: as wide as its legs stand (or its body across its narrower side), so a long creature's head and tail reach past it rather than holding it up on the block beside it
   - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
@@ -256,7 +256,7 @@ Inside a handler, `self` is that creature. Fields you set on it (`self.mood = "h
 - `self.position`, `self.id`, `self.kind`, `self.rider` (the player riding it, or nil)
 - `self:walk_to(pos, speed?)`, `self:wander(speed?)`, `self:stop()`, `self:hop(power?)`, `self:face(pos)`. Walking, it steps up onto anything one block high (never onto a fence) and stops at anything taller; it only ever hops when you say so
 - `self:say(text)` (a speech bubble), `self:distance_to(pos)`, `self:throw_rider(force?)`, `self:remove()`
-- `self:on_ground()`, and (new in 0.9) `self:climb(speed)` and `self:become(kind)`, below
+- `self:on_ground()`, and (new in 0.9) `self:climb(speed)` and `self:become(kind)`, and (new in 0.23) `self:follow(points, speed)` and `self:following()`, below
 
 Fliers and changing kind (new in 0.9), for balloons, birds, hatching eggs and anything with more than one look:
 
@@ -273,6 +273,22 @@ function Egg:hit(player) self:become(Chick) end   -- same creature, the Chick's 
 - `self:on_ground()` is whether it's standing on something.
 - `self:become(kind)` turns it into another kind of this creation's: the new kind's body, size, speed, `rideable`, `seat` and `flies`, and its handlers from then on. Its fields and its rider stay (unless the new kind isn't rideable). `spawned` isn't called again, and it still counts toward the `count` of the kind it came as, so a sheared sheep doesn't bring another.
 - Creatures aren't kept when a server restarts (they come back by `count`); keep anything that matters, such as where a balloon is, in `@potluck/store`.
+
+Paths (new in 0.23), for carts on rails, boats on a channel and anything that should glide along a line rather than walk:
+
+```luau
+local Cart = world.creature { name = "Cart", rideable = true, steer = false, body = { ... } }
+function Cart:tick(dt)
+	local left, speed, points = self:following()
+	if points < 4 then self:follow(next_rails(self), nil, true) end   -- more of the line, kept on the end
+	self:follow(nil, if self.rider and input.held("brake", self.rider) then 0 else 6)
+end
+```
+
+- `self:follow(points, speed?, more?)` sends it along `points`, a list of up to 128 positions, in straight lines from one to the next with no gravity, facing the way it goes; `more = true` adds them to the end of the path it's on instead of starting a new one. `speed` (0 to 12 blocks a second, or nil to keep the last) is how fast you'd like it to go: it gathers and loses speed gently, about 2.5 blocks a second each second, and slows by itself to stop at the path's last point, so a ride is never jolted. `self:follow({})` stops it there, and it falls and walks as usual again; `walk_to`, `wander` and `stop` end a path too.
+- `self:following()` is how far it has left to go along the path, how fast it's going, and how many points are left (the one it's heading for counts).
+- A kind with `steer = false` isn't steered by its rider, on a path or off one.
+- `world.spawn` (new in 0.23) puts a creature down where it says when that isn't inside a solid block, as on a rail or in a doorway, and only moves it up to the top when it is.
 
 Behaviours (new in 0.10): a creature can do the usual things with no code at all, and code is for what they can't do.
 
@@ -327,7 +343,7 @@ mmmmmmmm
 - `shape`: `"solid"` (the default), `"see-through"` (glass and leaves: `.` pixels show what's behind) or `"plant"` (two crossed pictures, like flowers, that bodies walk through).
 - `boxes` makes a block of boxes instead: up to 16 of `[x, y, z, x, y, z]` in sixteenths of a block, from 0 to 16 (a slab is `[[0, 0, 0, 16, 8, 16]]`). Each side of a box shows the part of the picture it covers, so draw the side as the block looks from the side. `solid = false` lets bodies through.
 - `light = true` lights up what's round it, and the letters in `glow` (`glow = "yo"`) shine; a light with no `glow` shines in its brightest pixels.
-- Up to 16 blocks, 24 colours each. A block's name in `potluck.toml` is lowercase letters, digits and `_`; what players see it called can't be one of the game's blocks. Names are shared by every creation in a world, so pick one nobody else has.
+- Up to 32 blocks (16 before 0.23), 24 colours each. A block's name in `potluck.toml` is lowercase letters, digits and `_`; what players see it called can't be one of the game's blocks. Names are shared by every creation in a world, so pick one nobody else has.
 - Change a colour or a row and save, and the world shows it. Each world gives a creation's blocks their ids the first time it runs there and keeps them.
 
 #### Moving pictures (0.14)

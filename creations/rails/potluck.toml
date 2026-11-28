@@ -1,0 +1,361 @@
+name = "Rails and carts"
+by = "Potluck"
+kind = "mod"
+about = "Lay rails and ride a cart along them. Rails join the rails beside them by themselves, bending round corners and sloping up a block. Powered rails beside live wire, a pulled lever or a lit inverter speed a cart up, and without power they slow it to a stop. Make rails, powered rails and carts at a workbench."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.23"
+tweak = "0.1"
+store = "0.1"
+input = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# Buttons while riding a cart
+[actions.push]
+name = "Push off"
+pad = "A"
+keys = "Space"
+
+[actions.brake]
+name = "Brake"
+pad = "X"
+keys = "F"
+
+[sounds.rumble]
+caption = "A cart rumbles"
+wave = "noise"
+pitch = 260
+length = 0.5
+attack = 0.05
+lowpass = 500
+
+[sounds.clack]
+caption = "Wheels clack"
+wave = "square"
+pitch = [160, 120]
+length = 0.08
+attack = 0.003
+lowpass = 1200
+
+# The rails, drawn running north to south: a bed of gravel and sleepers a
+# little above the ground. A bend joins the south side to the east, and a
+# slope climbs a block toward the north, in steps.
+
+[blocks.rail]
+name = "Rail"
+kind = "hard"
+hardness = 0.7
+solid = false
+turns = true
+boxes = [[0, 0, 0, 16, 2, 16]]
+colors = { g = "#5b5651", h = "#4a4541", k = "#696460", w = "#7a5634", x = "#5e4127", r = "#c3c8ce", s = "#7f858c", o = "#e0b24a", p = "#9c7a2c", c = "#d8743c" }
+top = """
+hggrshgggkhrsgkh
+kkkrskkkkkkrskkk
+gwwrswwwwwwrswwg
+gxxrsxxxxxxrsxxg
+gghrsgghgkgrsgkg
+hggrshgggkhrsgkh
+kwwrswwwwwwrswwk
+gxxrsxxxxxxrsxxg
+ghgrsghggkgrsgkg
+gghrsgghgkgrsgkg
+hwwrswwwwwwrswwh
+kxxrsxxxxxxrsxxk
+gggrsggghkgrshkg
+ghgrsghggkgrsgkg
+gwwrswwwwwwrswwg
+hxxrsxxxxxxrsxxh
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+xsssxsssxsssxsss
+hgggkhgggkhgggkh
+"""
+bottom = """
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+"""
+
+[blocks.powered_rail]
+name = "Powered rail"
+kind = "hard"
+hardness = 0.7
+solid = false
+turns = true
+boxes = [[0, 0, 0, 16, 2, 16]]
+colors = { g = "#5b5651", h = "#4a4541", k = "#696460", w = "#7a5634", x = "#5e4127", r = "#c3c8ce", s = "#7f858c", o = "#e0b24a", p = "#9c7a2c", c = "#d8743c" }
+top = """
+hggophgcckhopgkh
+kkkopkkkkkkopkkk
+gwwopwwccwwopwwg
+gxxopxxxxxxopxxg
+gghopggcckgopgkg
+hggophgggkhopgkh
+kwwopwwccwwopwwk
+gxxopxxxxxxopxxg
+ghgopghcckgopgkg
+gghopgghgkgopgkg
+hwwopwwccwwopwwh
+kxxopxxxxxxopxxk
+gggopggcckgophkg
+ghgopghggkgopgkg
+gwwopwwccwwopwwg
+hxxopxxxxxxopxxh
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+xsssxsssxsssxsss
+hgggkhgggkhgggkh
+"""
+bottom = """
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+"""
+
+[blocks.rail_bend]
+name = "Rail bend"
+kind = "hard"
+hardness = 0.7
+solid = false
+turns = true
+boxes = [[0, 0, 0, 16, 2, 16]]
+colors = { g = "#5b5651", h = "#4a4541", k = "#696460", w = "#7a5634", x = "#5e4127", r = "#c3c8ce", s = "#7f858c", o = "#e0b24a", p = "#9c7a2c", c = "#d8743c" }
+top = """
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkgwssss
+gghgkgghgksssrrr
+hgggkhgwssrrrgkh
+kkkkkkwssrkkwkkk
+ggghkgssrkggwwkg
+ghggkssrwwghgwkg
+gghgwsrhgwwghwkg
+hggwsrgggkwwggkh
+kkkksrwwkkkwkkss
+gggssrggwwggssrr
+ghgsrghggkwwsrkg
+ggwsrgghgkgsrgwg
+hgwsrwwwwwwsrgkh
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+................
+xsssxsssxsssxsss
+hgggkhgggkhgggkh
+"""
+bottom = """
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+"""
+
+[blocks.rail_slope]
+name = "Rail slope"
+kind = "hard"
+hardness = 0.7
+solid = false
+turns = true
+boxes = [[0, 0, 14, 16, 2, 16], [0, 0, 12, 16, 4, 14], [0, 0, 10, 16, 6, 12], [0, 0, 8, 16, 8, 10], [0, 0, 6, 16, 10, 8], [0, 0, 4, 16, 12, 6], [0, 0, 2, 16, 14, 4], [0, 0, 0, 16, 16, 2]]
+colors = { g = "#5b5651", h = "#4a4541", k = "#696460", w = "#7a5634", x = "#5e4127", r = "#c3c8ce", s = "#7f858c", o = "#e0b24a", p = "#9c7a2c", c = "#d8743c" }
+top = """
+hggrshgggkhrsgkh
+kkkrskkkkkkrskkk
+gwwrswwwwwwrswwg
+gxxrsxxxxxxrsxxg
+gghrsgghgkgrsgkg
+hggrshgggkhrsgkh
+kwwrswwwwwwrswwk
+gxxrsxxxxxxrsxxg
+ghgrsghggkgrsgkg
+gghrsgghgkgrsgkg
+hwwrswwwwwwrswwh
+kxxrsxxxxxxrsxxk
+gggrsggghkgrshkg
+ghgrsghggkgrsgkg
+gwwrswwwwwwrswwg
+hxxrsxxxxxxrsxxh
+"""
+side = """
+..............ss
+..............kk
+............sskg
+............ggkg
+..........sshgkg
+..........hgggkh
+........sskkkkkk
+........hkggghkg
+......ssgkghggkg
+......ghgkgghgkg
+....ssgggkhgggkh
+....kkkkkkkkkkkk
+..sskggghkggghkg
+..ggkghggkghggkg
+sshgkgghgkgghgkg
+hgggkhgggkhgggkh
+"""
+bottom = """
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+kkkkkkkkkkkkkkkk
+ggghkggghkggghkg
+ghggkghggkghggkg
+gghgkgghgkgghgkg
+hgggkhgggkhgggkh
+"""
+
+# A cart to carry and put down on a rail, where it becomes one to ride.
+[blocks.cart]
+name = "Cart"
+kind = "hard"
+hardness = 0.5
+solid = false
+boxes = [[1, 1, 2, 15, 8, 14], [3, 0, 3, 5, 1, 5], [11, 0, 3, 13, 1, 5], [3, 0, 11, 5, 1, 13], [11, 0, 11, 13, 1, 13]]
+colors = { a = "#3a3e43", b = "#2b2e32", m = "#5d6268", n = "#4c5157", t = "#26282b" }
+top = """
+.a............a.
+.a............a.
+aaaaaaaaaaaaaaaa
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+.abbbbbbbbbbbba.
+aaaaaaaaaaaaaaaa
+.a............a.
+.a............a.
+"""
+side = """
+................
+................
+................
+................
+................
+................
+................
+.aaaaaaaaaaaaaa.
+.mmmmmmmmmmmmmm.
+.nnnnnnnnnnnnnn.
+.mmmmmmmmmmmmmm.
+.mmmmmmmmmmmmmm.
+.nnnnnnnnnnnnnn.
+.mmmmmmmmmmmmmm.
+.mmmmmmmmmmmmmm.
+...ttt....ttt...
+"""
+bottom = """
+................
+................
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+.nnnnnnnnnnnnnn.
+................
+................
+"""
