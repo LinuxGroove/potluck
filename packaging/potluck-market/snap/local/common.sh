@@ -81,6 +81,27 @@ as_daemon() {
   setpriv --clear-groups --reuid "$DAEMON_UID" --regid "$DAEMON_UID" -- "$@"
 }
 
+# Makes a folder of snap_daemon's (its parent is root's) and the folders
+# given after it inside it. Confined root can't write in another user's
+# folders, so everything inside is made by snap_daemon itself, and nothing
+# is chowned again once it's snap_daemon's.
+daemon_dirs() {
+  local top="$1"
+  shift
+  mkdir -p "$top"
+  if [ "$(stat -c %u "$top")" != "$DAEMON_UID" ]; then
+    chown "$DAEMON_UID:$DAEMON_UID" "$top"
+  fi
+  if [ $# -gt 0 ]; then
+    as_daemon mkdir -p "$@"
+  fi
+}
+
+# Writes stdin to a file as snap_daemon, readable by snap_daemon only.
+daemon_write() {
+  as_daemon sh -c 'umask 077 && cat >"$1.new" && mv "$1.new" "$1"' sh "$1"
+}
+
 # The address players and browsers use.
 public_url() {
   local url domain

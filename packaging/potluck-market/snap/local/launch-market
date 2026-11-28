@@ -2,9 +2,9 @@
 # Service: potluck-share, the market's service and its web pages.
 . "$SNAP/bin/common.sh"
 
-mkdir -p "$MARKET" "$SNAP_DATA/market"
+daemon_dirs "$MARKET"
+mkdir -p "$SNAP_DATA/market"
 mkdir -p -m 0700 "$SECRETS"
-chown -R "$DAEMON_UID:$DAEMON_UID" "$MARKET"
 
 # Forgejo first, then an admin account and a token for the market, made once.
 if ! wait_for 120 "http://127.0.0.1:$FORGEJO_PORT/api/v1/version"; then

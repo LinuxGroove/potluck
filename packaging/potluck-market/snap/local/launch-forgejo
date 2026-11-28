@@ -3,9 +3,8 @@
 # talks to it, on this machine; it's never public.
 . "$SNAP/bin/common.sh"
 
-mkdir -p "$FORGEJO/custom/conf" "$FORGEJO/data" "$FORGEJO/log" "$FORGEJO/home"
+daemon_dirs "$FORGEJO" "$FORGEJO/custom/conf" "$FORGEJO/data" "$FORGEJO/log" "$FORGEJO/home"
 mkdir -p -m 0700 "$SECRETS"
-chown -R "$DAEMON_UID:$DAEMON_UID" "$FORGEJO"
 cd "$FORGEJO"
 
 # Secrets made once by Forgejo's own generator and kept in $SECRETS, so the
@@ -24,9 +23,7 @@ if [ -z "$secret_key" ] || [ -z "$internal_token" ]; then
   fail "Forgejo has no secrets yet; trying again shortly"
 fi
 
-(
-  umask 077
-  cat >"$FORGEJO_INI" <<EOF
+daemon_write "$FORGEJO_INI" <<EOF
 ; Written by the potluck-market snap at every start: changes here are lost.
 APP_NAME = Potluck market
 RUN_MODE = prod
@@ -70,8 +67,6 @@ ROOT_PATH = $FORGEJO/log
 [cron.update_checker]
 ENABLED = false
 EOF
-)
-chown "$DAEMON_UID:$DAEMON_UID" "$FORGEJO_INI"
 
 export HOME="$FORGEJO/home" USER=snap_daemon
 exec setpriv --clear-groups --reuid "$DAEMON_UID" --regid "$DAEMON_UID" -- \
