@@ -3440,6 +3440,38 @@ world.after(0.1, function() world.hurt(7, 4) world.hurt(7, 4, { guarded = false 
     assert_eq!(hurt, -6.0, "half of 4, and all of 4");
 }
 
+/// world 0.24: what a player is seen wearing, by slot, for every game to
+/// draw.
+#[test]
+fn players_are_seen_wearing_what_creations_say() {
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    let code = r#"
+local world = require("@potluck/world@0.24")
+assert(world.wear(7, "head", "Iron helmet"))
+assert(world.wear(7, "arm", "Shield"))
+assert(not world.wear(9, "head", "Iron helmet"), "nobody's there")
+assert(not pcall(function() world.wear(7, "tail", "Shield") end))
+assert(not pcall(function() world.wear(7, "head", "Hat of wonder") end))
+world.after(0.2, function() world.wear(7, "arm", nil) end)
+"#;
+    scripts.start(&creation(code), &mut herd).unwrap();
+    assert_eq!(scripts.vms["test"].error, None, "{:?}", scripts.vms["test"].log);
+    let helmet = crate::items::by_name("Iron helmet").unwrap();
+    assert_eq!(scripts.worn(7), [helmet, 0, 0, 0, crate::items::by_name("Shield").unwrap()]);
+    assert_eq!(scripts.worn(8), [0; 5]);
+    run(&mut scripts, &mut voxels, &mut herd, 0.4);
+    assert_eq!(scripts.worn(7), [helmet, 0, 0, 0, 0], "the shield's off");
+    // and gone when they leave
+    scripts.players.clear();
+    run(&mut scripts, &mut voxels, &mut herd, 0.2);
+    assert_eq!(scripts.worn(7), [0; 5]);
+}
+
 /// world 0.22: XP is kept by name, given only in survival, a little at a
 /// time from each creation, and spent; the levels it makes; haste and might
 /// multiply and go when their creation stops, and charms stay.

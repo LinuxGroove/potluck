@@ -1211,6 +1211,7 @@ pub fn start_world(lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, ne
         sh.haste_changed.extend(here);
         sh.might.clear();
         sh.xp_left.clear();
+        sh.worn.clear();
     }
     let base: Vec<String> = lib.list.values().filter(|c| c.origin == Origin::Base).map(|c| c.id.clone()).collect();
     for id in base {
