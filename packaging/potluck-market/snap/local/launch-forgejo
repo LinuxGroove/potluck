@@ -13,12 +13,16 @@ cd "$FORGEJO"
 secret() {
   local f="$SECRETS/forgejo-$1"
   if [ ! -s "$f" ]; then
-    (umask 077 && as_daemon "$SNAP/bin/forgejo" generate secret "$1" >"$f.new" && mv "$f.new" "$f")
+    (umask 077 && HOME="$FORGEJO/home" USER=snap_daemon as_daemon "$SNAP/bin/forgejo" generate secret "$1" >"$f.new" &&
+      mv "$f.new" "$f") || fail "Forgejo couldn't make its $1"
   fi
   cat "$f"
 }
 secret_key="$(secret SECRET_KEY)"
 internal_token="$(secret INTERNAL_TOKEN)"
+if [ -z "$secret_key" ] || [ -z "$internal_token" ]; then
+  fail "Forgejo has no secrets yet; trying again shortly"
+fi
 
 (
   umask 077
@@ -54,7 +58,6 @@ INTERNAL_TOKEN = $internal_token
 
 [service]
 DISABLE_REGISTRATION = true
-REQUIRE_SIGNIN_VIEW = true
 
 [oauth2]
 ENABLED = false

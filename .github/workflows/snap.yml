@@ -79,7 +79,9 @@ jobs:
       - name: Try the market snap
         if: matrix.snap == 'potluck-market'
         run: |
-          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+          # every check below runs, so the logs come out whatever fails
+          set +e
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}" || exit 1
           openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj /CN=localhost \
             -addext subjectAltName=DNS:localhost -days 2 -keyout key.pem -out cert.pem 2>/dev/null
           sudo cp cert.pem key.pem /var/snap/potluck-market/common/
@@ -108,7 +110,9 @@ jobs:
           invite="$(sudo potluck-market.admin invite 1 || true)"
           echo "an invite code: $invite"
           if [ -z "$up" ] || [ "${base:-0}" -lt 20 ] || [ "$answer" != false ] || [ -z "$invite" ]; then
+            sudo snap services potluck-market
             sudo snap logs -n 300 potluck-market
+            sudo ls -la /var/snap/potluck-market/common /var/snap/potluck-market/common/forgejo
             exit 1
           fi
       - uses: actions/upload-artifact@v4
