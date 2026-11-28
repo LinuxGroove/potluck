@@ -3,10 +3,11 @@
 -- out in survival, nipping at their heels. They can't bear light: they
 -- keep away from lanterns, braziers and candles (world.find_light), lurk
 -- at the edge of a lit place, and fade away in the morning. Bop one twice
--- and it pops, or once with a sword (world.held). Players in creative have
--- nothing to fear, and nothing comes near the Green.
+-- and it pops, or once with a sword (world.held); an arrow, a stone or a
+-- spear bops it as hard as the shot's power says (world.shoot). Players in
+-- creative have nothing to fear, and nothing comes near the Green.
 
-local world = require("@potluck/world@0.8")
+local world = require("@potluck/world@0.19")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -174,12 +175,15 @@ function Gloomling:tick(dt: number)
 	end
 end
 
-function Gloomling:hit(player)
+function Gloomling:hit(player, shot)
 	local held = world.held(player)
-	self.bopped = (self.bopped or 0) + (held and SWORDS[held] or 1)
+	local bop = if shot then shot.power else (held and SWORDS[held] or 1)
+	self.bopped = (self.bopped or 0) + bop
 	if self.bopped < knobs.bops then
 		-- knocked back: it hops off and keeps away a moment
-		local away = self.position + (self.position - player.position) * 2
+		-- (a few blocks, however far off the one who bopped it stands)
+		local d = self.position - player.position
+		local away = self.position + d * math.min(2, 4 / math.max(vector.magnitude(d), 0.5))
 		self:walk_to(away, 4)
 		self:hop(0.6)
 		self.back_off = 1.5

@@ -1,7 +1,7 @@
 name = "Tools"
 by = "Potluck"
 kind = "mod"
-about = "Pickaxes, axes, shovels and hoes for survival, in wood, stone, copper, iron and moonsilver. Hold one and its kind of block breaks faster, and better ones reach harder ores. They wear as they work and a worn out one breaks. Shears cut leaves and plants, a sickle reaps crops and a hammer breaks stone three by three. Make wooden, stone and copper tools, shears, sickles and hammers at a workbench, and iron and moonsilver ones at an anvil, which mends them all."
+about = "Pickaxes, axes, shovels and hoes for survival, in wood, stone, copper, iron and moonsilver. Hold one and its kind of block breaks faster, and better ones reach harder ores. They wear as they work and a worn out one breaks. Shears cut leaves and plants, a sickle reaps crops and a hammer breaks stone three by three. Make wooden, stone and copper tools, shears, sickles and hammers at a workbench, and iron and moonsilver ones at an anvil, which mends them all and makes iron and moonsilver armor too."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"

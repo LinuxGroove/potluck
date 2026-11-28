@@ -3,10 +3,10 @@
 -- down slowly. When you get hungry you eat food you carry, a bite at a
 -- time (FOODS below says what's food and how filling it is). On an empty
 -- belly you stop healing by yourself (world.healing) and it slowly hurts,
--- but never below half your health (world.hurt's down_to). When you're
--- well fed you heal faster.
+-- but never below half your health (world.hurt's down_to), and armor
+-- doesn't help (guarded = false). When you're well fed you heal faster.
 
-local world = require("@potluck/world@0.7")
+local world = require("@potluck/world@0.18")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -77,7 +77,7 @@ world.every(1, function()
 			world.healing(p, 0)
 			empty[p.id] = (empty[p.id] or 0) + 1
 			if knobs.hurts and empty[p.id] % HURT_EVERY == 0 then
-				world.hurt(p, 1, { down_to = knobs.down_to })
+				world.hurt(p, 1, { down_to = knobs.down_to, guarded = false })
 			end
 			if now - (told[p.id] or -1000) > 120 then
 				told[p.id] = now

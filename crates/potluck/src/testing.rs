@@ -73,6 +73,7 @@ function test.move(player, at) return ask("move", player, at) end
 function test.place(player, at, block, facing) ask("place", player, at, block, facing) end
 function test.dig(player, at) return ask("dig", player, at) end
 function test.use_block(player, at) ask("use_block", player, at) end
+function test.use_item(player, aim) ask("use_item", player, aim) end
 function test.use(player, creature) ask("event", "used", player, creature) end
 function test.hit(player, creature) ask("event", "hit", player, creature) end
 function test.ride(player, creature) ask("ride", player, creature) end
@@ -461,7 +462,10 @@ impl Harness {
             let _ = self.scripts.healing_changes();
             let _ = self.scripts.digging_changes();
             let _ = self.scripts.drops_changes();
+            // shots wait in the outbox for the next tick to fly them
+            let shots = std::mem::take(&mut self.scripts.out.shots);
             self.scripts.out = Default::default();
+            self.scripts.out.shots = shots;
             self.played += STEP;
         }
     }
@@ -606,6 +610,14 @@ impl Harness {
                     _ => self.scripts.use_block(p.id, at, old),
                 }
                 // the creation hears it on the next tick, as in play
+                self.pass(0.1);
+                nothing
+            }
+            "use_item" => {
+                // Interact on nothing in reach, looking `aim` (north if not said)
+                let p = self.player(arg(1), "use_item")?;
+                let aim = arg(2).and_then(script::vec_of).unwrap_or(Vec3::NEG_Z);
+                self.scripts.use_item(p.id, aim);
                 self.pass(0.1);
                 nothing
             }
