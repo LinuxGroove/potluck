@@ -34,6 +34,7 @@ pub mod script;
 pub mod settings;
 pub mod share;
 pub mod shots;
+pub mod sky;
 pub mod sound;
 pub mod testing;
 pub mod textures;
@@ -88,7 +89,8 @@ pub fn sim(app: &mut App, seed: u32) {
             Update,
             (game::host_step, net::host_net, game::reloads, game::share_results, game::share_heartbeat).chain().in_set(Sim),
         )
-        .add_systems(Update, chat::run.after(Sim));
+        .add_systems(Update, chat::run.after(Sim))
+        .add_plugins(sky::SkyPlugin);
     // sounds, where there's a speaker: the game, not the server
     if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
         sound::add(app);

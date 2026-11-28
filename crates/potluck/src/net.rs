@@ -30,7 +30,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 30;
+pub const PROTOCOL: u32 = 31;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -139,6 +139,10 @@ pub enum Msg {
     Digging(Vec<(crate::items::Thing, crate::items::Digging)>),
     /// What breaking each block gives now (`world.drops`), all of it.
     Drops(Vec<(crate::blocks::BlockId, crate::items::Drop)>),
+    /// The weather and the season now (`@potluck/sky`).
+    Sky(crate::sky::Sky),
+    /// Lightning struck there (`sky.strike`).
+    Strike([f32; 3]),
     /// A shot set off (`world.shoot`): its id, look, where it is, how fast
     /// and how strongly it falls. Every game flies its own copy.
     Shot { id: u32, look: u8, at: [f32; 3], vel: [f32; 3], drop: f32 },
@@ -590,6 +594,12 @@ impl Net {
     pub fn broadcast_drops(&mut self, drops: Vec<(crate::blocks::BlockId, crate::items::Drop)>) {
         self.pending.push(Msg::Drops(drops));
     }
+    pub fn broadcast_sky(&mut self, sky: crate::sky::Sky) {
+        self.pending.push(Msg::Sky(sky));
+    }
+    pub fn broadcast_strike(&mut self, at: Vec3) {
+        self.pending.push(Msg::Strike(at.to_array()));
+    }
     /// A shot set off or came down, for every game.
     pub fn broadcast_shot(&mut self, news: &crate::script::ShotNews) {
         self.pending.push(match news {
@@ -776,6 +786,8 @@ pub fn host_net(
                     if !drops.is_empty() {
                         let _ = out.send(frame_msg(&Msg::Drops(drops)));
                     }
+                    // and the weather
+                    let _ = out.send(frame_msg(&Msg::Sky(scripts.sky())));
                     p.welcomed = true;
                     h.welcomed.push(id);
                     h.sent.0 += sent;
@@ -1243,7 +1255,7 @@ pub fn client_net(
     mut focus: ResMut<Focus>,
     mut info: ResMut<WorldInfo>,
     mut acts: ResMut<crate::ui::Acts>,
-    (mut heard, mut shots): (ResMut<crate::sound::Heard>, ResMut<crate::shots::Shots>),
+    (mut heard, mut shots, mut weather, mut thunder): (ResMut<crate::sound::Heard>, ResMut<crate::shots::Shots>, ResMut<crate::sky::Weather>, ResMut<crate::sky::Thunder>),
 ) {
     let Role::Client(_) = &net.role else { return };
     let events: Vec<Event> = match &net.role {
@@ -1298,6 +1310,9 @@ pub fn client_net(
                     lib.world += 1;
                     scripts.vms.clear();
                     me.rules = Default::default();
+                    // the host's sky comes next, taken at once
+                    weather.fresh = true;
+                    weather.strikes.clear();
                     if let Role::Client(c) = &mut net.role {
                         c.welcomed = true;
                         c.host_name = host.clone();
@@ -1430,6 +1445,8 @@ pub fn client_net(
                     }
                 }
                 Msg::ShotGone(id) => shots.gone(id),
+                Msg::Sky(sky) => weather.take(sky),
+                Msg::Strike(at) => crate::sky::strike(&mut weather, &mut thunder, Vec3::from_array(at), Some(me.pos)),
                 Msg::Net(n) => me.notes.push(n),
                 Msg::Pockets { seq, changes } => {
                     me.change_pockets(&changes);

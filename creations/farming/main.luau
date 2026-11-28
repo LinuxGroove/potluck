@@ -7,6 +7,9 @@
 -- (faster by day and near water). A watering can (fill it at water) takes
 -- time off the crops round the one you use it on, and a sickle harvests
 -- the ripe ones round the one it cuts.
+-- The seasons (@potluck/sky) count too: crops grow a quarter faster in
+-- spring and summer, and stop in winter unless they're under a roof (glass
+-- makes a greenhouse). Rain waters the crops it falls on.
 -- Break a ripe crop for more than you planted; break a shoot and you get
 -- your seed back. Planted crops are kept with the world (store), so a
 -- server's fields keep growing after a restart.
@@ -22,6 +25,7 @@ local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
+local sky = require("@potluck/sky@0.1")
 
 local knobs = tweak {
 	minutes = { 4, min = 1, max = 20, label = "Minutes to ripen", order = 1 },
@@ -33,7 +37,12 @@ local knobs = tweak {
 	berries = { 3, min = 1, max = 20, label = "Minutes for berries to grow back", order = 7 },
 	seeds = { 0.5, min = 0, max = 1, label = "Share of tall grass with seeds", order = 8 },
 	apples = { 0.08, min = 0, max = 1, label = "Share of oak leaves with an apple", order = 9 },
+	seasons = { true, label = "Seasons change how crops grow", order = 10 },
 }
+
+-- how fast crops out under the sky grow in each season; under a roof
+-- they grow as in autumn all year
+local SEASON_RATE: { [string]: number } = { spring = 1.25, summer = 1.25, autumn = 1, winter = 0 }
 
 -- Each crop: what it looks like while it grows, and what a shoot broken
 -- too soon gives back. A remix can add its own (with blocks of its own).
@@ -333,9 +342,19 @@ for _, kind in CROPS do
 end
 world.drops(BUSH, { gives = BARE })
 
--- growing: faster by day and near water; and bushes growing berries again
+-- whether there's anything over `at` but leaves: a roof keeps the rain
+-- off, and a greenhouse the winter
+local function under_sky(at: vector): boolean
+	return world.top(at.x, at.z) <= math.floor(at.y)
+end
+
+-- growing: faster by day, near water and in spring and summer; and bushes
+-- growing berries again
 world.every(EVERY, function()
 	local rate = (0.5 + 0.5 * world.daylight()) * EVERY
+	local season = if knobs.seasons then (sky.season()) else "autumn"
+	local w = sky.weather()
+	local raining = w.kind == "rain" or w.kind == "storm"
 	for k, c in crops do
 		local at = spot(k)
 		local now = world.block(at)
@@ -346,7 +365,12 @@ world.every(EVERY, function()
 		elseif now ~= shoot_of(c.crop) then
 			forget(k)
 		else
-			c.left -= if c.wet then rate * 1.5 else rate
+			local open = under_sky(at)
+			if open and raining and not c.wet then
+				c.wet = true
+			end
+			local by_season = if open then SEASON_RATE[season] or 1 else 1
+			c.left -= (if c.wet then rate * 1.5 else rate) * by_season
 			changed = true
 			if c.left <= 0 then
 				c.ripe = true
@@ -358,6 +382,9 @@ world.every(EVERY, function()
 		local at = spot(k)
 		if world.block(at) ~= BARE then
 			bare[k] = nil
+		elseif season == "winter" and under_sky(at) then
+			-- no berries out in the winter
+			continue
 		elseif left <= EVERY then
 			bare[k] = nil
 			world.set_block(at, BUSH)
@@ -383,6 +410,11 @@ world.every(20, function()
 			wild[k] = nil
 			wilds -= 1
 		end
+	end
+	-- nothing comes up in winter
+	if knobs.seasons and (sky.season()) == "winter" then
+		store.set("wild", wild)
+		return
 	end
 	for _, p in world.players() do
 		if wilds >= MOST_WILD or world.pockets(p) == nil or world.random() >= knobs.wild then

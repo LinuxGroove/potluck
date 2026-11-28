@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.22")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.22. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.24")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.24. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.22
+### `@potluck/world` 0.24
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -597,6 +597,30 @@ net.send("ready", { name = net.me().name })
 - Its lines share ids with the main file's lines for that player, so the last to show one wins. Its lines go when it stops.
 - A half has 16 MB and 4 ms of each frame. One that fails or runs too long stops, and Look inside shows why (its prints show there too, marked `client:`).
 
+### `@potluck/sky` 0.1
+
+The weather and the season, the same on every game in the world. Every game draws them (rain, snow, cloud, fog, the wind in them, autumn's leaves and winter's snow on the land) and plays the rain and the thunder. Nothing sets them but creations: the base game's Weather and seasons counts the days and picks the weather, and Farming, Fire and Armor read it.
+
+```luau
+local sky = require("@potluck/sky@0.1")
+sky.set_weather("rain", { strength = 0.7, wind = vector.create(3, 0, -2), over = 30 })
+local now = sky.weather()          -- { kind = "rain", strength = 0.7, wind = vector(3, 0, -2) }
+sky.set_season("autumn", 0.4)      -- 40% of the way through autumn
+local season, progress = sky.season()
+sky.on("strike", function(at)      -- lightning, from any creation
+	print("lightning at", at)
+end)
+sky.strike(vector.create(100, 70, 40))
+```
+
+- `sky.set_weather(kind, opts?)`: `kind` is `"clear"`, `"cloudy"`, `"rain"`, `"storm"`, `"snow"` or `"fog"`. `strength` is how heavy, 0 to 1 (0.6 if it isn't said, 0 for clear). `wind` is blocks a second along x and z, up to 12 (the wind stays as it was if it isn't said). `over` is how many seconds every game takes to come into it, 0 to 120 (20 if it isn't said): weather never changes all at once.
+- `sky.weather()` is the weather as it was last set: `kind`, `strength` and `wind` (a vector with y 0).
+- `sky.set_season(name, progress?)`: `"spring"`, `"summer"`, `"autumn"` or `"winter"`, and how far through it, 0 to 1 (0 if it isn't said). The land follows slowly, over a few minutes: autumn's leaves turn over its first part and fall as winter starts, and winter's snow lies until spring melts it. `sky.season()` is the season and how far through it.
+- `sky.strike(at)` is lightning at a place: a soft brightening of the sky on every game near enough to see it (none at all for players with Reduce flashing on), and thunder a moment after, later the further off it was. A creation can make one a second, three at once; past that it says false and nothing strikes.
+- `sky.on("strike", fn)` hears every strike from any creation, on the next tick, with where it was. It counts towards the 32 handlers a creation can give `world.on`, `input.on` and `net.on`.
+- Whether a place is out under the sky is `world.top(x, z) <= math.floor(y)`: rain falls through leaves but not a roof. Weather drawn on the screen never moves or shakes anyone's camera.
+- It runs where the world runs, so a creation's client half can't reach it.
+
 ### `@potluck/game` 0.1
 
 For mini games: boards and other servers.
@@ -616,7 +640,7 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.7
+### `@potluck/test` 0.8
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
@@ -647,6 +671,7 @@ end)
 - What players do: `test.place(player, pos, block, facing?)` (`facing` for a block that turns, 0.5; north if left out) and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use_item(player, aim?)` (Interact on nothing, heard as `item_used`, looking `aim` or north; 0.6), `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
 - Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
 - `test.danger(level)` (0.7) sets the world's danger for the case (`"peaceful"`, `"gentle"`, `"normal"` or `"hard"`; Gentle until it's set). A survival player whose health runs out in a case is heard as `player_fell` where they stand, and is whole again.
+- `test.daytime(time)` (0.8) sets the time of day for the case, 0 to 1 (0 midnight, 0.25 sunrise, 0.5 noon), and it stays there: the sun doesn't go round in a case. Set it past 0.5 and then back near 0 to have a day go by. The sky starts clear, in spring, and `sky.set_weather` and `sky.set_season` set it for the case.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
 

@@ -1,7 +1,7 @@
 name = "Armor"
 by = "Potluck"
 kind = "mod"
-about = "Caps, helmets, coats, leggings, boots and shields for survival, in wool, copper, iron and moonsilver. Hold a piece and use it on nothing (Interact looking at the sky or far off) to put it on; each keeps off part of every hurt, more the better it's made. Use an empty hand on nothing to take a piece off. Make wool and copper ones and shields at a workbench, and iron and moonsilver ones at an anvil."
+about = "Caps, helmets, coats, leggings, boots and shields for survival, in wool, copper, iron and moonsilver. Hold a piece and use it on nothing (Interact looking at the sky or far off) to put it on; each keeps off part of every hurt, more the better it's made. Use an empty hand on nothing to take a piece off. Wool and leather keep winter nights' cold off. Make wool and copper ones and shields at a workbench, and iron and moonsilver ones at an anvil."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
@@ -12,6 +12,7 @@ tweak = "0.1"
 store = "0.1"
 ui = "0.2"
 sound = "0.2"
+sky = "0.1"
 
 # Putting on wool, and metal.
 [sounds.don_soft]

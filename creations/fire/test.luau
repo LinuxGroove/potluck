@@ -3,6 +3,7 @@
 
 local test = require("@potluck/test@0.4")
 local world = require("@potluck/world@0.14")
+local sky = require("@potluck/sky@0.1")
 
 -- a spot on the ground a few blocks from a player
 local function ground(p, dx: number): vector
@@ -126,4 +127,40 @@ test.case("breaking a fire puts it out, and gives nothing", function()
 	test.check(test.dig(p, at), "it breaks")
 	test.same(world.block(at), "Air")
 	test.same(world.has(p, "Fire"), 0, "nothing to carry")
+end)
+
+test.case("rain puts out a fire under the sky, not one under a roof", function()
+	local p = test.player("Gus")
+	local open, roofed = ground(p, 3), ground(p, -3)
+	for _, at in { open, roofed } do
+		-- each beside a plank, so it would burn on a while by itself
+		world.set_block(at + vector.create(0, 0, 1), "Planks")
+		test.place(p, at, "Fire")
+	end
+	for dx = -1, 1 do
+		for dz = -1, 2 do
+			world.set_block(roofed + vector.create(dx, 3, dz), "Stone")
+		end
+	end
+	sky.set_weather("rain", { strength = 1, over = 0 })
+	test.wait(6)
+	test.same(world.block(open), "Air", "the one in the rain's out")
+	test.same(world.block(roofed), "Fire", "the one under the roof burns on")
+	-- snow doesn't put fires out
+	test.place(p, open, "Fire")
+	sky.set_weather("snow", { strength = 1, over = 0 })
+	test.wait(4)
+	test.same(world.block(open), "Fire", "snow leaves it")
+end)
+
+test.case("lightning lights a fire where it strikes", function()
+	local p = test.player("Hal")
+	local at = ground(p, 5)
+	for y = 0, 3 do
+		world.set_block(at + vector.create(0, y, 0), "Oak log")
+	end
+	local top = at + vector.create(0, 4, 0)
+	test.check(sky.strike(top), "it struck")
+	test.wait(0.5)
+	test.same(world.block(top), "Fire", "on top of the trunk")
 end)

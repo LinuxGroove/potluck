@@ -4,7 +4,9 @@
 -- while, then goes out. Beside wood, leaves, plants, hay or wool it spreads,
 -- slowly: at most a block every few seconds from each fire. When a fire
 -- goes out the wood or wool it was eating may burn away. Water puts it
--- out, and so does breaking it. Standing in it hurts.
+-- out, and so does breaking it, and so does rain on a fire out under the
+-- sky; lightning lights one where it strikes (@potluck/sky). Standing in
+-- it hurts.
 --
 -- The fire block is in potluck.toml, drawn in four pictures it shows in turn
 -- (frames); with Reduce flashing on, players see the first one only. Knobs
@@ -14,6 +16,7 @@ local world = require("@potluck/world@0.21")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local sound = require("@potluck/sound@0.2")
+local sky = require("@potluck/sky@0.1")
 
 local knobs = tweak {
 	spreads = { true, label = "Fire spreads", order = 1 },
@@ -22,6 +25,8 @@ local knobs = tweak {
 	eats = { true, label = "Burns away wood and wool", order = 4 },
 	hurts = { true, label = "Standing in fire hurts", order = 5 },
 	lighter = { 64, min = 8, max = 256, label = "Uses of a flint and steel", order = 6 },
+	rain = { true, label = "Rain puts out fires", order = 7 },
+	lightning = { true, label = "Lightning lights fires", order = 8 },
 }
 
 local FIRE = "Fire"
@@ -63,7 +68,7 @@ local SIDES = {
 
 -- Burning fires, by where they are: when each goes out, and when it may
 -- next spread.
-type Burning = { at: vector, out: number, next: number }
+type Burning = { at: vector, out: number, next: number, rained: number? }
 local fires: { [string]: Burning } = {}
 local count = 0
 local changed = false
@@ -152,8 +157,24 @@ local function catch(at: vector): vector?
 	return tries[math.floor(world.random(1, #tries + 0.999))]
 end
 
+-- whether rain's falling on `at`: rain or a storm, and nothing over it
+-- but leaves (which it drips through)
+local function rained_on(at: vector, wet: number): boolean
+	return wet > 0 and world.top(at.x, at.z) <= math.floor(at.y)
+end
+
+-- how hard it's raining, 0 to 1 (snow puts nothing out)
+local function raining(): number
+	if not knobs.rain then
+		return 0
+	end
+	local w = sky.weather()
+	return if w.kind == "rain" or w.kind == "storm" then math.max(w.strength, 0.3) else 0
+end
+
 world.every(0.5, function()
 	local now = world.time()
+	local rain = raining()
 	local spreading: { vector } = {}
 	local eaten: { vector } = {}
 	for k, f in fires do
@@ -168,7 +189,10 @@ world.every(0.5, function()
 				wet = true
 			end
 		end
-		if wet then
+		-- rain puts it out within a few seconds, sooner the harder it falls
+		local in_rain = rained_on(f.at, rain)
+		f.rained = if in_rain then (f.rained or 0) + 0.5 else nil
+		if wet or (in_rain and (f.rained or 0) >= 3 / rain) then
 			put_out(k, f)
 			sound.play("hiss", { at = f.at, volume = 0.6 })
 			continue
@@ -186,7 +210,7 @@ world.every(0.5, function()
 			end
 			continue
 		end
-		if knobs.spreads and now >= f.next then
+		if knobs.spreads and now >= f.next and not in_rain then
 			f.next = now + knobs.spread * world.random(1, 3)
 			local q = catch(f.at)
 			if q then
@@ -283,6 +307,14 @@ world.on("block_used", function(player, at: vector, block: string)
 			world.take(player, LIGHTER, 1)
 			sound.play_for(player, "crack", { caption = "Flint and steel wore out" })
 		end
+	end
+end)
+
+-- Lightning lights a fire where it strikes, or just under it (the top of
+-- a tree).
+sky.on("strike", function(at: vector)
+	if knobs.lightning then
+		local _ = light(at) or light(at - vector.create(0, 1, 0))
 	end
 end)
 

@@ -25,7 +25,7 @@ use crate::creations::{Creation, Library, Origin, TYPES};
 
 /// Each `@potluck` module, and the type in the types file that stands for
 /// it (a client half's `net` is `ClientNet`).
-const MODULE_TYPES: &[(&str, &str)] = &[("world", "World"), ("tweak", "Tweak"), ("game", "Game"), ("store", "Store"), ("input", "Input"), ("ui", "UI"), ("sound", "Sound"), ("net", "Net"), ("test", "Test")];
+const MODULE_TYPES: &[(&str, &str)] = &[("world", "World"), ("tweak", "Tweak"), ("game", "Game"), ("store", "Store"), ("input", "Input"), ("ui", "UI"), ("sound", "Sound"), ("net", "Net"), ("test", "Test"), ("sky", "Sky")];
 
 /// The name the types file is checked under.
 const TYPES_MODULE: &str = "@potluck/types";
@@ -232,6 +232,7 @@ fn known_table(name: &str) -> Option<(String, Vec<String>)> {
         "Sound" => "sound",
         "Net" | "ClientNet" => "net",
         "Test" => "test",
+        "Sky" => "sky",
         _ => return None,
     };
     Some((module.to_string(), type_keys(name)))

@@ -27,11 +27,12 @@ store = "0.1"
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
+| `@potluck/sky` | 0.1 | The weather (rain, storms, snow, fog and wind) and the season, the same on every game in the world, and lightning |
 | `@potluck/input` | 0.1 | Actions of its own, on pad buttons and keys players can move, while a player rides its creature or it has their controls |
 | `@potluck/ui` | 0.2 | Lines on players' screens, meters beside the health bar, and questions with choices |
 | `@potluck/sound` | 0.2 | The game's sounds and the creation's own (made from numbers in `potluck.toml`), somewhere in the world or for one player, with subtitles |
 | `@potluck/net` | 0.2 | Messages between a creation and its client half, a second file that runs on each player's own game for what only they see, reading that game's copy of the world |
-| `@potluck/test` | 0.7 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
+| `@potluck/test` | 0.8 | A creation's own tests, in `test.luau`: cases that play in a world of their own, with players made for the test, run by the dev bridge or `potluck-server --test` |
 
 Every module planned for the API is here, and client halves read the world as well as hear their creation.
 
@@ -132,6 +133,10 @@ What a creation can never do, at any version: read or write files, reach the net
 - **0.2**: `world.after`, `world.every` and `world.cancel` (timers), and `world.on` for `"player_joined"` and `"player_left"`. A creation with no creatures can now run code every tick.
 - **0.1**: the first version.
 
+### `@potluck/sky`
+
+- **0.1**: the first version: `sky.weather` and `sky.set_weather` (clear, cloudy, rain, storm, snow or fog, how heavy, the wind, and how long it takes to come in), `sky.season` and `sky.set_season`, and lightning with `sky.strike` and `sky.on("strike")`. The base game gains Weather and seasons, and Farming, Fire and Armor follow them.
+
 ### `@potluck/input`
 
 - **0.1**: the first version: `[actions]` in `potluck.toml`, and `input.on`, `input.held`, `input.focus` and `input.focused`.
@@ -172,3 +177,4 @@ What a creation can never do, at any version: read or write files, reach the net
 - **0.5**: `test.place(player, pos, block, facing?)` puts down a block that turns facing that way.
 - **0.6**: `test.use_item(player, aim?)`, Interact with nothing in reach, heard as `item_used`.
 - **0.7**: `test.danger(level)`, the world's danger for the case; a survival player whose health runs out is heard as `player_fell`.
+- **0.8**: `test.daytime(time)`, the time of day for the case.
