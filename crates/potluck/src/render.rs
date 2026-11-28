@@ -188,7 +188,7 @@ impl bevy::pbr::MaterialExtension for OwnNormals {
     }
 }
 
-pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, waters: &mut Assets<WaterMaterial>, rt: Raytraced, tier: Tier) -> BlockMaterials {
+pub fn make_materials(atlas: &BlockAtlas, images: &mut Assets<Image>, mats: &mut Assets<StandardMaterial>, waters: &mut Assets<WaterMaterial>, rt: Raytraced, tier: Tier) -> BlockMaterials {
     let solid = StandardMaterial {
         base_color_texture: Some(atlas.color.clone()),
         normal_map_texture: Some(atlas.normal.clone()),
@@ -246,7 +246,38 @@ pub fn make_materials(atlas: &BlockAtlas, mats: &mut Assets<StandardMaterial>, w
     let under = if rt.0 { StandardMaterial { base_color: LinearRgba::rgb(0.4, 0.76, 0.8).into(), ..solid.clone() } } else { solid.clone() };
     let own = waters.add(WaterMaterial { base: water.clone(), extension: OwnNormals {} });
     let canopy = mats.add(StandardMaterial { base_color: Color::srgb(0.22, 0.4, 0.15), perceptual_roughness: 0.9, ..default() });
-    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under), mats.add(faint)], canopy, water: own }
+    // a flame's stand-in for the tracer gives off a lantern's light at night
+    // (`lanterns`), spread over the box, in the lamp's colour; a brighter
+    // lamp's box is as much bigger (`mesh::stand_in`). Nothing sees the box
+    // itself but the tracer, so it reflects nothing
+    let lamps = mats.add(StandardMaterial {
+        base_color: Color::BLACK,
+        emissive_texture: Some(images.add(lamp_colours())),
+        emissive: LinearRgba::WHITE * (LAMP_LUMENS / (PI * 6.0 * STAND_IN * STAND_IN)),
+        perceptual_roughness: 1.0,
+        ..default()
+    });
+    BlockMaterials { layers: [mats.add(solid), mats.add(cutout), mats.add(water), mats.add(glow), mats.add(under), mats.add(faint)], canopy, water: own, lamps }
+}
+
+/// How wide a lantern's stand-in for the ray tracer is (`mesh::stand_in`).
+pub const STAND_IN: f32 = 0.25;
+
+/// How much light a lantern gives at night, or deep underground.
+const LAMP_LUMENS: f32 = 300_000.0;
+
+/// Each block's lamp colour (`lamp`), by id along a row: what the flames'
+/// stand-ins glow in.
+fn lamp_colours() -> Image {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let mut data = Vec::with_capacity(256 * 4);
+    for id in 0..=255u8 {
+        let c = lamp(id).2.to_srgba().to_u8_array();
+        data.extend_from_slice(&c);
+    }
+    let mut image = Image::new(Extent3d { width: 256, height: 1, depth_or_array_layers: 1 }, TextureDimension::D2, data, TextureFormat::Rgba8UnormSrgb, bevy::asset::RenderAssetUsages::RENDER_WORLD);
+    image.sampler = bevy::image::ImageSampler::nearest();
+    image
 }
 
 /// Where the tools (`--shot`, `--demo`) draw: an image of exactly the size asked
@@ -527,6 +558,19 @@ impl Default for Eye {
     }
 }
 
+/// The atmosphere lays the haze of sunlit air over everything a little way
+/// off (its aerial view). In a cave, with the eye opened wide, that haze
+/// showed as a blue veil by day; so the deeper the player is, the further
+/// the haze is spread, until none of it falls this side of the rock.
+pub fn cave_air(eye: Res<Eye>, mut air: Query<&mut AtmosphereSettings, With<MainCamera>>) {
+    let far = AtmosphereSettings::default().aerial_view_lut_max_distance * 1000f32.powf(eye.below);
+    for mut s in &mut air {
+        if (s.aerial_view_lut_max_distance / far - 1.0).abs() > 0.01 {
+            s.aerial_view_lut_max_distance = far;
+        }
+    }
+}
+
 /// How far underground a point is for the eye: 0 within a few blocks of
 /// the ground over it (rooms, overhangs, the shade of trees), 1 well down.
 pub fn underground(voxels: &Voxels, p: Vec3) -> f32 {
@@ -689,7 +733,7 @@ pub fn sky(
 /// How bright a glowing block's light is (a lantern's is 1), how high in the
 /// block it sits, its colour and how much its flame flickers (open flames
 /// more than one behind glass).
-fn lamp(id: crate::blocks::BlockId) -> (f32, f32, Color, f32) {
+pub fn lamp(id: crate::blocks::BlockId) -> (f32, f32, Color, f32) {
     use crate::blocks::*;
     match id {
         CANDLE => (0.32, 0.6, Color::srgb(1.0, 0.74, 0.42), 0.16),
@@ -714,6 +758,13 @@ pub fn flicker(time: Res<Time>, mut lights: Query<(&LanternLight, &mut PointLigh
     }
 }
 
+/// How bright a lantern's flame is now. Flames show brighter in the dark
+/// (the eye's open wider); deep underground it's as dark by day as by night.
+pub fn flame_lumens(clock: &Clock, eye: &Eye) -> f32 {
+    let night = (1.0 - clock.daylight()).max(eye.below);
+    40_000.0 + (LAMP_LUMENS - 40_000.0) * night
+}
+
 /// Real lights for the lanterns, candles and braziers nearest the player;
 /// the rest just glow.
 pub fn lanterns(
@@ -723,7 +774,7 @@ pub fn lanterns(
     me: Res<Me>,
     clock: Res<Clock>,
     eye: Res<Eye>,
-    mut lights: Query<(Entity, &mut Transform, &mut PointLight, &mut LanternLight)>,
+    mut lights: Query<(Entity, &mut Transform, &mut PointLight, &mut LanternLight), Without<crate::held::HandLight>>,
     mut every: Local<f32>,
     time: Res<Time>,
 ) {
@@ -737,10 +788,7 @@ pub fn lanterns(
     // on Low each light costs integrated graphics dearly, and the furthest
     // still glow without lighting the ground round them
     near.truncate(if Tier::of(&settings.lighting) == Tier::Low { 8 } else { 20 });
-    // flames show brighter in the dark (the eye's open wider); deep
-    // underground it's as dark by day as by night
-    let night = (1.0 - clock.daylight()).max(eye.below);
-    let lumens = 40_000.0 + 260_000.0 * night;
+    let lumens = flame_lumens(&clock, &eye);
     let mut have: Vec<_> = lights.iter_mut().collect();
     for (i, p) in near.iter().enumerate() {
         let (k, high, color, flicker) = lamp(voxels.at(*p));

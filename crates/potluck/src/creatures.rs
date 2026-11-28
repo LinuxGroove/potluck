@@ -734,6 +734,12 @@ impl Person {
             .collect();
         Self { parts, limbs, dressed: false, last: None, phase: 0.0, stride: 0.0 }
     }
+
+    /// Whether this part is the person's right hand, where `held` puts what
+    /// they hold (a person faces -z, so their right is +x).
+    pub fn is_right_hand(&self, p: &PartView) -> bool {
+        self.parts.get(p.index).is_some_and(|q| q.name == "hand" && q.at.x > 0.0)
+    }
 }
 
 /// A person's parts, feet at the origin, facing -z; legs, arms and hands

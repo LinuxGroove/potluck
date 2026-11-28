@@ -13,6 +13,7 @@ pub mod demo;
 pub mod game;
 pub mod green;
 pub mod halves;
+pub mod held;
 pub mod hosting;
 pub mod input;
 pub mod items;

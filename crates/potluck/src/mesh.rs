@@ -366,6 +366,32 @@ pub struct ChunkMesh {
     /// The faintly glowing blocks' solid faces again, plain: what the ray
     /// tracer sees in their place (`FAINT`).
     pub rock: MeshData,
+    /// A small glowing box at each flame, which only the ray tracer sees
+    /// (`stand_in`): its light, since it doesn't see point lights.
+    pub lamps: MeshData,
+}
+
+/// A flame's stand-in for the ray tracer, round `at` (its block's corner):
+/// a box at the flame, as much bigger than a lantern's (`render::STAND_IN`)
+/// as its light is brighter, coloured by the lamp's texel in
+/// `render::lamp_colours`, so its light is the lamp's.
+pub fn stand_in(m: &mut MeshData, at: Vec3, id: BlockId) {
+    let (k, high, _, _) = crate::render::lamp(id);
+    let half = crate::render::STAND_IN * k.sqrt() * 0.5;
+    // inside its own block, clear of the one above
+    stand_in_round(m, at + Vec3::new(0.5, high.min(1.0 - half), 0.5), id);
+}
+
+/// A flame's stand-in (`stand_in`) round its middle, `c`.
+pub fn stand_in_round(m: &mut MeshData, c: Vec3, id: BlockId) {
+    let half = crate::render::STAND_IN * crate::render::lamp(id).0.sqrt() * 0.5;
+    let uv = [(id as f32 + 0.5) / 256.0, 0.5];
+    // each face's two axes, turning so their cross is its normal (outward)
+    for (n, u, v) in [(Vec3::X, Vec3::Y, Vec3::Z), (Vec3::NEG_X, Vec3::Z, Vec3::Y), (Vec3::Y, Vec3::Z, Vec3::X), (Vec3::NEG_Y, Vec3::X, Vec3::Z), (Vec3::Z, Vec3::X, Vec3::Y), (Vec3::NEG_Z, Vec3::Y, Vec3::X)] {
+        let (f, u, v) = (c + n * half, u * half, v * half);
+        let corners = [f - u - v, f + u - v, f + u + v, f - u + v].map(|p| p.to_array());
+        m.quad_uv(corners, n.to_array(), [uv; 4], [[1.0; 4]; 4], false);
+    }
 }
 
 pub mod cull;
@@ -716,16 +742,32 @@ fn ground_cover(m: &mut MeshData, w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32
 /// line up across boxes; faces against a full block are left out. Corners
 /// darken toward the floor, since models get no corner shading of their own.
 fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32, y: i32, z: i32, id: BlockId) {
-    let def = blocks::block(id);
     let next = |d: usize| {
         let s = blocks::SIDES[d];
         w.get(x + s[0], y + s[1], z + s[2])
     };
-    let o = Vec3::new(x as f32, y as f32, z as f32);
     // standing on the ground, darker toward it (stacked, one model's light runs on into the next)
     let floor = blocks::is_opaque(w.get(x, y - 1, z));
+    model_boxes(layers, atlas, Vec3::new(x as f32, y as f32, z as f32), id, next, floor);
+}
+
+/// A model block on its own with nothing round it, its corner at `o`:
+/// its plain boxes, and its glowing ones (a flame), for drawing it in a
+/// hand (`held`).
+pub fn model_alone(atlas: &BlockAtlas, o: Vec3, id: BlockId) -> (MeshData, MeshData) {
+    let mut layers: [MeshData; LAYERS] = Default::default();
+    model_boxes(&mut layers, atlas, o, id, |_| AIR, false);
+    let [plain, _, _, _, glow, ..] = layers;
+    (plain, glow)
+}
+
+/// A model block's boxes at `o`, with `next` the block each way
+/// (`blocks::SIDES`) and `floor` whether it stands on something.
+fn model_boxes(layers: &mut [MeshData; LAYERS], atlas: &BlockAtlas, o: Vec3, id: BlockId, next: impl Fn(usize) -> BlockId, floor: bool) {
+    let def = blocks::block(id);
+    let solid_beside = |n: [i32; 3]| (0..6).any(|d| blocks::SIDES[d] == n && blocks::is_opaque(next(d)));
     for b in def.model {
-        if !b.when.holds(id, next) {
+        if !b.when.holds(id, &next) {
             continue;
         }
         let lo = Vec3::from(b.from.map(|v| v as f32 / 16.0));
@@ -734,7 +776,7 @@ fn model(layers: &mut [MeshData; LAYERS], w: &Voxels, atlas: &BlockAtlas, x: i32
         for f in &FACES {
             let axis = (0..3).find(|&i| f.n[i] != 0).unwrap();
             let out = if f.n[axis] > 0 { hi[axis] >= 1.0 } else { lo[axis] <= 0.0 };
-            if out && blocks::is_opaque(w.get(x + f.n[0], y + f.n[1], z + f.n[2])) {
+            if out && solid_beside(f.n) {
                 continue;
             }
             let name = if b.tex[f.s].is_empty() { def.faces[f.s] } else { b.tex[f.s] };
@@ -855,6 +897,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
     let mut varies = false;
     let mut layers: [MeshData; LAYERS] = Default::default();
     let mut rock = MeshData::default();
+    let mut lamps = MeshData::default();
     let o = c * CHUNK;
     let tints = Tints::of(w.seed, IVec2::new(c.x, c.z));
     let opaque = |x: i32, y: i32, z: i32| blocks::is_opaque(w.get(x, y, z));
@@ -867,6 +910,9 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
                 }
                 let def = blocks::block(id);
                 let (fx, fy, fz) = (x as f32, y as f32, z as f32);
+                if def.light {
+                    stand_in(&mut lamps, Vec3::new(fx, fy, fz), id);
+                }
                 match def.shape {
                     Shape::Air => {}
                     Shape::Water => {
@@ -1028,7 +1074,7 @@ pub fn mesh_chunk(w: &Voxels, atlas: &BlockAtlas, c: IVec3, cover: Cover, detail
     if !cover.off.sky && layers.iter().enumerate().any(|(i, l)| i != 2 && !l.is_empty()) {
         Sky::new(w, o, detail).shade(&mut layers);
     }
-    ChunkMesh { layers, varies, rock }
+    ChunkMesh { layers, varies, rock, lamps }
 }
 
 #[derive(Resource)]
@@ -1038,6 +1084,8 @@ pub struct BlockMaterials {
     pub canopy: Handle<StandardMaterial>,
     /// The water layer's, which keeps its own normals (`render::WaterMaterial`).
     pub water: Handle<crate::render::WaterMaterial>,
+    /// The flames' stand-ins' for the ray tracer (`stand_in`).
+    pub lamps: Handle<StandardMaterial>,
 }
 
 /// How far chunks are drawn round the player: a square this many columns
@@ -1284,6 +1332,7 @@ pub fn remesh(
         let mut sizes = [[0u64; 4]; LAYERS];
         let slot = chunks.map.entry(c).or_insert([None; LAYERS]);
         let mut rock = Some(m.rock);
+        let mut lamps = Some(m.lamps);
         for (i, mut data) in m.layers.into_iter().enumerate() {
             if let Some(e) = slot[i].take() {
                 commands.entity(e).despawn();
@@ -1339,6 +1388,16 @@ pub fn remesh(
                 }
                 3 => {
                     e.insert(crate::render::NotRaytraced);
+                }
+                // the tracer doesn't see point lights, so it sees the flames'
+                // stand-ins in their place, which give the lamps' light (and
+                // only those: the drawn flames glow for the eye, but most of
+                // a glowing mesh is dark frame, which would waste its samples)
+                GLOW if rt.0 => {
+                    e.insert(crate::render::NotRaytraced);
+                    if let Some(lamps) = lamps.take().filter(|d| !d.is_empty()) {
+                        crate::render::trace_only(&mut e, meshes.add(lamps.into_mesh(true)), mats.lamps.clone());
+                    }
                 }
                 // drawn glowing, but traced as plain rock: a glowing mesh is
                 // a lamp to the tracer, and hundreds of faint ones would

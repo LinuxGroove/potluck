@@ -6892,3 +6892,172 @@ fn glowing_ores_and_glowcaps_glow_a_little_without_lighting_anything() {
     let (n, _) = quads(LANTERN);
     assert!(n[GLOW] > 0 && n[FAINT] == 0, "{n:?}");
 }
+
+/// The triangles of a mesh, as corners, each with the normal its corners
+/// carry.
+fn triangles(m: &Mesh) -> Vec<([Vec3; 3], Vec3)> {
+    use bevy::mesh::VertexAttributeValues;
+    let Some(VertexAttributeValues::Float32x3(pos)) = m.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("no positions") };
+    let Some(VertexAttributeValues::Float32x3(nrm)) = m.attribute(Mesh::ATTRIBUTE_NORMAL) else { panic!("no normals") };
+    let idx: Vec<usize> = m.indices().unwrap().iter().collect();
+    idx.chunks(3).map(|t| ([0, 1, 2].map(|k| Vec3::from(pos[t[k]])), Vec3::from(nrm[t[0]]))).collect()
+}
+
+#[test]
+fn things_in_hand_are_cubes_or_cut_out_pictures_with_edges() {
+    use crate::held;
+    use crate::textures::Outline;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    // a block is a cube, every face outward
+    let cube = held::cube([[0.0, 0.0, 1.0, 1.0]; 3]);
+    let tris = triangles(&cube);
+    assert_eq!(tris.len(), 12);
+    for ([a, b, c], n) in &tris {
+        assert!((b - a).cross(c - a).dot(*n) > 0.0, "a cube's face turns in");
+        assert!((a + b + c).dot(*n) > 0.0, "a cube's face is on the far side");
+    }
+    // a picture all filled is its front, its back and a strip along each
+    // pixel of its edge, all facing out
+    let full = Outline { n: 8, solid: vec![true; 64] };
+    let tris = triangles(&held::sprite(&full, [0.0, 0.0, 1.0, 1.0]));
+    assert_eq!(tris.len() / 2, 2 + 4 * 8);
+    for ([a, b, c], n) in &tris {
+        assert!((b - a).cross(c - a).dot(*n) > 0.0, "a picture's face turns in");
+        let mid = (a + b + c) / 3.0;
+        assert!(mid.x.abs() <= 0.5 && mid.y.abs() <= 0.5 && mid.z.abs() <= 0.5 / 8.0 + 1e-6);
+    }
+    // a tool's picture has an edge wherever a pixel that shows meets one
+    // that doesn't
+    let o = &atlas.outlines["pickaxe_iron"];
+    let edges: usize = (0..o.n as i32)
+        .flat_map(|y| (0..o.n as i32).map(move |x| (x, y)))
+        .filter(|&(x, y)| o.at(x, y))
+        .map(|(x, y)| [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().filter(|(dx, dy)| !o.at(x + dx, y + dy)).count())
+        .sum();
+    assert!(edges > 20, "the iron pickaxe's picture is empty");
+    let tris = triangles(&held::sprite(o, BlockAtlas::uv(atlas.tile("pickaxe_iron"))));
+    assert_eq!(tris.len() / 2, 2 + edges);
+}
+
+use crate::textures::BlockAtlas;
+
+#[test]
+fn blocks_in_hand_are_cubes_tools_are_pictures_and_flames_glow() {
+    use crate::held::{self, Making};
+    use crate::items::by_name;
+    use bevy::ecs::system::RunSystemOnce;
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    // the chunks' own materials, as the game makes them
+    let mut mats = Assets::<StandardMaterial>::default();
+    let blocks = crate::render::make_materials(&atlas, &mut images, &mut mats, &mut Assets::default(), crate::render::Raytraced(false), crate::render::Tier::Medium);
+    app.insert_resource(atlas).insert_resource(images).insert_resource(blocks).insert_resource(mats).init_resource::<held::HeldLooks>().init_resource::<Assets<Mesh>>();
+    let looks = app
+        .world_mut()
+        .run_system_once(|mut m: Making| ["Stone", "Iron pickaxe", "Torch", "Crystal ore", "Planks"].map(|n| (m.look(by_name(n).unwrap()), m.look(by_name(n).unwrap()))))
+        .unwrap();
+    let mats = app.world().resource::<Assets<StandardMaterial>>();
+    let glows = |l: &held::Look| l.parts.iter().any(|(_, m)| mats.get(m).unwrap().emissive != LinearRgba::BLACK);
+    let [stone, pick, torch, crystal, planks] = looks.map(|(a, b)| {
+        let (a, b) = (a.unwrap(), b.unwrap());
+        // made once
+        assert_eq!(a.parts[0].0, b.parts[0].0);
+        a
+    });
+    assert!(stone.cube && planks.cube && crystal.cube && torch.cube, "blocks and models are themselves");
+    assert!(!pick.cube, "a tool is its picture");
+    // a torch is its stick and its glowing flame
+    assert_eq!(torch.parts.len(), 2);
+    assert!(glows(&torch) && glows(&crystal) && !glows(&stone) && !glows(&pick));
+    // a picture shows both sides
+    assert!(mats.get(&pick.parts[0].1).unwrap().double_sided && mats.get(&stone.parts[0].1).unwrap().cull_mode.is_some());
+    // held up in the air, nothing in hand takes the sky light the chunks' corners do
+    assert!([&stone, &pick, &torch].iter().flat_map(|l| &l.parts).all(|(_, m)| mats.get(m).unwrap().occlusion_texture.is_none()));
+    assert!(app.world_mut().run_system_once(|mut m: Making| m.look(0).is_none()).unwrap());
+}
+
+#[test]
+fn a_flame_in_hand_lights_the_way_and_people_hold_things_in_their_right_hand() {
+    use crate::held::{self, HandLight, Holds, InHand};
+    use crate::items::{by_name, Slot};
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let mut images = Assets::<Image>::default();
+    let torch = by_name("Torch").unwrap();
+    let pick = by_name("Iron pickaxe").unwrap();
+    let mut me = crate::player::Me::default();
+    me.slot = 0;
+    me.pockets.0[0] = Slot { thing: torch, count: 1 };
+    app.insert_resource(crate::textures::build(&mut images))
+        .insert_resource(images)
+        .insert_resource(me)
+        .insert_resource(crate::settings::Settings { survival: true, ..Default::default() })
+        .init_resource::<crate::render::Clock>()
+        .init_resource::<crate::render::Eye>()
+        .init_resource::<held::HeldLooks>()
+        .init_resource::<creatures::PartMaterials>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<StandardMaterial>>()
+        .add_systems(Update, (held::hand_light, (creatures::people, held::hands).chain()));
+    let body = app.world_mut().spawn((Transform::default(), Visibility::default(), creatures::Person::new(30.0), Holds(pick))).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    let lights = |app: &mut App| app.world_mut().query::<&HandLight>().iter(app.world()).count();
+    assert_eq!(lights(&mut app), 1, "a torch in hand gives light");
+    // the pickaxe is in the person's right hand, and only there
+    let held: Vec<(Entity, Thing)> = app.world_mut().query::<(Entity, &InHand)>().iter(app.world()).map(|(e, h)| (e, h.0)).collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].1, pick);
+    let hand = app.world().get::<ChildOf>(held[0].0).unwrap().parent();
+    let part = app.world().get::<creatures::PartView>(hand).unwrap();
+    assert!(app.world().get::<creatures::Person>(body).unwrap().is_right_hand(part));
+    // putting the torch away puts its light out; emptying a hand empties it
+    app.world_mut().resource_mut::<crate::player::Me>().pockets.0[0] = Slot { thing: by_name("Stone").unwrap(), count: 1 };
+    app.world_mut().get_mut::<Holds>(body).unwrap().0 = 0;
+    for _ in 0..2 {
+        app.update();
+    }
+    assert_eq!(lights(&mut app), 0);
+    assert_eq!(app.world_mut().query::<&InHand>().iter(app.world()).count(), 0);
+}
+
+use crate::items::Thing;
+
+#[test]
+fn flames_have_stand_ins_for_the_ray_tracer_and_caves_keep_the_sky_haze_out() {
+    use crate::blocks::*;
+    use crate::mesh::Detail;
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy::pbr::AtmosphereSettings;
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    let mut w = Voxels::empty(1);
+    w.set(IVec3::new(4, 4, 4), LANTERN);
+    w.set(IVec3::new(8, 4, 4), TORCH);
+    w.set(IVec3::new(8, 5, 4), STONE);
+    w.set(IVec3::new(12, 4, 4), STONE);
+    let m = crate::mesh::mesh_chunk(&w, &atlas, IVec3::ZERO, crate::mesh::Cover::default(), Detail::Near);
+    let tris = triangles(&m.lamps.into_mesh(true));
+    // a box each, facing out, inside its own block
+    assert_eq!(tris.len(), 2 * 12);
+    for ([a, b, c], n) in &tris {
+        assert!((b - a).cross(c - a).dot(*n) > 0.0, "a stand-in's face turns in");
+        let mid = (a + b + c) / 3.0;
+        let block = mid.floor().as_ivec3();
+        assert!(matches!(w.get(block.x, block.y, block.z), LANTERN | TORCH), "a stand-in pokes out of its block at {mid}");
+    }
+    // deep underground the sky's haze is spread too far to fall in the cave
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins).init_resource::<crate::render::Eye>();
+    let cam = app.world_mut().spawn((crate::player::MainCamera, AtmosphereSettings::default())).id();
+    let far = |app: &mut App| app.world().get::<AtmosphereSettings>(cam).unwrap().aerial_view_lut_max_distance;
+    app.world_mut().run_system_once(crate::render::cave_air).unwrap();
+    assert_eq!(far(&mut app), AtmosphereSettings::default().aerial_view_lut_max_distance);
+    app.world_mut().resource_mut::<crate::render::Eye>().below = 1.0;
+    app.world_mut().run_system_once(crate::render::cave_air).unwrap();
+    assert!(far(&mut app) > 500.0 * AtmosphereSettings::default().aerial_view_lut_max_distance);
+}

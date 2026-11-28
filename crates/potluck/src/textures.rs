@@ -70,6 +70,9 @@ pub struct BlockAtlas {
     tiles: HashMap<&'static str, u16>,
     /// Each tile's colour at full size, for item icons in the UI.
     pub icons: HashMap<&'static str, Handle<Image>>,
+    /// Which of each tile's pixels show, at most `OUTLINE` px square: what a
+    /// thing in hand is cut out of (`held`).
+    pub outlines: HashMap<&'static str, Outline>,
     /// How big a tile is at full size, and where tiles drawn later go
     /// (creations' blocks: `put`): plain ones from `next` up, glowing ones
     /// from `far` down, two at a time, as `build` lays them out.
@@ -79,6 +82,38 @@ pub struct BlockAtlas {
     /// Tiles drawn since the graphics card was last given them: the atlas
     /// images live only there once they're first sent (`made::MadePlugin`).
     pub writes: Vec<TileWrite>,
+}
+
+/// The most pixels across a tile's `Outline` keeps: the pixel art's own size.
+pub const OUTLINE: usize = 64;
+
+/// Which pixels of a tile show (alpha over half), `n` px square, rows from
+/// the top.
+#[derive(Clone)]
+pub struct Outline {
+    pub n: usize,
+    pub solid: Vec<bool>,
+}
+
+impl Outline {
+    /// From colours with alpha 0 to 255, `full` px square, kept at most
+    /// `OUTLINE` across (picked at each kept pixel's middle, as the pixel art
+    /// was scaled up without blending).
+    fn of(rgba: &[[f32; 4]], full: usize) -> Self {
+        let n = full.min(OUTLINE);
+        let solid = (0..n * n)
+            .map(|i| {
+                let (x, y) = (i % n, i / n);
+                let (sx, sy) = ((x * 2 + 1) * full / (2 * n), (y * 2 + 1) * full / (2 * n));
+                rgba[sy * full + sx][3] > 127.0
+            })
+            .collect();
+        Self { n, solid }
+    }
+
+    pub fn at(&self, x: i32, y: i32) -> bool {
+        x >= 0 && y >= 0 && (x as usize) < self.n && (y as usize) < self.n && self.solid[y as usize * self.n + x as usize]
+    }
 }
 
 /// One mip level of one tile's cell, gutter and all, to draw again into an
@@ -122,6 +157,7 @@ impl BlockAtlas {
         self.writes.extend(writes);
         self.tiles.insert(name, slot as u16);
         self.icons.insert(name, images.add(icon_image(&color, full)));
+        self.outlines.insert(name, Outline::of(&color, full));
         Some(slot as u16)
     }
 
@@ -901,10 +937,12 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
     });
     let mut tiles = HashMap::new();
     let mut icons = HashMap::new();
+    let mut outlines = HashMap::new();
     for (slot, s) in slots.iter().enumerate() {
         if let Some(i) = s {
             tiles.insert(drawn[*i].0, slot as u16);
             icons.insert(drawn[*i].0, images.add(icon_image(&maps[*i].color, full)));
+            outlines.insert(drawn[*i].0, Outline::of(&maps[*i].color, full));
         }
     }
     BlockAtlas {
@@ -915,6 +953,7 @@ pub fn build(images: &mut Assets<Image>) -> BlockAtlas {
         sky: images.add(sky_image()),
         tiles,
         icons,
+        outlines,
         full,
         next,
         far,

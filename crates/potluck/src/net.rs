@@ -1512,7 +1512,7 @@ pub struct PlayerView(u32);
 /// A person made of painted boxes (`creatures::Person`), for other players
 /// and for yourself seen from behind.
 fn spawn_person<'a>(commands: &'a mut Commands, hue: f32, pos: Vec3) -> EntityCommands<'a> {
-    commands.spawn((Transform::from_translation(pos), Visibility::default(), crate::creatures::Person::new(hue)))
+    commands.spawn((Transform::from_translation(pos), Visibility::default(), crate::creatures::Person::new(hue), crate::held::Holds::default()))
 }
 
 pub fn draw_players(
