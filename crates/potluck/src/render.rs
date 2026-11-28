@@ -20,6 +20,7 @@ pub mod dome;
 pub mod far;
 pub mod timings;
 pub mod motes;
+pub mod murk;
 
 use crate::mesh::BlockMaterials;
 use crate::player::{MainCamera, Me};
@@ -452,6 +453,8 @@ pub fn spawn_sky(commands: &mut Commands, settings: &Settings, media: &mut Asset
         SunDisk::EARTH,
         Transform::default(),
         Sun,
+        // hidden chunks that still shade what's seen (`mesh::cull`)
+        bevy::camera::visibility::RenderLayers::from_layers(&[0, crate::mesh::cull::SHADOW_ONLY]),
     ));
     if high && on("haze") {
         sun.insert(VolumetricLight);

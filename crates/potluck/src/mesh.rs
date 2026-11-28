@@ -50,13 +50,15 @@ pub struct Off {
     pub rtsolid: bool,
     /// Chunk meshes at full size on the graphics card (`pack`)
     pub pack: bool,
+    /// Every chunk drawn, seen or not (`cull`)
+    pub cull: bool,
 }
 
 impl Off {
     fn from_env() -> Self {
         let v = std::env::var("POTLUCK_OFF").unwrap_or_default();
         let has = |w: &str| v.split(',').any(|o| o.trim() == w);
-        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid"), pack: has("pack") }
+        Off { tufts: has("tufts"), fins: has("fins"), lips: has("lips"), wind: has("wind"), lod: has("lod"), sky: has("sky"), rtleaves: has("rtleaves"), rtsolid: has("rtsolid"), pack: has("pack"), cull: has("cull") }
     }
 }
 
@@ -362,6 +364,8 @@ pub struct ChunkMesh {
     /// Whether anything in it changes with its `Detail` (grass, leaves, plants).
     pub varies: bool,
 }
+
+pub mod cull;
 
 pub const LAYERS: usize = 7;
 /// The ground cover layer.
@@ -1071,6 +1075,10 @@ pub struct ChunkEntities {
     /// Each chunk's layers' sizes on the graphics card, for the memory
     /// report: vertices, and bytes of vertices, indices and wind targets.
     pub sizes: HashMap<IVec3, [[u64; 4]; LAYERS]>,
+    /// Which faces open space joins inside each chunk (`cull::connections`).
+    pub connect: HashMap<IVec3, u64>,
+    /// Counts changes to `connect`.
+    pub connect_rev: u64,
 }
 
 /// What each layer of a chunk holds, for the memory report.
@@ -1118,6 +1126,8 @@ pub fn show(mut commands: Commands, mut voxels: ResMut<Voxels>, focus: Res<MeshF
         chunks.shown_rev += 1;
         chunks.detail.clear();
         chunks.sizes.clear();
+        chunks.connect.clear();
+        chunks.connect_rev += 1;
         chunks.meshed = 0;
     }
     chunks.looked = now;
@@ -1138,6 +1148,7 @@ pub fn show(mut commands: Commands, mut voxels: ResMut<Voxels>, focus: Res<MeshF
             }
             chunks.detail.remove(&c);
             chunks.sizes.remove(&c);
+            chunks.connect.remove(&c);
         }
     }
     // newly in view, with everything round them here
@@ -1208,6 +1219,11 @@ pub fn remesh(
         }
         chunks.sizes.remove(&c);
         chunks.detail.remove(&c);
+        // all air, or solid right through
+        let join = if voxels.uniform(c) == Some(AIR) { cull::ALL } else { 0 };
+        if chunks.connect.insert(c, join) != Some(join) {
+            chunks.connect_rev += 1;
+        }
     }
     if voxels.dirty.is_empty() {
         return;
@@ -1228,13 +1244,16 @@ pub fn remesh(
     let cv = *cover;
     let jobs: Vec<(IVec3, Detail)> = list.iter().map(|&c| (c, Detail::of(c, focus.0, chunks.detail.get(&c).copied()))).collect();
     let porous = rt.0 && !cv.off.rtleaves && !cv.off.rtsolid;
-    let done: Vec<(IVec3, Detail, ChunkMesh, Option<MeshData>)> = ComputeTaskPool::get().scope(|s| {
+    let done: Vec<(IVec3, Detail, ChunkMesh, Option<MeshData>, u64)> = ComputeTaskPool::get().scope(|s| {
         for &(c, d) in &jobs {
-            s.spawn(async move { (c, d, mesh_chunk(w, a, c, cv, d), porous.then(|| porous_leaves(w, c))) });
+            s.spawn(async move { (c, d, mesh_chunk(w, a, c, cv, d), porous.then(|| porous_leaves(w, c)), cull::connections(w, c)) });
         }
     });
-    for (c, detail, m, mut canopy) in done {
+    for (c, detail, m, mut canopy, join) in done {
         chunks.meshed += 1;
+        if chunks.connect.insert(c, join) != Some(join) {
+            chunks.connect_rev += 1;
+        }
         if m.varies {
             chunks.detail.insert(c, detail);
         } else {

@@ -165,6 +165,7 @@ fn main() {
     sim(&mut app, SEED);
     app.add_plugins((MaterialPlugin::<render::WaterMaterial>::default(), made::MadePlugin));
     render::add_menu_blur(&mut app);
+    render::murk::add(&mut app);
     if offscreen {
         app.insert_resource(OffscreenSize(size));
     }
@@ -185,6 +186,7 @@ fn main() {
         .init_resource::<input::Controls>()
         .init_resource::<player::Me>()
         .init_resource::<mesh::ChunkEntities>()
+        .init_resource::<mesh::cull::Culling>()
         .init_resource::<mesh::MeshFocus>()
         .init_resource::<mesh::Cover>()
         .init_resource::<mesh::View>()
@@ -224,8 +226,8 @@ fn main() {
             Update,
             (
                 (net::client_net, net::lan_list, game::riding, creatures::ride, player::place_camera).chain(),
-                (focus_mesh, view_distance, mesh::show, mesh::remesh, render::far::follow, mesh::wind).chain(),
-                (render::sky, render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
+                (focus_mesh, view_distance, mesh::show, mesh::remesh, mesh::cull::cull, render::far::follow, mesh::wind).chain(),
+                ((render::sky, render::murk::follow).chain(), render::clouds::drift, render::dome::follow, render::lanterns, render::flicker, render::motes::motes, creatures::draw, (net::draw_players, net::draw_me, creatures::people).chain(), game::labels, ui::update_hud, ui::cursor, ui::outline),
                 (map::refresh, map::draw_hud, map::make_room, map::draw_map, chat::draw_feed, keyboard::draw),
             )
                 .chain()
@@ -247,7 +249,8 @@ fn main() {
         demo::add(&mut app, dir.into(), size);
     }
     // a screenshot: --shot=out.png [--after=8] [--at=x,y,z,yaw,pitch] [--time=0.5] [--screen=inside]
-    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5;
+    // (a y of 0 or less is that far above the ground: --at=186,-1.5,286,0,-5,
+    // unless --exact takes it as it is, for caves; --put=x,y,z,Block puts one down;
     // --at=creature looks a creature in the face, --at=creature:2 the third;
     // --person[=hue] stands a player in view)
     if let Some(path) = opt("shot") {
@@ -260,12 +263,38 @@ fn main() {
         let person = args.iter().find(|a| a.starts_with("--person")).map(|a| a.strip_prefix("--person=").and_then(|h| h.parse().ok()).unwrap_or(30.0));
         // --lines puts a few lines of chat on the screen, as friends might say
         let lines = args.iter().any(|a| a == "--lines");
-        app.insert_resource(Shot { path, after, at, tod, screen, creature, person, lines, done: false, frames: 0 });
+        let exact = args.iter().any(|a| a == "--exact");
+        // --put=x,y,z,Torch;x,y,z,Glowcap puts blocks down first (lights in a cave)
+        if let Some(list) = opt("put") {
+            let puts: Vec<(IVec3, blocks::BlockId)> = list
+                .split(';')
+                .filter_map(|p| {
+                    let v: Vec<&str> = p.split(',').collect();
+                    let n = |i: usize| v.get(i)?.trim().parse::<i32>().ok();
+                    Some((IVec3::new(n(0)?, n(1)?, n(2)?), blocks::by_name(v.get(3)?.trim())?))
+                })
+                .collect();
+            app.insert_resource(Puts(puts));
+            app.add_systems(Update, put_blocks.before(Sim));
+        }
+        app.insert_resource(Shot { path, after, at, exact, tod, screen, creature, person, lines, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));
         // no outline round the block in the crosshair
         app.add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| gizmos.config_mut::<DefaultGizmoConfigGroup>().0.enabled = false);
     }
     app.run();
+}
+
+/// Blocks a shot puts down (`--put`).
+#[derive(Resource)]
+struct Puts(Vec<(IVec3, blocks::BlockId)>);
+
+fn put_blocks(puts: Res<Puts>, mut voxels: ResMut<world::Voxels>) {
+    for &(p, b) in &puts.0 {
+        if voxels.has(world::key_of(p.x, p.z)) && voxels.at(p) != b {
+            voxels.set(p, b);
+        }
+    }
 }
 
 /// The size the tools draw at, offscreen.
@@ -277,6 +306,8 @@ struct Shot {
     path: String,
     after: f32,
     at: Option<Vec<f32>>,
+    /// `at`'s height as it is, even at 0 or below (caves).
+    exact: bool,
     tod: Option<f32>,
     screen: Option<String>,
     /// Which creature to look in the face, counting by id, or the first of a creation's.
@@ -317,7 +348,7 @@ fn shot(
             // a height of 0 or less is above the ground there: -1.5 stands 1.5 up,
             // moved to the nearest spot clear of trunks and leaves (forests)
             let (mut x, mut z) = (at[0], at[2]);
-            let y = if at[1] <= 0.0 {
+            let y = if at[1] <= 0.0 && !s.exact {
                 let up = (-at[1]).ceil() as i32 + 1;
                 let clear = |x: i32, z: i32| {
                     let t = voxels.top(x, z);
