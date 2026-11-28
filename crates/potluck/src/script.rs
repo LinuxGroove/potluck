@@ -3316,6 +3316,11 @@ impl Scripts {
         self.shared.lock().unwrap().held.insert(player, b);
     }
 
+    /// What a player has in hand, as their game last said; 0 for nothing.
+    pub fn held_by(&self, player: u32) -> Thing {
+        self.shared.lock().unwrap().held.get(&player).copied().unwrap_or(0)
+    }
+
     /// What each thing held does to blocks, from every creation's
     /// `world.digging`: their speeds multiplied together and the highest
     /// level. It's what every game is told, in order of what's held.

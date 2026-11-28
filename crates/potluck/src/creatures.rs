@@ -454,6 +454,19 @@ pub struct PartView {
     index: usize,
 }
 
+/// A skin's textures (colour, bumps, roughness), painted the first time
+/// anything wears it.
+pub fn skin_textures(cache: &mut PartMaterials, images: &mut Assets<Image>, skin: Skin) -> [Handle<Image>; 3] {
+    cache
+        .skins
+        .entry(skin)
+        .or_insert_with(|| {
+            let s = paint(skin);
+            [images.add(s.color), images.add(s.normal), images.add(s.rough)]
+        })
+        .clone()
+}
+
 /// The looks parts share: a material for each colour, glow and skin, the
 /// skins' textures, and a mesh for each size and skin.
 #[derive(Resource, Default)]
@@ -652,16 +665,7 @@ impl Looks<'_> {
         if let Some(m) = self.cache.mats.get(&key) {
             return m.clone();
         }
-        let images = &mut *self.images;
-        let [color, normal, rough] = self
-            .cache
-            .skins
-            .entry(skin)
-            .or_insert_with(|| {
-                let s = paint(skin);
-                [images.add(s.color), images.add(s.normal), images.add(s.rough)]
-            })
-            .clone();
+        let [color, normal, rough] = skin_textures(self.cache, self.images, skin);
         let col = Color::srgb(p.color[0], p.color[1], p.color[2]);
         let textured = skin != Skin::Eye;
         let m = self.mats.add(StandardMaterial {
@@ -821,6 +825,11 @@ impl Person {
     /// they hold (a person faces -z, so their right is +x).
     pub fn is_right_hand(&self, p: &PartView) -> bool {
         self.parts.get(p.index).is_some_and(|q| q.name == "hand" && q.at.x > 0.0)
+    }
+
+    /// The part a part's view draws (where `worn` hangs armor).
+    pub fn part(&self, p: &PartView) -> Option<&Part> {
+        self.parts.get(p.index)
     }
 }
 

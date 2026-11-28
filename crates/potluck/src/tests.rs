@@ -7406,6 +7406,17 @@ fn blocks_in_hand_are_cubes_tools_are_pictures_and_flames_glow() {
     // held up in the air, nothing in hand takes the sky light the chunks' corners do
     assert!([&stone, &pick, &torch].iter().flat_map(|l| &l.parts).all(|(_, m)| mats.get(m).unwrap().occlusion_texture.is_none()));
     assert!(app.world_mut().run_system_once(|mut m: Making| m.look(0).is_none()).unwrap());
+    // up at the eye a flame lights its own stick and burns no brighter
+    // than the eye can take; anything else is drawn as in a hand
+    let (torch_view, pick_view) = (torch.clone(), pick.clone());
+    let (seen, plain) = app.world_mut().run_system_once(move |mut m: Making| (m.for_view(&torch_view), m.for_view(&pick_view))).unwrap();
+    let mats = app.world().resource::<Assets<StandardMaterial>>();
+    assert_eq!(plain.parts, pick.parts);
+    let bright = |l: &held::Look| l.parts.iter().map(|(_, m)| mats.get(m).unwrap().emissive.red).fold(0.0, f32::max);
+    assert!(bright(&seen) < bright(&torch), "the flame at the eye is dimmed");
+    let stick = |l: &held::Look| l.parts.iter().map(|(_, m)| mats.get(m).unwrap()).find(|m| m.emissive_texture.as_ref() != Some(&app.world().resource::<crate::textures::BlockAtlas>().glow)).cloned();
+    assert_eq!(stick(&torch).unwrap().emissive, LinearRgba::BLACK);
+    assert!(stick(&seen).unwrap().emissive.red > 0.0, "the stick is lit by its flame");
 }
 
 #[test]
@@ -7585,4 +7596,112 @@ sky.on("strike", function(at) print("struck " .. at.x .. " " .. at.y .. " " .. a
     assert!(w.strikes.is_empty() && w.glow(false) == 0.0, "and gone");
     assert_eq!(thunder.0.len(), 1);
     assert!((thunder.0[0].0 - 1.0).abs() < 1e-4, "heard a second later from 340 blocks: {:?}", thunder.0);
+}
+
+#[test]
+fn players_hear_what_others_hold_and_wear_and_what_they_wear_only_when_it_changes() {
+    use crate::items::by_name;
+    use crate::net::{news_for, Msg, PlayerSnap, Seen};
+    let herd = Herd::default();
+    let (pick, helmet, shield) = (by_name("Iron pickaxe").unwrap(), by_name("Iron helmet").unwrap(), by_name("Shield").unwrap());
+    let friend = |held: Thing, worn: [Thing; 5]| PlayerSnap { id: 2, name: "Ada".into(), pos: [3.0, 10.0, 0.0], yaw: 0.0, held: Some(held), worn: Some(worn) };
+    let mut seen = Seen::default();
+    let people = |msgs: Vec<Msg>| msgs.into_iter().find_map(|m| if let Msg::People { list, gone, wear } = m { Some((list, gone, wear)) } else { None });
+    let mut hear = |seen: &mut Seen, everyone: &[PlayerSnap], wear: [Thing; 5]| people(news_for(1, Vec3::new(0.0, 10.0, 0.0), wear, seen, everyone, &[], &herd));
+    // coming into view, everything about them goes
+    let (list, _, wear) = hear(&mut seen, &[friend(pick, [helmet, 0, 0, 0, shield])], [0; 5]).unwrap();
+    assert_eq!(list, vec![friend(pick, [helmet, 0, 0, 0, shield])]);
+    assert_eq!(wear, None, "you wear nothing, as you were told");
+    // nothing changed, nothing goes
+    assert!(hear(&mut seen, &[friend(pick, [helmet, 0, 0, 0, shield])], [0; 5]).is_none());
+    // putting the pickaxe away sends only that
+    let (list, ..) = hear(&mut seen, &[friend(0, [helmet, 0, 0, 0, shield])], [0; 5]).unwrap();
+    assert_eq!((list[0].held, list[0].worn, list[0].name.as_str()), (Some(0), None, ""));
+    // taking the helmet off sends only what they wear
+    let (list, ..) = hear(&mut seen, &[friend(0, [0, 0, 0, 0, shield])], [0; 5]).unwrap();
+    assert_eq!((list[0].held, list[0].worn), (None, Some([0, 0, 0, 0, shield])));
+    // and what you wear yourself goes when it changes, once
+    let (list, _, wear) = hear(&mut seen, &[friend(0, [0, 0, 0, 0, shield])], [helmet, 0, 0, 0, 0]).unwrap();
+    assert!(list.is_empty());
+    assert_eq!(wear, Some([helmet, 0, 0, 0, 0]));
+    assert!(hear(&mut seen, &[friend(0, [0, 0, 0, 0, shield])], [helmet, 0, 0, 0, 0]).is_none());
+    // an unchanged hand and armor aren't sent at all
+    let snap = PlayerSnap { held: None, worn: None, ..friend(0, [0; 5]) };
+    let json = serde_json::to_string(&snap).unwrap();
+    assert!(!json.contains("held") && !json.contains("worn"), "{json}");
+}
+
+#[test]
+fn armor_hangs_on_the_parts_it_covers_and_comes_off_again() {
+    use crate::items::by_name;
+    use crate::worn::{self, Piece, Stuff, Wears};
+    // every piece of armor is made of something, and the shield of boards
+    for t in (303..=318).chain(346..=349) {
+        assert!(Stuff::of(t).is_some_and(|s| s != Stuff::Wood), "{}", crate::items::name(t));
+    }
+    assert_eq!(Stuff::of(by_name("Shield").unwrap()), Some(Stuff::Wood));
+    assert_eq!(Stuff::of(by_name("Iron pickaxe").unwrap()), None);
+    assert_eq!(Stuff::of(by_name("Stone").unwrap()), None);
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .init_resource::<creatures::PartMaterials>()
+        .init_resource::<worn::WornLooks>()
+        .init_resource::<Assets<Image>>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<StandardMaterial>>()
+        .add_systems(Update, (creatures::people, worn::wear).chain());
+    let iron = ["Iron helmet", "Iron coat", "Iron leggings", "Iron boots", "Shield"].map(|n| by_name(n).unwrap());
+    let body = app.world_mut().spawn((Transform::default(), Visibility::default(), creatures::Person::new(30.0), Wears(iron))).id();
+    for _ in 0..3 {
+        app.update();
+    }
+    // each piece hangs on the parts it covers, so it swings with them
+    let on = |app: &mut App| {
+        let pieces: Vec<(Entity, Thing)> = app.world_mut().query::<(Entity, &Piece)>().iter(app.world()).map(|(e, p)| (e, p.0)).collect();
+        let mut on: Vec<(String, Thing)> = pieces
+            .iter()
+            .map(|(e, t)| {
+                let part = app.world().get::<ChildOf>(*e).unwrap().parent();
+                let view = app.world().get::<creatures::PartView>(part).unwrap();
+                (app.world().get::<creatures::Person>(body).unwrap().part(view).unwrap().name.clone(), *t)
+            })
+            .collect();
+        on.sort();
+        on.dedup();
+        on
+    };
+    let [helmet, coat, leggings, boots, shield] = iron;
+    assert_eq!(
+        on(&mut app),
+        {
+            let mut want = vec![
+                ("face".to_string(), helmet),
+                ("shirt cloth".to_string(), coat),
+                ("sleeve cloth".to_string(), coat),
+                ("leg cloth".to_string(), leggings),
+                ("leg cloth".to_string(), boots),
+                ("hand".to_string(), shield),
+            ];
+            want.sort();
+            want
+        }
+    );
+    // a piece is bigger than what it covers
+    let world = app.world_mut();
+    let sizes: Vec<Vec3> = world.query::<(&Mesh3d, &Piece)>().iter(world).filter(|(_, p)| p.0 == coat).map(|(m, _)| m.0.clone()).collect::<Vec<_>>().iter().map(|m| {
+        let mesh = world.resource::<Assets<Mesh>>().get(m).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(ps)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { panic!("a piece has positions") };
+        let (lo, hi) = ps.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(Vec3::from_array(*p)), hi.max(Vec3::from_array(*p))));
+        hi - lo
+    }).collect();
+    assert!(sizes.iter().any(|s| s.x > 0.54 && s.z > 0.3), "the coat goes over the shirt: {sizes:?}");
+    // changing what they wear changes what's drawn; taking it all off leaves nothing
+    app.world_mut().get_mut::<Wears>(body).unwrap().0 = [by_name("Wool cap").unwrap(), 0, 0, 0, 0];
+    app.update();
+    app.update();
+    assert_eq!(on(&mut app), vec![("face".to_string(), by_name("Wool cap").unwrap())]);
+    app.world_mut().get_mut::<Wears>(body).unwrap().0 = [0; 5];
+    app.update();
+    app.update();
+    assert!(on(&mut app).is_empty());
 }
