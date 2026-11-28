@@ -5614,9 +5614,9 @@ fn made_blocks_are_drawn_into_the_atlas() {
     let mut n = 0;
     while atlas.put(&mut images, Box::leak(format!("test/fill{n}").into_boxed_str()), &red, 16, &vec![false; 256]).is_some() {
         n += 1;
-        assert!(n < 256);
+        assert!(n < crate::textures::GRID * crate::textures::GRID);
     }
-    assert!(n > 40, "room for plenty of made blocks: {n}");
+    assert!(n > 300, "room for plenty of made blocks: {n}");
 }
 
 /// world 0.15: a made block that turns is four blocks, one for each way it
@@ -6773,4 +6773,12 @@ fn cave_culling_reaches_what_open_space_leads_to() {
     let seen_from_below = reached(IVec3::new(1, -3, 0), shown, join);
     assert!(seen_from_below.contains(&IVec3::new(1, 2, 0)), "up the shaft to the sky");
     assert!(!seen_from_below.contains(&IVec3::new(3, 0, 0)), "not back down onto the ground past it");
+}
+
+#[test]
+fn the_block_atlas_leaves_room_for_creations_blocks() {
+    let mut images = Assets::<Image>::default();
+    let atlas = crate::textures::build(&mut images);
+    // the base game's creations alone made more than 66 tiles fill it (#59)
+    assert!(atlas.room() >= 300, "room for {} more tiles", atlas.room());
 }

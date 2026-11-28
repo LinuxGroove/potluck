@@ -27,7 +27,10 @@ pub mod skins;
 
 /// How big the drawn textures are.
 pub const TILE: usize = 32;
-pub const GRID: usize = 16; // 16 x 16 tiles
+/// Tiles along each side of the atlas: the game's own blocks and items
+/// take about 190, glowing tiles two each, and creations' blocks the rest.
+/// 24 keeps the atlas inside 8192 px even with 256 px bakes.
+pub const GRID: usize = 24;
 pub const SIZE: usize = TILE * GRID;
 /// Each tile sits in a cell with a gutter a tile's width over this all round,
 /// filled with the tile wrapped round. Multisampling shades a pixel that only
@@ -163,6 +166,11 @@ impl BlockAtlas {
                 TileWrite { image, level, x, y, size: cell as u32, data }
             })
             .collect()
+    }
+
+    /// How many more plain tiles creations' blocks can have.
+    pub fn room(&self) -> usize {
+        self.far.saturating_sub(self.next + GRID)
     }
 
     /// The tile `name` draws into: its own if it has one, or a new one.
