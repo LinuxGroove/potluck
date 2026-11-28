@@ -9,7 +9,7 @@
 -- world (store), since the game only brings back as many as `count` after a
 -- restart.
 
-local world = require("@potluck/world@0.10")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 
@@ -112,8 +112,10 @@ local Lamb = world.creature {
 -- ---- lambs: two fed woollies have one ----
 
 -- who's keen and where, each saying every tick (an old word is someone gone)
-type Keen = { at: vector, t: number }
+type Keen = { at: vector, t: number, by: number? }
 local keen: { [number]: Keen } = {}
+-- XP for each feeding that leads to a young one
+local BRED_XP = 3
 -- a woolly whose partner had the lamb: it rests too
 local done: { [number]: boolean } = {}
 -- how grown a lamb spawned from here is to be, by its id, for its `spawned`
@@ -179,7 +181,7 @@ local function court(self, dt: number)
 		keen[self.id] = nil
 		return
 	end
-	keen[self.id] = { at = self.position, t = world.time() }
+	keen[self.id] = { at = self.position, t = world.time(), by = self.fed_by }
 	local other, far = partner(self)
 	if not other then
 		return
@@ -191,6 +193,10 @@ local function court(self, dt: number)
 		local mid = (self.position + keen[other].at) * 0.5
 		if lamb_at(mid, knobs.grow * 60) then
 			done[other] = true
+			-- XP for whoever fed the two (world.reward)
+			for _, by in { self.fed_by, keen[other].by } do
+				world.reward(by, BRED_XP)
+			end
 			rested(self)
 			self:say("Baa-aa!")
 		end
@@ -210,6 +216,7 @@ local function feed(self, player, young: boolean)
 		self:say("Baa. Not now.")
 	elseif world.take(player, FOOD, 1) then
 		self.love = 30
+		self.fed_by = player.id
 		self:say("Nom nom.")
 	end
 end

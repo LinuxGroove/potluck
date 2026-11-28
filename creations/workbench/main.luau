@@ -53,6 +53,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Planks = 6 }, give = "Bookshelf", n = 1 },
 		-- cooks pies and stews over a fire (Furnaces and campfires)
 		{ want = { ["Iron ingot"] = 3 }, give = "Cooking pot", n = 1 },
+		-- puts charms on tools and weapons for XP (the Charms creation)
+		{ want = { ["Gold ingot"] = 2, Crystal = 1, Planks = 4 }, give = "Charm table", n = 1 },
 	},
 	Lights = {
 		{ want = { Coal = 1, Planks = 1 }, give = "Torch", n = 4 },

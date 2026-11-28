@@ -9,7 +9,7 @@
 -- can change them or add its own. In creative there's no need to carry
 -- arrows or stones.
 
-local world = require("@potluck/world@0.19")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.2")
@@ -82,7 +82,8 @@ world.on("item_used", function(player, item: string?, aim: vector)
 	end
 	ready[pid] = world.time() + w.wait
 	local ammo = w.ammo
-	local opts = { aim = aim, look = w.look, speed = w.speed, drop = w.drop, power = w.power * knobs.power }
+	-- a Keen bow, sling or spear hits harder (world.might)
+	local opts = { aim = aim, look = w.look, speed = w.speed, drop = w.drop, power = w.power * knobs.power * world.might(player) }
 	local id = world.shoot(player, opts, function(at: vector, block: string?, creature: number?)
 		if creature then
 			sound.play("thud", { at = at, volume = 0.7 })

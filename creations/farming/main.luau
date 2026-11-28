@@ -17,7 +17,7 @@
 -- they grow back. The crops, shoots and bushes are this creation's own
 -- blocks, drawn in potluck.toml.
 
-local world = require("@potluck/world@0.20")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -295,6 +295,8 @@ world.on("block_broken", function(player, at: vector, block: string)
 	forget(k)
 	local kind = CROPS[c.crop]
 	if c.ripe and block == c.crop then
+		-- a little XP for each ripe crop (world.reward)
+		local reaped = 1
 		if knobs.harvest > 0 then
 			world.give(player, c.crop, knobs.harvest)
 		end
@@ -312,9 +314,11 @@ world.on("block_broken", function(player, at: vector, block: string)
 					if ALSO[o.crop] then
 						world.give(player, ALSO[o.crop], 1)
 					end
+					reaped += 1
 				end
 			end
 		end
+		world.reward(player, reaped)
 		sound.play("pop", { at = at, caption = "Harvest" })
 	elseif not c.ripe and kind and block == kind.shoot then
 		-- too soon: the seed back

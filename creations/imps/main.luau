@@ -8,7 +8,7 @@
 -- whoever popped it. How many come, how often they throw and how hard
 -- embers sting go by the world's danger (world.danger): none on Peaceful.
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local sound = require("@potluck/sound@0.2")
@@ -262,7 +262,8 @@ end
 
 function Imp:hit(player, shot)
 	local held = world.held(player)
-	local bop = if shot then shot.power else (held and SWORDS[held] or 1)
+	-- a Keen sword hits harder (world.might); a shot's power says already
+	local bop = if shot then shot.power else (held and SWORDS[held] or 1) * world.might(player)
 	self.bopped = (self.bopped or 0) + bop
 	if self.bopped < knobs.bops then
 		local away = self.position - player.position
@@ -274,6 +275,7 @@ function Imp:hit(player, shot)
 	end
 	sound.play("pop", { at = self, pitch = 1.3, caption = "An ember imp pops" })
 	world.give(player, "Ember", math.floor(world.random(1, 2.999)))
+	world.reward(player, 4)
 	gone(self)
 end
 

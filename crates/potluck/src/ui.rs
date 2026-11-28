@@ -1669,6 +1669,15 @@ pub struct HealthTrack;
 pub struct MeterTrack(usize);
 #[derive(Component)]
 pub struct MeterFill(usize);
+/// The XP bar under the health row, its fill and the level beside it.
+#[derive(Component)]
+pub struct XpTrack;
+#[derive(Component)]
+pub struct XpFill;
+#[derive(Component)]
+pub struct XpText;
+/// The XP bar's colour.
+const XP_GREEN: Color = Color::srgb(0.46, 0.86, 0.36);
 #[derive(Component)]
 pub struct Crosshair;
 #[derive(Component)]
@@ -1740,6 +1749,24 @@ pub fn spawn_hud(mut commands: Commands, fonts: Res<Fonts>) {
                     });
                 }
             });
+            // XP: a thin bar under the health row, and the level at its left
+            h.spawn((
+                XpTrack,
+                Node { position_type: PositionType::Absolute, bottom: px(77), left: percent(50), margin: UiRect::left(px(-240)), width: px(480), height: px(3), border_radius: BorderRadius::all(px(2)), display: Display::None, ..default() },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.3)),
+            ))
+            .with_children(|b| {
+                b.spawn((XpFill, Node { width: percent(0), height: percent(100), border_radius: BorderRadius::all(px(2)), ..default() }, BackgroundColor(XP_GREEN)));
+            });
+            h.spawn((
+                XpText,
+                Text::new(""),
+                TextFont { font: ui.clone().into(), font_size: FontSize::Px(13.0), ..default() },
+                TextColor(XP_GREEN),
+                TextLayout::justify(Justify::Right),
+                Node { position_type: PositionType::Absolute, bottom: px(70), left: percent(50), margin: UiRect::left(px(-296)), width: px(48), ..default() },
+                Visibility::Hidden,
+            ));
             h.spawn(Node { position_type: PositionType::Absolute, bottom: px(16), width: percent(100), justify_content: JustifyContent::Center, column_gap: px(6), ..default() }).with_children(|bar| {
                 for i in 0..9 {
                     bar.spawn((
@@ -1824,12 +1851,15 @@ pub fn update_hud(
         Query<(&LabelText, &mut Text, &mut Node, &mut Visibility)>,
         Query<(&PieceText, &mut Text, &mut Visibility), Without<Hud>>,
         Query<(&mut Text, &mut Visibility), (With<CaptionText>, Without<Hud>)>,
+        Query<(&mut Text, &mut Visibility), (With<XpText>, Without<Hud>)>,
     )>,
     mut bars: ParamSet<(
         Query<(&mut Node, &mut BackgroundColor), (With<HealthBar>, Without<LabelText>)>,
         Query<&mut Node, (With<HealthTrack>, Without<LabelText>)>,
         Query<(&MeterTrack, &mut Node), Without<LabelText>>,
         Query<(&MeterFill, &mut Node, &mut BackgroundColor), Without<LabelText>>,
+        Query<&mut Node, (With<XpTrack>, Without<LabelText>)>,
+        Query<&mut Node, (With<XpFill>, Without<LabelText>)>,
     )>,
     cam: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
@@ -1923,6 +1953,22 @@ pub fn update_hud(
         if let Some((v, c)) = meters.get(f.0) {
             n.width = percent(v * 100.0);
             bg.0 = Color::srgb_u8(c[0], c[1], c[2]);
+        }
+    }
+    // XP, in survival once there's some (`world.reward`)
+    let xp = me.xp.filter(|x| *x > 0 && settings.survival).map(crate::script::xp_level);
+    if let Ok(mut n) = bars.p4().single_mut() {
+        n.display = if xp.is_some() { Display::Flex } else { Display::None };
+    }
+    if let (Ok(mut n), Some((_, into))) = (bars.p5().single_mut(), xp) {
+        n.width = percent(into * 100.0);
+    }
+    if let Ok((mut t, mut v)) = texts.p7().single_mut() {
+        if let Some((level, _)) = xp {
+            t.0 = level.to_string();
+            *v = Visibility::Inherited;
+        } else {
+            *v = Visibility::Hidden;
         }
     }
     // labels over creatures and players

@@ -1,6 +1,6 @@
 --!strict
 local test = require("@potluck/test@0.7")
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 
 local function boars(): { number }
 	return world.creatures(test.kind("Bramble Boar"))
@@ -80,4 +80,5 @@ test.case("beaten, one leaves leather, bristles and meat", function()
 	test.check(world.has(p, "Leather") >= 1, "leather")
 	test.check(world.has(p, "Bristles") >= 1, "bristles")
 	test.check(world.has(p, "Raw meat") >= 1, "meat")
+	test.same(world.xp(p), 5, "and some XP")
 end)
