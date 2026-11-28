@@ -7598,6 +7598,179 @@ sky.on("strike", function(at) print("struck " .. at.x .. " " .. at.y .. " " .. a
     assert!((thunder.0[0].0 - 1.0).abs() < 1e-4, "heard a second later from 340 blocks: {:?}", thunder.0);
 }
 
+const PANTRY_TOML: &str = r##"
+name = "Pantry"
+by = "Tests"
+kind = "mod"
+main = "main.luau"
+
+[items.plum_jam]
+kind = "food"
+food = 7
+says = "You ate some plum jam. Sweet!"
+colors = { a = "#803060" }
+picture = ["aaaaaaaa", "aaaaaaaa", "aaaaaaaa", "aaaaaaaa", "aaaaaaaa", "aaaaaaaa", "aaaaaaaa", "aaaaaaaa"]
+
+[items.felt_hat]
+kind = "armor"
+slot = "head"
+guard = 4
+warm = true
+colors = { a = "#605040" }
+picture = ["........", "..aaaa..", ".aaaaaa.", ".aaaaaa.", "aaaaaaaa", "aaaaaaaa", "........", "........"]
+
+[items.club]
+kind = "weapon"
+power = 7
+colors = { a = "#806040" }
+picture = ["......aa", ".....aaa", "....aaa.", "...aaa..", "..aaa...", ".aa.....", "aa......", "a......."]
+
+[items.flint_pick]
+name = "Flint pick"
+kind = "tool"
+digs = { hard = 3, level = 2 }
+recipe = { Flint = 2, Planks = 1 }
+colors = { a = "#404048", b = "#806040" }
+picture = ["aaaaaa..", "......a.", "....b..a", "...b...a", "..b.....", ".b......", "b.......", "........"]
+"##;
+
+/// world 0.25: creations make items of their own, which Hunger eats, Armor
+/// wears, the Workbench makes and tools dig with, and guests take as the
+/// host gave them.
+#[test]
+fn creations_make_items_of_their_own() {
+    use crate::items::{self, FIRST_MADE_ITEM};
+    use crate::made::items as made;
+    home();
+    let spec = |t: &str| -> serde_json::Value { serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()).unwrap() };
+    let pic = "colors = { a = \"#fff\" }\npicture = [\"aaaaaaaa\", \"aaaaaaaa\", \"aaaaaaaa\", \"aaaaaaaa\", \"aaaaaaaa\", \"aaaaaaaa\", \"aaaaaaaa\", \"aaaaaaaa\"]";
+    // what's wrong is said plainly
+    for (bad, says) in [
+        (format!("kind = \"gadget\"\n{pic}"), "kind is one of"),
+        (format!("name = \"Iron sword\"\n{pic}"), "has something called Iron sword"),
+        (format!("name = \"Stone\"\n{pic}"), "has something called Stone"),
+        (format!("kind = \"armor\"\n{pic}"), "needs a slot"),
+        (format!("kind = \"armor\"\nslot = \"tail\"\n{pic}"), "needs a slot"),
+        (format!("food = 4\n{pic}"), "food is for an item of kind = \"food\""),
+        (format!("kind = \"weapon\"\npower = 50\n{pic}"), "power is"),
+        (format!("kind = \"tool\"\ndigs = {{ metal = 2 }}\n{pic}"), "digs knows"),
+        (format!("recipe = {{}}\n{pic}"), "recipe is"),
+        (format!("makes = 2\n{pic}"), "give it a recipe too"),
+        (format!("recipe = {{ Coal = 0.5 }}\n{pic}"), "recipe"),
+        (format!("smell = \"sweet\"\n{pic}"), "there's no smell for an item"),
+        ("colors = { a = \"#fff\" }".to_string(), "needs a picture"),
+    ] {
+        let e = made::read("thing", &spec(&bad)).err().unwrap_or_else(|| panic!("{bad} should be refused"));
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+    let def = made::read("lamp_oil", &spec(pic)).unwrap();
+    assert_eq!((def.name.as_str(), def.kind, def.stack), ("Lamp oil", "material", items::BLOCK_STACK));
+    assert_eq!(made::read("shiv", &spec(&format!("kind = \"weapon\"\n{pic}"))).unwrap().stack, 1, "a weapon stacks one to a slot");
+
+    // a creation's items get ids from FIRST_MADE_ITEM up, and keep them
+    let code = r#"local world = require("@potluck/world@0.25")
+local jam = world.item("Plum jam")
+print(jam and jam.kind, jam and jam.food, jam and jam.by)
+local pick = world.item("Iron pickaxe")
+print(pick and pick.by, tostring(world.item("Stone") == nil), #world.items())"#;
+    let mut c = creation(code);
+    c.id = "test-pantry".into();
+    c.manifest = toml::from_str(PANTRY_TOML).unwrap();
+    let ids = made::register(&c.id, &c.manifest.items).unwrap();
+    assert!(ids.iter().all(|&id| id >= FIRST_MADE_ITEM), "{ids:?}");
+    assert_eq!(made::register(&c.id, &c.manifest.items).unwrap(), ids, "the same ids the second time");
+    let (club, hat, pick, jam) = (ids[0], ids[1], ids[2], ids[3]);
+    assert_eq!(items::by_name("plum jam"), Some(jam));
+    assert_eq!(items::by_name("Flint pick"), Some(pick));
+    assert_eq!(items::name(hat), "Felt hat");
+    assert_eq!(items::icon(jam), "test-pantry/plum_jam/item");
+    assert_eq!((items::stack(jam), items::stack(club)), (items::BLOCK_STACK, 1));
+    assert!(items::carriable(club) && items::is_item(club));
+    let (info, kind) = made::info(hat).unwrap();
+    assert_eq!(kind, "armor");
+    assert_eq!((info["slot"].as_str(), info["guard"].as_f64(), info["by"].as_str()), (Some("head"), Some(4.0), Some("test-pantry")));
+    assert!(info.get("picture").is_none(), "its picture is the game's to draw");
+
+    // its code reads them as soon as it starts, and its tools dig
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    scripts.start(&c, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+    let vm = &scripts.vms["test-pantry"];
+    assert_eq!(vm.error, None, "{:?}", vm.log);
+    assert!(vm.log.iter().any(|l| l == "food 7 test-pantry"), "{:?}", vm.log);
+    assert!(vm.log.iter().any(|l| l.starts_with("game true ") && !l.ends_with(" 0")), "{:?}", vm.log);
+    let digs = scripts.digging().into_iter().find(|d| d.0 == pick).map(|d| d.1).expect("the pick digs");
+    assert_eq!((digs.speeds[1], digs.level), (3.0, 2));
+
+    // Hunger eats made food, the most filling first
+    let lib = Library::load();
+    let mut hunger = lib.list["hunger"].clone();
+    hunger.knobs.insert("minutes".into(), KnobValue::Number(5.0));
+    let carrots = crate::blocks::by_name("Carrots").unwrap();
+    scripts.carry(7, true, &[(jam, 1), (carrots.into(), 1), (hat, 1), (items::by_name("Flint").unwrap(), 2), (crate::blocks::PLANKS.into(), 1)], 0);
+    scripts.start(&hunger, &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 122.0);
+    assert_eq!((scripts.carried(7, jam), scripts.carried(7, carrots)), (0, 1), "the jam first");
+    let ate = scripts.shared.lock().unwrap().ui.pieces.get(&(Some(7), "hunger".into(), "ate".into())).map(|p| p.text.clone());
+    assert_eq!(ate.as_deref(), Some("You ate some plum jam. Sweet!"));
+
+    // Armor wears made armor by its slot and guard, and draws it on them
+    scripts.start(&lib.list["armor"], &mut herd).unwrap();
+    scripts.set_held(7, hat);
+    scripts.use_item(7, Vec3::Y);
+    run(&mut scripts, &mut voxels, &mut herd, 0.6);
+    assert_eq!(scripts.carried(7, hat), 0, "it's on");
+    let sh = scripts.shared.lock().unwrap();
+    let g = sh.guard.get(&(7, "armor".to_string())).copied();
+    assert!(g.is_some_and(|g| (g - (1.0 - 4.0 * 0.035)).abs() < 1e-4), "{g:?}");
+    assert_eq!(sh.worn.get(&7).map(|w| w[0]), Some(hat));
+    drop(sh);
+
+    // the Workbench makes what has a recipe, with its kind's
+    let table = crate::blocks::by_name("Table").unwrap();
+    scripts.start(&lib.list["workbench"], &mut herd).unwrap();
+    scripts.use_block(7, IVec3::new(3, 60, 3), table);
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+    let asked = |scripts: &mut Scripts| scripts.shared.lock().unwrap().ui.panels.get(&7).and_then(|q| q.front().cloned());
+    let kinds = asked(&mut scripts).expect("what to make");
+    let tools = kinds.choices.iter().position(|c| c == "Tools").expect("Tools");
+    scripts.answer(7, kinds.ask, Some(tools as u32));
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+    let mut found = false;
+    for _ in 0..6 {
+        let page = asked(&mut scripts).expect("the tools");
+        if let Some(i) = page.choices.iter().position(|c| c.contains("Flint pick")) {
+            scripts.answer(7, page.ask, Some(i as u32));
+            found = true;
+            break;
+        }
+        assert_eq!(page.choices.last().map(String::as_str), Some("More"), "{:?}", page.choices);
+        scripts.answer(7, page.ask, Some(page.choices.len() as u32 - 1));
+        run(&mut scripts, &mut voxels, &mut herd, 0.1);
+    }
+    assert!(found, "the Flint pick is on the bench");
+    run(&mut scripts, &mut voxels, &mut herd, 0.1);
+    assert_eq!(scripts.carried(7, pick), 1, "made");
+    assert_eq!(scripts.carried(7, items::by_name("Flint").unwrap()), 0);
+    for id in ["hunger", "armor", "workbench", "test-pantry"] {
+        assert_eq!(scripts.vms[id].error, None, "{id}: {:?}", scripts.vms[id].log);
+    }
+
+    // a guest takes the host's ids as they are
+    let mut guest = made::table().into_iter().find(|e| e.id == jam).unwrap();
+    let to = (FIRST_MADE_ITEM..FIRST_MADE_ITEM + items::MADE_ITEMS as items::Thing).rev().find(|&t| items::made_item(t).is_none()).unwrap();
+    guest.id = to;
+    let before = made::generation();
+    made::adopt(&[guest]);
+    assert!(made::generation() > before);
+    assert!(items::made_item(jam).is_none(), "the old place is free again");
+    assert_eq!(items::by_name("Plum jam"), Some(to));
+    assert!(made::names().contains(&"Plum jam"));
+}
+
 #[test]
 fn players_hear_what_others_hold_and_wear_and_what_they_wear_only_when_it_changes() {
     use crate::items::by_name;

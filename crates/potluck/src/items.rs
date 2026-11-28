@@ -5,12 +5,16 @@
 //! A `Thing` is either. Ids under `FIRST_ITEM` are blocks, by their block
 //! id; ids from `FIRST_ITEM` up are the game's own items, listed in `ITEMS`.
 //! Like block ids, item ids are saved and sent, so never renumber one; add
-//! new items at the end. Players and creations go by names, which `by_name`
-//! looks up among blocks first and items after.
+//! new items at the end. Ids from `FIRST_MADE_ITEM` up are items creations
+//! made (`made::items`, world 0.25), given in each world as their creations
+//! start. Players and creations go by names, which `by_name` looks up among
+//! blocks first and items after.
 //!
 //! Pockets are 36 slots (`Slots`): the hotbar's nine, then the backpack's
 //! 27. `Slots::give` fills what's there first, hotbar before backpack, and
 //! `take` empties the backpack first, so what's in hand lasts.
+
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +24,10 @@ pub type Thing = u16;
 
 /// Items' ids start here, after every block's.
 pub const FIRST_ITEM: Thing = 256;
+/// Items creations made (`[items.name]`, world 0.25) take ids from here.
+pub const FIRST_MADE_ITEM: Thing = 1024;
+/// How many items creations can make in one world.
+pub const MADE_ITEMS: usize = 256;
 
 pub const WOODEN_PICKAXE: Thing = 256;
 pub const STONE_PICKAXE: Thing = 257;
@@ -215,8 +223,31 @@ pub fn block(t: Thing) -> Option<BlockId> {
     (t > 0 && t < FIRST_ITEM).then_some(t as BlockId)
 }
 
-/// The item a thing is, if it's one of the game's items.
+/// The items creations made, by id less `FIRST_MADE_ITEM`. Only
+/// `set_made_item` stores here, and only items it leaked, which are never
+/// freed.
+static MADE: [AtomicPtr<Item>; MADE_ITEMS] = [const { AtomicPtr::new(std::ptr::null_mut()) }; MADE_ITEMS];
+
+/// Gives a made item's id its item, or takes it away (`made::items` only).
+pub(crate) fn set_made_item(t: Thing, i: Option<&'static Item>) {
+    if let Some(slot) = t.checked_sub(FIRST_MADE_ITEM).and_then(|k| MADE.get(k as usize)) {
+        slot.store(i.map(|i| i as *const Item as *mut Item).unwrap_or(std::ptr::null_mut()), Ordering::Release);
+    }
+}
+
+/// The item a creation made with this id, if one did.
+pub fn made_item(t: Thing) -> Option<&'static Item> {
+    let p = MADE.get(t.checked_sub(FIRST_MADE_ITEM)? as usize)?.load(Ordering::Acquire);
+    // SAFETY: `set_made_item` only stores pointers to leaked items, never freed
+    (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// The item a thing is, if it's one of the game's items or one a creation
+/// made.
 pub fn item(t: Thing) -> Option<&'static Item> {
+    if t >= FIRST_MADE_ITEM {
+        return made_item(t);
+    }
     t.checked_sub(FIRST_ITEM).and_then(|i| ITEMS.get(i as usize))
 }
 
@@ -249,11 +280,15 @@ pub fn stack(t: Thing) -> u32 {
 }
 
 /// Looks a thing up by name, as `blocks::by_name` does: blocks first
-/// (the game's, then creations'), then items.
+/// (the game's, then creations'), then items (the game's, then creations').
 pub fn by_name(name: &str) -> Option<Thing> {
     blocks::by_name(name).filter(|&b| b != blocks::AIR).map(of_block).or_else(|| {
         let key = blocks::squash(name);
-        ITEMS.iter().position(|i| blocks::squashes_to(i.name, &key)).map(|i| FIRST_ITEM + i as Thing)
+        ITEMS
+            .iter()
+            .position(|i| blocks::squashes_to(i.name, &key))
+            .map(|i| FIRST_ITEM + i as Thing)
+            .or_else(|| (FIRST_MADE_ITEM..FIRST_MADE_ITEM + MADE_ITEMS as Thing).find(|&t| made_item(t).is_some_and(|i| blocks::squashes_to(i.name, &key))))
     })
 }
 

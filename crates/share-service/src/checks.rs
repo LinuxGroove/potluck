@@ -32,6 +32,9 @@ pub struct Toml {
     /// Blocks of its own (world 0.12): `[blocks.marble]`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub blocks: BTreeMap<String, toml::Value>,
+    /// Items of its own (world 0.25): `[items.lamp_oil]`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub items: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -319,12 +322,138 @@ pub fn block_problems(blocks: &BTreeMap<String, toml::Value>) -> Vec<String> {
     out
 }
 
+/// The most items a creation can make (the game's `made::items::MOST_EACH`),
+/// what kinds there are, where armor goes and what each kind may say.
+pub const MAX_ITEMS: usize = 32;
+const ITEM_KINDS: [&str; 5] = ["material", "food", "tool", "weapon", "armor"];
+const WEAR_SLOTS: [&str; 5] = ["head", "body", "legs", "feet", "arm"];
+const DIG_KINDS: [&str; 5] = ["soft", "hard", "wood", "plant", "glass"];
+const ITEM_KEYS: [&str; 14] = ["name", "kind", "stack", "colors", "picture", "recipe", "makes", "food", "says", "slot", "guard", "warm", "digs", "power"];
+
+fn number(v: &toml::Value) -> Option<f64> {
+    v.as_float().or(v.as_integer().map(|i| i as f64))
+}
+
+/// What's wrong with a creation's own items, read as the game reads them
+/// (`made::items::read`; the game says more when it starts one).
+pub fn item_problems(items: &BTreeMap<String, toml::Value>) -> Vec<String> {
+    let mut out = vec![];
+    if items.len() > MAX_ITEMS {
+        out.push(format!("it makes {} items, and the most is {MAX_ITEMS}", items.len()));
+    }
+    for (key, v) in items {
+        if key.is_empty() || key.len() > 24 || !key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            out.push(format!("an item's name in potluck.toml is 1 to 24 small letters, numbers or _ (not \"{key}\")"));
+            continue;
+        }
+        let what = format!("item {key}");
+        let Some(t) = v.as_table() else {
+            out.push(format!("{what} is a table, [items.{key}]"));
+            continue;
+        };
+        if let Some(k) = t.keys().find(|k| !ITEM_KEYS.contains(&k.as_str())) {
+            out.push(format!("{what} has {k}, which an item doesn't have"));
+        }
+        let kind = match t.get("kind") {
+            None => "material",
+            Some(k) => match k.as_str().and_then(|k| ITEM_KINDS.iter().find(|x| **x == k)) {
+                Some(k) => k,
+                None => {
+                    out.push(format!("{what}'s kind is one of {}", ITEM_KINDS.join(", ")));
+                    continue;
+                }
+            },
+        };
+        for (field, of) in [("food", "food"), ("says", "food"), ("slot", "armor"), ("guard", "armor"), ("warm", "armor"), ("digs", "tool"), ("power", "weapon")] {
+            if t.contains_key(field) && kind != of {
+                out.push(format!("{what}'s {field} is for an item of kind \"{of}\""));
+            }
+        }
+        let in_range = |k: &str, lo: f64, hi: f64| t.get(k).is_none_or(|v| number(v).is_some_and(|n| (lo..=hi).contains(&n)));
+        let whole = |k: &str| t.get(k).is_none_or(|v| number(v).is_some_and(|n| n.fract() == 0.0));
+        if !in_range("stack", 1.0, 99.0) || !whole("stack") {
+            out.push(format!("{what}'s stack is how many go in a slot, 1 to 99"));
+        }
+        if !in_range("food", 1.0, 20.0) {
+            out.push(format!("{what}'s food is how much it fills, 1 to 20"));
+        }
+        if t.get("says").is_some_and(|s| s.as_str().is_none_or(|s| s.trim().is_empty() || s.chars().count() > 80)) {
+            out.push(format!("{what}'s says is what eating it says, 80 letters at most"));
+        }
+        if kind == "armor" && !t.get("slot").and_then(|s| s.as_str()).is_some_and(|s| WEAR_SLOTS.contains(&s)) {
+            out.push(format!("{what} is armor, so it needs a slot: {}", WEAR_SLOTS.join(", ")));
+        }
+        if !in_range("guard", 0.0, 10.0) {
+            out.push(format!("{what}'s guard is 0 to 10"));
+        }
+        if t.get("warm").is_some_and(|w| w.as_bool().is_none()) {
+            out.push(format!("{what}'s warm is true or false"));
+        }
+        if !in_range("power", 0.0, 20.0) {
+            out.push(format!("{what}'s power is how hard it bops, 0 to 20 (a hand is 1)"));
+        }
+        if let Some(d) = t.get("digs") {
+            let ok = d.as_table().is_some_and(|d| {
+                d.iter().all(|(k, v)| match k.as_str() {
+                    "level" => number(v).is_some_and(|n| n.fract() == 0.0 && (0.0..=9.0).contains(&n)),
+                    k => DIG_KINDS.contains(&k) && number(v).is_some_and(|n| (0.0..=10.0).contains(&n)),
+                })
+            });
+            if !ok {
+                out.push(format!("{what}'s digs is speeds by kind of block ({}) from 0 to 10, and a level from 0 to 9", DIG_KINDS.join(", ")));
+            }
+        }
+        match t.get("recipe") {
+            None if t.contains_key("makes") => out.push(format!("{what} has makes but no recipe")),
+            None => {}
+            Some(r) => {
+                let ok = r.as_table().is_some_and(|r| !r.is_empty() && r.len() <= 6 && r.iter().all(|(k, v)| !k.trim().is_empty() && number(v).is_some_and(|n| n.fract() == 0.0 && (1.0..=64.0).contains(&n))));
+                if !ok {
+                    out.push(format!("{what}'s recipe is 1 to 6 things by name and how many of each, 1 to 64"));
+                }
+            }
+        }
+        if !in_range("makes", 1.0, 99.0) || !whole("makes") {
+            out.push(format!("{what}'s makes is how many a recipe makes"));
+        }
+        let colors: Vec<char> = match t.get("colors").and_then(|c| c.as_table()) {
+            Some(c) => {
+                for (letter, hex) in c {
+                    let h = hex.as_str().and_then(|h| h.strip_prefix('#')).unwrap_or("");
+                    if letter.chars().count() != 1 || letter == "." || !(h.len() == 3 || h.len() == 6) || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+                        out.push(format!("{what}'s colors are one letter each, and a colour like \"#c86432\""));
+                        break;
+                    }
+                }
+                c.keys().filter_map(|k| k.chars().next()).collect()
+            }
+            None => {
+                out.push(format!("{what} needs colors, a colour for each letter in its picture"));
+                continue;
+            }
+        };
+        match t.get("picture").map(picture_rows) {
+            None => out.push(format!("{what} needs a picture, its icon")),
+            Some(None) => out.push(format!("{what}'s picture is rows of letters")),
+            Some(Some(rows)) => {
+                let n = rows.len();
+                if ![8, 16, 32, 64].contains(&n) || rows.iter().any(|r| r.chars().count() != n) {
+                    out.push(format!("{what}'s picture isn't square, 8, 16, 32 or 64 pixels across"));
+                } else if let Some(c) = rows.iter().flat_map(|r| r.chars()).find(|c| *c != '.' && !colors.contains(c)) {
+                    out.push(format!("{what}'s picture uses \"{c}\", which colors doesn't give a colour"));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The sides a box can join toward (the game's `made::SIDE_NAMES`).
 const SIDE_NAMES: [&str; 6] = ["east", "west", "up", "down", "south", "north"];
 
 /// The API modules this service knows and the versions games have. Keep in
 /// step with the modules in the game's script.rs.
-pub const MODULES: &[(&str, &str)] = &[("world", "0.24"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.8"), ("sky", "0.1")];
+pub const MODULES: &[(&str, &str)] = &[("world", "0.25"), ("tweak", "0.1"), ("game", "0.1"), ("store", "0.1"), ("input", "0.1"), ("ui", "0.2"), ("sound", "0.2"), ("net", "0.2"), ("test", "0.8"), ("sky", "0.1")];
 pub const KINDS: &[&str] = &["creature", "block", "tool", "game", "mod", "world", "thing"];
 pub const LICENCES: &[&str] = &["CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0"];
 
@@ -604,6 +733,15 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         });
     }
 
+    // Its own items (world 0.25)
+    if let Some(m) = manifest.as_ref().filter(|m| !m.items.is_empty()) {
+        let problems = item_problems(&m.items);
+        out.push(match problems.is_empty() {
+            true => Check::new("Items", "pass", format!("makes {} item{} of its own", m.items.len(), if m.items.len() == 1 { "" } else { "s" })),
+            false => Check::new("Items", "fail", problems.join("; ")),
+        });
+    }
+
     // Its Blockbench models (world 0.11), read as the game reads them
     let models: Vec<_> = files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).collect();
     if !models.is_empty() {
@@ -654,10 +792,12 @@ pub fn run(files: &BTreeMap<String, String>, words: &Words, banned: &dyn Fn(&str
         let mut in_code = Vec::new();
         // what players see its blocks called
         if let Some(m) = &manifest {
-            for (key, b) in &m.blocks {
+            for (key, b) in m.blocks.iter().chain(&m.items) {
                 in_code.extend(words.find(key));
-                if let Some(n) = b.get("name").and_then(|n| n.as_str()) {
-                    in_code.extend(words.find(n));
+                for said in ["name", "says"] {
+                    if let Some(n) = b.get(said).and_then(|n| n.as_str()) {
+                        in_code.extend(words.find(n));
+                    }
                 }
             }
         }
@@ -818,6 +958,39 @@ mod tests {
         }
         let moving = with(&format!("[blocks.marble]\ncolors = {{ a = \"#fff\", b = \"#f80\" }}\nspeed = 2\n{eight}\n[[blocks.marble.frames]]\nside = [{}]\n", vec!["\"bbbbbbbb\""; 8].join(", ")));
         assert_eq!(find(&moving, "Blocks").result, "pass", "{:?}", find(&moving, "Blocks"));
+    }
+
+    #[test]
+    fn a_creations_own_items_are_checked_and_their_words_read() {
+        let words = Words::parse("grumble\n");
+        let with = |items: &str| {
+            let mut f = creation("local world = require(\"@potluck/world@0.25\")\n");
+            let toml = f["potluck.toml"].replace("[needs]", &format!("{items}\n[needs]"));
+            f.insert("potluck.toml".into(), toml);
+            let (_, checks) = run(&f, &words, &|_| false);
+            checks
+        };
+        let find = |checks: &[Check], name: &str| checks.iter().find(|c| c.name == name).cloned().unwrap_or_else(|| panic!("a {name} check: {checks:?}"));
+        let pic = format!("colors = {{ a = \"#fff\" }}\npicture = [{}]", vec!["\"aaaaaaaa\""; 8].join(", "));
+        let good = with(&format!("[items.plum_jam]\nkind = \"food\"\nfood = 7\nrecipe = {{ Berries = 4 }}\nmakes = 2\n{pic}\n[items.felt_hat]\nkind = \"armor\"\nslot = \"head\"\nguard = 2\nwarm = true\n{pic}\n[items.pick]\nkind = \"tool\"\ndigs = {{ hard = 3, level = 2 }}\n{pic}\n"));
+        let i = find(&good, "Items");
+        assert_eq!((i.result.as_str(), i.note.as_str()), ("pass", "makes 3 items of its own"), "{i:?}");
+        assert_eq!(find(&good, "Words").result, "pass");
+        assert_eq!(find(&with(&format!("[items.jam]\nkind = \"food\"\nsays = \"Grumble, that was good\"\n{pic}\n")), "Words").result, "warn", "what eating it says is read");
+        for bad in [
+            format!("[items.Jam]\n{pic}"),
+            "[items.jam]\ncolors = { a = \"#fff\" }".to_string(),
+            format!("[items.jam]\nkind = \"gadget\"\n{pic}"),
+            format!("[items.jam]\nfood = 4\n{pic}"),
+            format!("[items.hat]\nkind = \"armor\"\n{pic}"),
+            format!("[items.club]\nkind = \"weapon\"\npower = 40\n{pic}"),
+            format!("[items.pick]\nkind = \"tool\"\ndigs = {{ metal = 2 }}\n{pic}"),
+            format!("[items.jam]\nrecipe = {{ Berries = 0 }}\n{pic}"),
+            format!("[items.jam]\nmakes = 2\n{pic}"),
+            format!("[items.jam]\nsmell = \"sweet\"\n{pic}"),
+        ] {
+            assert_eq!(find(&with(&bad), "Items").result, "fail", "{bad}");
+        }
     }
 
     #[test]

@@ -3,19 +3,22 @@
 -- at the sky or far off: world.on("item_used"), world 0.18) to put it on,
 -- swapping it for what you wore there before. A cap or helmet, a coat,
 -- leggings, boots and a shield each keep off part of every hurt
--- (world.guard), more for better stuff: ARMOR below says how much. A bar
--- beside your health shows how well you're guarded. Use an empty hand on
--- nothing to see what you wear and take a piece off. What each player
--- wears is kept with the world (store), by their name, and every game
--- draws it on them (world.wear, 0.24).
+-- (world.guard), more for better stuff: ARMOR below says how much, and
+-- armor other creations make ([items.*] with kind = "armor", world.item,
+-- 0.25) guards as its slot and guard say. A bar beside your health shows
+-- how well you're guarded. Use an empty hand on nothing to see what you
+-- wear and take a piece off. What each player wears is kept with the world
+-- (store), by their name, and every game draws it on them (world.wear,
+-- 0.24).
 --
 -- Winter nights out under the sky are cold (@potluck/sky), and so is
--- falling snow. With two pieces of wool or leather on, or one that's
--- Warm (the Charms creation's charm), or a fire or a light near, or a roof
--- overhead, they're warm. Cold, a player doesn't heal by themselves, and in
--- a Normal or Hard world the cold hurts, though never below 6.
+-- falling snow. With two pieces of wool or leather (or made ones that say
+-- warm) on, or one that's Warm (the Charms creation's charm), or a fire or
+-- a light near, or a roof overhead, they're warm. Cold, a player doesn't
+-- heal by themselves, and in a Normal or Hard world the cold hurts, though
+-- never below 6.
 
-local world = require("@potluck/world@0.24")
+local world = require("@potluck/world@0.25")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -52,6 +55,19 @@ for _, m in MATERIALS do
 	end
 end
 
+-- A piece by name: one of ARMOR's, or armor another creation made. `warm`
+-- is whether it keeps the cold off as wool does.
+local function piece_of(name: string): (Piece?, boolean)
+	if ARMOR[name] then
+		return ARMOR[name], string.sub(name, 1, 5) == "Wool " or string.sub(name, 1, 8) == "Leather "
+	end
+	local it = world.item(name)
+	if it and it.kind == "armor" and it.slot then
+		return { slot = it.slot, guard = it.guard or 0 }, it.warm == true
+	end
+	return nil, false
+end
+
 -- what each player wears, by name: slot to piece
 local worn: { [string]: { [string]: string } } = store.get("worn") or {}
 
@@ -77,7 +93,7 @@ end
 local function guard_of(player): number
 	local n = 0
 	for _, piece in worn[player.name] or {} do
-		local a = ARMOR[piece]
+		local a = piece_of(piece)
 		if a then
 			n += a.guard
 		end
@@ -88,10 +104,11 @@ end
 -- What they wear, and a choice to take each off.
 local function wearing(player)
 	local mine = worn[player.name] or {}
-	local pieces, choices = {}, {}
+	local pieces, slots, choices = {}, {}, {}
 	for _, slot in SLOTS do
 		if mine[slot] then
 			table.insert(pieces, mine[slot])
+			table.insert(slots, slot)
 			table.insert(choices, "Take off " .. string.lower(mine[slot]))
 		end
 	end
@@ -108,7 +125,7 @@ local function wearing(player)
 			tell(who, "Your pockets are full.")
 			return
 		end
-		mine[ARMOR[piece].slot] = nil
+		mine[slots[choice]] = nil
 		save()
 		sound.play("don_soft", { at = who.position, volume = 0.6 })
 		wearing(who)
@@ -123,7 +140,7 @@ world.on("item_used", function(player, item: string?, aim: vector)
 		wearing(player)
 		return
 	end
-	local piece = ARMOR[item]
+	local piece, warm = piece_of(item)
 	if not piece or not world.take(player, item, 1) then
 		return
 	end
@@ -138,8 +155,7 @@ world.on("item_used", function(player, item: string?, aim: vector)
 	mine[piece.slot] = item
 	worn[player.name] = mine
 	save()
-	local soft = string.sub(item, 1, 5) == "Wool "
-	sound.play(if soft then "don_soft" else "don_metal", { at = player.position })
+	sound.play(if warm then "don_soft" else "don_metal", { at = player.position })
 	tell(player, "You put on the " .. string.lower(item) .. ".")
 end)
 
@@ -181,14 +197,16 @@ world.every(0.5, function()
 	end
 end)
 
--- What keeps the cold off: two pieces of wool or leather, or one that's Warm.
+-- What keeps the cold off: two warm pieces (wool, leather or made ones that
+-- say so), or one that's Warm.
 local function dressed_warm(p): boolean
 	local n = 0
 	for _, piece in worn[p.name] or {} do
 		if table.find(world.charms(p, piece), "Warm") then
 			return true
 		end
-		if string.sub(piece, 1, 5) == "Wool " or string.sub(piece, 1, 8) == "Leather " then
+		local _, warm = piece_of(piece)
+		if warm then
 			n += 1
 		end
 	end

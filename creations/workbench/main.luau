@@ -3,9 +3,10 @@
 -- it) and pick something to make; it takes what that needs from your
 -- hotbar and gives you what you made (world.has, world.take, world.give).
 -- Every recipe is in RECIPES below, so a remix can add its own, change the
--- prices, or craft at a different block.
+-- prices, or craft at a different block. Things other creations make with
+-- a recipe of their own ([items.*], world.item) are on the bench too.
 
-local world = require("@potluck/world@0.8")
+local world = require("@potluck/world@0.25")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.1")
 local sound = require("@potluck/sound@0.1")
@@ -155,6 +156,27 @@ local RECIPES: { [string]: { Recipe } } = {
 	},
 }
 
+-- Where things other creations make go on the bench, by their kind.
+local MADE_KINDS: { [string]: string } = {
+	material = "Building",
+	food = "Garden and farm",
+	tool = "Tools",
+	weapon = "Weapons and armor",
+	armor = "Weapons and armor",
+}
+
+-- a kind's recipes: RECIPES' and those of things other creations make
+local function all(kind: string): { Recipe }
+	local list = table.clone(RECIPES[kind] or {})
+	for _, name in world.items() do
+		local it = world.item(name)
+		if it and it.recipe and MADE_KINDS[it.kind or "material"] == kind then
+			table.insert(list, { want = it.recipe, give = name, n = it.makes or 1 })
+		end
+	end
+	return list
+end
+
 local function makes(r: Recipe): number
 	return math.floor(r.n * knobs.generous)
 end
@@ -223,7 +245,7 @@ end
 -- the recipes of one kind, a page of them; `said` is how the last one went
 local function recipes(player, at: vector, kind: string, said: string?, page: number?)
 	local list = {}
-	for _, r in RECIPES[kind] do
+	for _, r in all(kind) do
 		if exists(r.give) then
 			table.insert(list, r)
 		end
@@ -275,7 +297,7 @@ function choose(player, at: vector, page: number?)
 	-- only kinds with something to make here (circuits need their creation)
 	local kinds = {}
 	for _, kind in KINDS do
-		for _, r in RECIPES[kind] do
+		for _, r in all(kind) do
 			if exists(r.give) then
 				table.insert(kinds, kind)
 				break

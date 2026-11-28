@@ -1,6 +1,6 @@
 --!strict
 -- Types for the Potluck API, for editors and AI helpers. Written by the game; don't edit.
--- @potluck/world 0.24, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.8, @potluck/sky 0.1
+-- @potluck/world 0.25, @potluck/tweak 0.1, @potluck/game 0.1, @potluck/store 0.1, @potluck/input 0.1, @potluck/ui 0.2, @potluck/sound 0.2, @potluck/net 0.2, @potluck/test 0.8, @potluck/sky 0.1
 
 export type Position = vector | { number }
 
@@ -139,6 +139,28 @@ export type World = {
 	might: (player: Player | number, share: number?) -> number,
 	charms: (player: Player | number, item: string) -> { string },
 	charm: (player: Player | number, item: string, charms: { string }) -> boolean,
+	-- 0.25: an item by name, the game's or one a creation made ([items.*]);
+	-- nil for a block or nothing. And the names of every item creations made.
+	item: (name: string) -> ItemInfo?,
+	items: () -> { string },
+}
+
+-- world.item's table (0.25). The game's own items have only a name, a stack
+-- and `by = "game"`; an item a creation made has its kind and what it wrote.
+export type ItemInfo = {
+	name: string,
+	stack: number,
+	by: string,
+	kind: ("material" | "food" | "tool" | "weapon" | "armor")?,
+	recipe: { [string]: number }?,
+	makes: number?,
+	food: number?,
+	says: string?,
+	slot: ("head" | "body" | "legs" | "feet" | "arm")?,
+	guard: number?,
+	warm: boolean?,
+	digs: { [string]: number }?,
+	power: number?,
 }
 
 -- world.shoot's options (0.19), and the shot a creature's hit hears

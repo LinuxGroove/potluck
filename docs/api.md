@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.24")
+local world = require("@potluck/world@0.25")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.24"
+world = "0.25"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.24 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, what they're seen wearing, their XP and charms, how fast they dig and how hard they hit, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.25 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, items of its own (food, tools, weapons, armor and materials, with recipes), creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use (and use in hand on nothing), how much of a hurt reaches them, what they're seen wearing, their XP and charms, how fast they dig and how hard they hit, things shot and thrown, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -83,6 +83,7 @@ Each creation runs in its own sandbox. These are its limits, per creation, per w
 | Questions (`ui.ask`) | One waiting for each player; 64 waiting over every player; a title of 40 letters, text of 300 and 8 choices of 30. After a player closes one, the creation's questions to them get nil for 10 seconds, until they use one of its creatures or a block it hears `block_used` for |
 | Sounds | 10 a second; heard within 40 blocks |
 | Blocks of its own (`[blocks]`) | 32 (16 before 0.23), each with up to 24 colours, pictures 8 to 64 pixels square and up to 16 boxes; 128 from every creation in a world together (a block that turns takes four), and as many pictures as the block atlas holds |
+| Items of its own (`[items]`) | 32, each with up to 24 colours and a picture 8 to 64 pixels square, a recipe of up to 6 things; 256 from every creation in a world together, and as many pictures as the block atlas holds |
 | Sounds of its own (`[sounds]`) | 16, each up to 3 seconds, with up to 3 layers besides the first and 32 notes a layer |
 | Things given or taken (`world.give`, `world.take`) | 64 at a time; a player's pockets hold 36 slots, of up to 99 of a block or one tool each |
 | Hurting or healing (`world.hurt`, `world.heal`) | 20 at a time, a whole health bar, and only players in survival |
@@ -107,6 +108,7 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.25**: a creation makes items of its own in `potluck.toml` (`[items.name]`, with a kind, a picture and what that kind says: food fills, armor's slot, guard and warmth, a weapon's power, a tool's digging, and a recipe), and `world.item(name)` and `world.items()` read them. The base game's Hunger eats made food, Armor wears made armor, the wild creatures feel made weapons and the Workbench makes anything with a recipe.
 - **0.24**: `world.wear(player, slot, thing)` says what every game draws a player wearing on their head, body, legs and feet and on their arm (nil for nothing); the base game's Armor says what each player in survival has on.
 - **0.23**: `self:follow(points, speed?, more?)` sends a creature along a path of points with no gravity, gathering and losing speed gently and slowing by itself to stop at the end, and `self:following()` says how far it has left, how fast it's going and how many points are left; a kind's `steer = false` stops its rider steering it. `world.spawn` puts a creature where it says when that isn't in a solid block. A creation can make 32 blocks (16 before). The base game gains Rails and carts (rails that join round corners and up slopes by themselves, carts that roll along them, powered rails), pistons and note blocks in Circuits, and dispensers and chutes in Storage.
 - **0.22**: players gain XP: `world.reward(player, xp)` gives a player in survival some (rate-limited for each creation), `world.xp(player)` is how much they have and their level, `world.spend_xp` spends it and `world.xp_for(level)` says what a level takes; the game shows it in a bar over the hotbar and says when they go up a level. `world.haste(player, share)` makes a player dig faster or slower and `world.might(player, share)` says how much harder they hit, for creations to read (each creation's share multiplies). `world.charm(player, item, charms)` and `world.charms(player, item)` keep named charms on a player's things, kept with the world. The base game gains Charms (a charm table that charms tools and weapons with XP and gloom dust), XP from mining, smelting, cooking, farming, raising animals, beating wild creatures and relighting Old Greens, and mending with XP at the anvil.
