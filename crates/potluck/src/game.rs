@@ -39,6 +39,9 @@ pub enum Action {
     UseBlock([i32; 3]),
     /// What this player has in hand now (`world.held`); 0 for nothing.
     Held(crate::items::Thing),
+    /// Interact on nothing in reach, for creations' `item_used`: the way
+    /// they looked.
+    UseItem([f32; 3]),
 }
 
 /// How far from a player a block they use can be.
@@ -189,6 +192,9 @@ pub fn interact(
     } else if let Some(hit) = me.target.filter(|_| c.interact) {
         // a block: creations may answer it (a table to craft at, say)
         actions.0.push((pid, Action::UseBlock(hit.block.to_array())));
+    } else if c.interact {
+        // nothing in reach: what's in hand is used (armor put on, a bow drawn)
+        actions.0.push((pid, Action::UseItem(dir.to_array())));
     } else if c.look_inside {
         focus.go(Screen::Library);
     }
@@ -212,6 +218,7 @@ pub fn host_step(
     settings: Res<Settings>,
     mut heard: ResMut<crate::sound::Heard>,
     clock: Res<crate::render::Clock>,
+    mut shots: ResMut<crate::shots::Shots>,
 ) {
     if matches!(net.role, Role::Client(_)) {
         // the host hears about this player's blocks from the blocks themselves
@@ -238,6 +245,12 @@ pub fn host_step(
     for (pid, a) in std::mem::take(&mut actions.0) {
         let Some(player) = players.iter().find(|p| p.id == pid).cloned() else { continue };
         match a {
+            Action::Use(id) if scripts.aims(pid) => {
+                // a bow in hand shoots at it rather than using it
+                if let Some(b) = herd.bodies.get(&id) {
+                    scripts.use_item(pid, b.pos + Vec3::Y * b.half.y * 0.5 - (player.pos + Vec3::Y * 1.5));
+                }
+            }
             Action::Use(id) => {
                 let already = herd.bodies.values().any(|b| b.rider == Some(pid));
                 let Some(b) = herd.bodies.get_mut(&id) else { continue };
@@ -272,6 +285,18 @@ pub fn host_step(
             Action::Net(note) => scripts.hear(pid, note),
             Action::Pockets { survival, slots, seen } => scripts.set_pockets(pid, survival, &slots[..slots.len().min(crate::items::POCKETS)], seen),
             Action::Held(b) => scripts.set_held(pid, b),
+            Action::UseItem(aim) => {
+                let aim = Vec3::from_array(aim);
+                if aim.is_finite() {
+                    scripts.use_item(pid, aim);
+                }
+            }
+            Action::UseBlock(at) if scripts.aims(pid) => {
+                let at = IVec3::from_array(at).as_vec3() + Vec3::splat(0.5);
+                if at.is_finite() {
+                    scripts.use_item(pid, at - (player.pos + Vec3::Y * 1.5));
+                }
+            }
             Action::UseBlock(at) => {
                 let at = IVec3::from_array(at);
                 if (at.as_vec3() + Vec3::splat(0.5)).distance(player.pos) <= USE_REACH {
@@ -364,6 +389,16 @@ pub fn host_step(
         } else {
             net.send_sound(pid, play);
         }
+    }
+    // shots creations set off and that came down, for every game to draw
+    for news in std::mem::take(&mut scripts.shot_news) {
+        if me.is_some() {
+            match &news {
+                crate::script::ShotNews::Flew(f) => shots.add(f.clone()),
+                crate::script::ShotNews::Gone(id) => shots.gone(*id),
+            }
+        }
+        net.broadcast_shot(&news);
     }
     for (pid, v) in std::mem::take(&mut scripts.out.throws) {
         herd.riders.remove(&pid);

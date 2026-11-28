@@ -15,9 +15,9 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.17")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.17. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.20")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.20. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.17
+### `@potluck/world` 0.20
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
@@ -101,6 +101,37 @@ world.on("block_broken", function(player, at, block) end)
 - They're only for what players do: blocks creations change with `world.set_block`, and water flowing, aren't heard.
 - At most 64 are heard a tick; more wait their turn, and past a few hundred waiting the rest are dropped.
 
+Using what's in hand on nothing (new in 0.18), for armor to put on, bows, wands and anything held that does something by itself:
+
+```luau
+world.on("item_used", function(player, item, aim)
+	if item == "Iron helmet" then ... end    -- nil for an empty hand
+end)
+```
+
+- `"item_used"` hears a player Interact with nothing in reach to use: no creature, no block, no water (looking at the sky, or far off). It calls `fn(player, item, aim)`, with the name of what's in their hand (nil for an empty hand) and the way they look, a vector one long.
+- It shares the 64 a tick with the block events.
+- `world.aims(item, on?)` (0.19) makes a thing to hold always aimed: Interact with it in hand is heard as `item_used` whatever it points at, a block or a creature in reach too (aiming at the middle of it), and never as `block_used` or `used`. `world.aims(item, false)` makes it as before.
+
+Shooting and throwing (new in 0.19), for bows, slings, spears and anything else that flies:
+
+```luau
+world.aims("Bow")
+world.on("item_used", function(player, item, aim)
+	if item ~= "Bow" then return end
+	world.shoot(player, { aim = aim, look = "arrow", speed = 38, drop = 0.45, power = 2 }, function(at, block, creature)
+		print(block or "", creature or "")     -- what it came down on, if anything
+	end)
+end)
+function Gloomling:hit(player, shot)
+	local bop = if shot then shot.power else 1
+end
+```
+
+- `world.shoot(player, shot, landed?)` sends something flying from the player's eyes, the way `aim` says, and returns its id (or nil if the player isn't here). `look` is `"arrow"`, `"stone"` (left out) or `"spear"`; `speed` is 4 to 60 blocks a second (30); `drop` is how strongly it falls, 0 not at all to 2, 1 like a stone (1); `power` is 0 to 20 (1), for what it hits to judge how hard.
+- It flies until it comes to a creature (which hears `hit(player, shot)`, with whoever shot it) or a solid block, or for 6 seconds. Then `landed(at, block, creature)` is called with where it came down and the block's name or the creature's id (or neither). It passes through players and water. Every game draws it as it flies.
+- A creation has at most 64 in the air. They go when the creation stops.
+
 How fast players heal (new in 0.6), for hunger, rest and healing springs:
 
 ```luau
@@ -118,8 +149,19 @@ Hurting only so far (new in 0.7), for hunger, thorns and anything that should st
 world.hurt(player, 1, { down_to = 10 })   -- never below half health
 ```
 
-- `down_to` is the least health the hurt leaves, 0 to 20 (0, or leaving it out, is no limit). A player already at or below it isn't hurt at all.
+- `down_to` is the least health the hurt leaves, 0 to 20 (0, or leaving it out, is no limit). A player already at or below it isn't hurt at all. `guarded = false` (0.18) is a hurt that `world.guard` doesn't take its share off.
 - Only the player's own game knows their health, so it works out how much to take when the hurt arrives.
+
+Keeping off part of every hurt (new in 0.18), for armor, shields and charms:
+
+```luau
+world.guard(player, 0.6)   -- they take 60% of every hurt
+world.guard(player, 1)     -- every hurt in full again
+```
+
+- `world.guard(player, share)` is how much of every `world.hurt` reaches that player, 0 to 1, from any creation: a Gloomling's bite, say. Falls, which the player's own game works out, aren't guarded. It stays until the creation changes it again, stops, or the player leaves.
+- When several creations set it, their shares multiply. A hurt armor shouldn't help with, like starving or burning, says `{ guarded = false }`: `world.hurt(player, 1, { down_to = 10, guarded = false })`. `down_to` holds either way.
+- It runs where the world runs, so a creation's client half can't call it.
 
 What players hold, and tools (new in 0.8), for pickaxes, swords, wands and anything else that does something in hand:
 
@@ -130,7 +172,7 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords in wood, stone, copper, iron and moonsilver (the copper, iron and moonsilver ones new in 0.16), copper, iron and moonsilver hoes (0.16), Shears, a Bucket and a Water bucket, a Fishing rod, a Watering can, a Sickle and a Hammer (0.17) and the Flint and steel (one to a slot), Raw fish and Cooked fish (0.17), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
+- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords in wood, stone, copper, iron and moonsilver (the copper, iron and moonsilver ones new in 0.16), copper, iron and moonsilver hoes (0.16), Shears, a Bucket and a Water bucket, a Fishing rod, a Watering can, a Sickle and a Hammer (0.17), caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver and a Shield (0.18), a Bow, a Sling and a Spear (0.19) and the Flint and steel (one to a slot), Arrow (0.19), Raw fish and Cooked fish (0.17), a Milk bucket (0.20), what farms give and kitchens make, Seeds, Berries, Apple, Baked potato, Fried egg, Pumpkin pie, Berry pie, Bean stew, Fish stew, Porridge, Honey and Honey cake, and a Feather (0.20), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
@@ -156,7 +198,7 @@ A creature's handlers, written as `function Kind:handler(...)`:
 - `tick(dt)` ten times a second; `dt` is the seconds since the last
 - `used(player)` when a player interacts with it (if it isn't rideable)
 - `ridden(player)` when a player climbs on (rideable ones climb on by themselves)
-- `hit(player)` when a player hits it
+- `hit(player, shot)` when a player hits it: by hand, or (0.19) with something they shot, when `shot` is `{ id, look, power }` from `world.shoot` (nil by hand)
 
 Inside a handler, `self` is that creature. Fields you set on it (`self.mood = "happy"`) are kept across reloads. It has:
 
@@ -496,12 +538,12 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.5
+### `@potluck/test` 0.6
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
 ```luau
-local test = require("@potluck/test@0.5")
+local test = require("@potluck/test@0.6")
 local world = require("@potluck/world@0.12")
 
 test.case("a basket put down fills up into a balloon", function()
@@ -524,7 +566,7 @@ end)
 - `test.check(ok, message?)` fails the case unless `ok`; `test.same(got, want, message?)` unless the two are equal, and says both.
 - `test.wait(seconds)` lets the world play on: creatures move, and the creation's ticks, timers and events run, as in play. A case may play 600 s at most, and take 30 s of real time.
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
-- What players do: `test.place(player, pos, block, facing?)` (`facing` for a block that turns, 0.5; north if left out) and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
+- What players do: `test.place(player, pos, block, facing?)` (`facing` for a block that turns, 0.5; north if left out) and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use_item(player, aim?)` (Interact on nothing, heard as `item_used`, looking `aim` or north; 0.6), `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
 - Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.

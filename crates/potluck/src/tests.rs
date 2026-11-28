@@ -3239,6 +3239,13 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
         assert!(!herd.bodies.contains_key(&other), "a sword pops it");
         scripts.set_held(7, 0);
     }
+    // and a shot as hard as its power (world 0.19): an arrow at 2 pops one
+    if let Some(&third) = ids.get(2) {
+        let fly = crate::shots::Flying { id: 1, look: 0, pos: Vec3::ZERO, vel: Vec3::X, drop: 0.0, age: 0.0, stuck: false };
+        let arrow = crate::script::Shot { fly, creation: "ranged".into(), shooter: 7, power: 2.0 };
+        scripts.event_with(&mut voxels, &mut herd, third, "hit", &ada, Some(&arrow));
+        assert!(!herd.bodies.contains_key(&third), "an arrow pops it");
+    }
     // in the morning they fade away
     scripts.set_day(0.4);
     run(&mut scripts, &mut voxels, &mut herd, 15.0);
@@ -3250,6 +3257,104 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
     run(&mut scripts, &mut voxels, &mut herd, 10.0);
     assert_eq!(count(&herd), 0);
     assert_eq!(scripts.vms["gloomlings"].error, None, "{}", log(&scripts));
+}
+
+const SHOOTS: &str = r##"
+local world = require("@potluck/world@0.19")
+local Target = world.creature {
+	name = "Target", count = 1, speed = 0, home = { 60, 41, 60 },
+	body = { { "box", size = { 1, 2, 1 }, at = { 0, 1, 0 }, color = "#ffffff" } },
+}
+function Target:hit(player, shot)
+	print(string.format("hit by %s %s %.0f", player.name, shot and shot.look or "hand", shot and shot.power or 0))
+end
+world.aims("Bow")
+world.on("item_used", function(player, item, aim)
+	local id = world.shoot(player, { aim = aim, look = "arrow", speed = 30, drop = 0, power = 2 }, function(at, block, creature)
+		print(string.format("landed %s %s %.0f", block or "-", if creature then "creature" else "-", at.y))
+	end)
+	print("shot " .. tostring(id))
+end)
+"##;
+
+/// world 0.19: a shot flies from the player the way they aim, hits the
+/// first creature or block in its way, and the creature hears `hit` with
+/// the shot; the creation hears where it landed, and every game is told.
+#[test]
+fn shots_fly_hit_what_is_in_their_way_and_land() {
+    use crate::script::ShotNews;
+    home();
+    let mut voxels = world();
+    // a stone floor at 40 with air over it, and a wall to the south
+    for x in 30..=90 {
+        for z in 30..=90 {
+            for y in 1..world::WY {
+                let b = if y <= 40 || (z == 70 && y <= 50) { crate::blocks::STONE } else { crate::blocks::AIR };
+                voxels.set(IVec3::new(x, y, z), b);
+            }
+        }
+    }
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    let ada = Vec3::new(50.5, 41.0, 60.5);
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: ada }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.start(&creation(SHOOTS), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 2.0);
+    let log = |scripts: &Scripts| scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
+    let target = herd.bodies.values().find(|b| b.kind == "Target").expect("the target").clone();
+    // at the target: it's hit
+    scripts.shot_news.clear();
+    scripts.use_item(7, target.pos + Vec3::Y - (ada + Vec3::Y * 1.5));
+    run(&mut scripts, &mut voxels, &mut herd, 1.0);
+    let l = log(&scripts);
+    assert!(l.contains("shot 1") && l.contains("hit by Ada arrow 2") && l.contains("landed - creature"), "{l}");
+    assert!(matches!(scripts.shot_news.as_slice(), [ShotNews::Flew(f), ShotNews::Gone(1)] if f.id == 1 && f.look == 0), "{:?}", scripts.shot_news);
+    // at the wall: it lands on the stone
+    scripts.use_item(7, Vec3::Z);
+    run(&mut scripts, &mut voxels, &mut herd, 1.0);
+    assert!(log(&scripts).contains("landed Stone -"), "{}", log(&scripts));
+    // straight up: it flies its time and comes down on nothing
+    scripts.use_item(7, Vec3::Y);
+    run(&mut scripts, &mut voxels, &mut herd, crate::shots::LIFE + 1.0);
+    assert!(log(&scripts).contains("landed - -"), "{}", log(&scripts));
+    assert!(scripts.shots.is_empty());
+    // a bow in hand is always aimed; a sword isn't
+    scripts.set_held(7, crate::items::BOW);
+    assert!(scripts.aims(7));
+    scripts.set_held(7, crate::items::by_name("Wooden sword").unwrap());
+    assert!(!scripts.aims(7));
+    assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
+    // the things' numbers are where their names say
+    assert_eq!(crate::items::by_name("Bow"), Some(crate::items::BOW));
+    assert_eq!(crate::items::by_name("Spear"), Some(crate::items::SPEAR));
+    assert_eq!(crate::items::by_name("Shield"), Some(crate::items::SHIELD));
+    assert_eq!(crate::items::by_name("Wool cap"), Some(crate::items::WOOL_CAP));
+    assert_eq!(crate::items::by_name("Shears"), Some(crate::items::SHEARS));
+    assert_eq!(crate::items::by_name("Cooked fish"), Some(crate::items::COOKED_FISH));
+}
+
+/// world 0.18: armor's share comes off a hurt as it's given, unless the
+/// hurt says it isn't guarded, and shares multiply.
+#[test]
+fn guarded_hurts_lose_armors_share() {
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    let code = r#"
+local world = require("@potluck/world@0.18")
+world.guard(7, 0.5)
+world.after(0.1, function() world.hurt(7, 4) world.hurt(7, 4, { guarded = false }) end)
+"#;
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert_eq!(scripts.vms["test"].error, None, "{:?}", scripts.vms["test"].log);
+    let hurt: f32 = scripts.health_changes().iter().filter(|c| c.0 == 7).map(|c| c.1).sum();
+    assert_eq!(hurt, -6.0, "half of 4, and all of 4");
 }
 
 const HEARS_BLOCKS: &str = r#"
@@ -3418,7 +3523,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     scripts.use_block(7, at, table);
     run(&mut scripts, &mut voxels, &mut herd, 0.2);
     let panel = asked(&scripts, 7).expect("the table asks what to make");
-    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel", "Circuits"]);
+    assert_eq!(panel.choices, ["Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons and armor", "Travel", "Circuits"]);
     let panel = answer(&mut scripts, &mut voxels, &mut herd, Some(0)).unwrap();
     assert_eq!(panel.choices[0], "4 Planks for 1 Oak log", "{:?}", panel.choices);
     // it asks again with how it went, so making several is quick
@@ -3453,11 +3558,11 @@ fn a_table_is_a_workbench_for_survival_players() {
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
         vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot"],
-        vec!["Planks"],
+        vec!["Planks", "Iron ingot"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
-        vec!["Planks", "Dirt", "Wheat", "Copper ingot"],
+        vec!["Planks", "Dirt", "Wheat", "Copper ingot", "Hay"],
         vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool"],
-        vec!["Planks", "Cobblestone", "Copper ingot"],
+        vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint", "Feather"],
         vec!["Cream wool", "Planks", "Lantern"],
         vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
     ];
@@ -3499,7 +3604,8 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     let mut farming = Library::load().list.remove("farming").expect("the base game has farming");
     farming.knobs.insert("minutes".into(), KnobValue::Number(1.0));
     let b = |n: &str| by_name(n).unwrap();
-    let (grass, soil, wheat, carrots, shoot, fern) = (b("Grass"), b("Farmland"), b("Wheat"), b("Carrots"), b("Tall grass"), b("Fern"));
+    let (grass, soil, wheat, carrots) = (b("Grass"), b("Farmland"), b("Wheat"), b("Carrots"));
+    let seeds = crate::items::by_name("Seeds").unwrap();
     let mut voxels = world();
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
@@ -3508,6 +3614,8 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     scripts.set_pockets(8, false, &[], 0);
     scripts.set_day(0.5);
     scripts.start(&farming, &mut herd).unwrap();
+    // its crops grow as its own shoots
+    let (shoot, fern) = (b("Wheat shoots"), b("Carrot shoots"));
     // a strip of grass up in the air, dry but for water by its east end
     let at = |i: i32| IVec3::new(40 + i * 3, 110, 40);
     for i in 0..5 {
@@ -3546,17 +3654,18 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     // a shoot broken too soon gives the seed back
     harvest(&mut scripts, &mut voxels, 1);
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
-    assert_eq!(carried(&scripts, wheat), 4);
+    assert_eq!((carried(&scripts, wheat), scripts.carried(7, seeds)), (3, 1));
     // near water they're ready in two thirds of the time
     run(&mut scripts, &mut voxels, &mut herd, 44.0);
     assert_eq!([voxels.at(at(0) + up), voxels.at(at(4) + up)], [shoot, carrots], "the carrots by the water are ripe first");
     run(&mut scripts, &mut voxels, &mut herd, 20.0);
     assert_eq!(voxels.at(at(0) + up), wheat, "a minute by day");
-    // a ripe crop gives two more than the one the game gives
+    // a ripe crop gives two more than the one the game gives, and wheat
+    // seeds to sow again
     harvest(&mut scripts, &mut voxels, 0);
     harvest(&mut scripts, &mut voxels, 4);
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
-    assert_eq!((carried(&scripts, wheat), carried(&scripts, carrots)), (6, 3));
+    assert_eq!((carried(&scripts, wheat), carried(&scripts, carrots), scripts.carried(7, seeds)), (5, 3, 2));
     // at night, half as fast; and kept with the world, so it grows on after a restart
     scripts.set_day(0.0);
     plant(&mut scripts, &mut voxels, 2, wheat);

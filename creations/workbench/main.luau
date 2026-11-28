@@ -23,9 +23,10 @@ type Recipe = { want: { [string]: number }, give: string, n: number }
 -- Kinds of thing, each with its recipes. A question has eight choices at
 -- most, so a longer list comes in pages, seven to a page and More. Tools,
 -- swords and the anvil do their work through the Tools creation, hoes
--- through Farming, and a basket fills up into a balloon through the Hot
--- air balloon creation.
-local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons", "Travel", "Circuits" }
+-- through Farming, armor through the Armor creation, bows and the rest
+-- through Bows, slings and spears, and a basket fills up into a balloon
+-- through the Hot air balloon creation.
+local KINDS = { "Building", "Furniture", "Lights", "Garden and farm", "Tools", "Weapons and armor", "Travel", "Circuits" }
 local RECIPES: { [string]: { Recipe } } = {
 	Building = {
 		{ want = { ["Oak log"] = 1 }, give = "Planks", n = 4 },
@@ -48,6 +49,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { Planks = 6 }, give = "Barrel", n = 1 },
 		{ want = { Planks = 4 }, give = "Crate", n = 1 },
 		{ want = { Planks = 6 }, give = "Bookshelf", n = 1 },
+		-- cooks pies and stews over a fire (Furnaces and campfires)
+		{ want = { ["Iron ingot"] = 3 }, give = "Cooking pot", n = 1 },
 	},
 	Lights = {
 		{ want = { Coal = 1, Planks = 1 }, give = "Torch", n = 4 },
@@ -67,6 +70,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		-- waters crops, and reaps them (farming too)
 		{ want = { ["Copper ingot"] = 3 }, give = "Watering can", n = 1 },
 		{ want = { ["Copper ingot"] = 2, Planks = 1 }, give = "Sickle", n = 1 },
+		-- bees fill it with honey (the Bees creation)
+		{ want = { Planks = 4, Hay = 2 }, give = "Beehive", n = 1 },
 	},
 	Tools = {
 		{ want = { Planks = 3 }, give = "Wooden pickaxe", n = 1 },
@@ -88,10 +93,26 @@ local RECIPES: { [string]: { Recipe } } = {
 		-- lights fires (the fire creation)
 		{ want = { Flint = 1, ["Iron ingot"] = 1 }, give = "Flint and steel", n = 1 },
 	},
-	Weapons = {
+	["Weapons and armor"] = {
 		{ want = { Planks = 2 }, give = "Wooden sword", n = 1 },
 		{ want = { Cobblestone = 2, Planks = 1 }, give = "Stone sword", n = 1 },
 		{ want = { ["Copper ingot"] = 2, Planks = 1 }, give = "Copper sword", n = 1 },
+		-- shot and thrown (the Bows, slings and spears creation)
+		{ want = { Planks = 3, ["Cream wool"] = 2 }, give = "Bow", n = 1 },
+		{ want = { Flint = 1, Planks = 1 }, give = "Arrow", n = 4 },
+		{ want = { Flint = 1, Planks = 1, Feather = 1 }, give = "Arrow", n = 8 },
+		{ want = { ["Cream wool"] = 3 }, give = "Sling", n = 1 },
+		{ want = { Flint = 1, Planks = 3 }, give = "Spear", n = 1 },
+		{ want = { Planks = 6, ["Iron ingot"] = 1 }, give = "Shield", n = 1 },
+		-- wool and copper armor here; iron and moonsilver at an anvil
+		{ want = { ["Cream wool"] = 5 }, give = "Wool cap", n = 1 },
+		{ want = { ["Cream wool"] = 8 }, give = "Wool coat", n = 1 },
+		{ want = { ["Cream wool"] = 7 }, give = "Wool leggings", n = 1 },
+		{ want = { ["Cream wool"] = 4 }, give = "Wool boots", n = 1 },
+		{ want = { ["Copper ingot"] = 5 }, give = "Copper helmet", n = 1 },
+		{ want = { ["Copper ingot"] = 8 }, give = "Copper coat", n = 1 },
+		{ want = { ["Copper ingot"] = 7 }, give = "Copper leggings", n = 1 },
+		{ want = { ["Copper ingot"] = 4 }, give = "Copper boots", n = 1 },
 	},
 	-- put down, a basket fills up into a hot air balloon (the balloon creation)
 	Travel = {

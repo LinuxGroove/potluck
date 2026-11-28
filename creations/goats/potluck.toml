@@ -1,0 +1,12 @@
+name = "Goats"
+by = "Potluck"
+kind = "creature"
+about = "Goats graze the hill and jump about for the fun of it. Hold wheat or carrots and they come to you. In survival, use a goat with a bucket in hand to milk it, for drinking or for cooking porridge, stews and honey cake in a cooking pot. Feed two goats and they have a kid, which grows into a goat."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.20"
+tweak = "0.1"
+store = "0.1"

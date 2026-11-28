@@ -30,7 +30,7 @@ use crate::world::Voxels;
 
 pub const PORT: u16 = 47126;
 const BEACON: u16 = 47127;
-pub const PROTOCOL: u32 = 24;
+pub const PROTOCOL: u32 = 27;
 /// How far away (in blocks, across the ground) a player hears about
 /// creatures and other players.
 pub const NEAR: f32 = 144.0;
@@ -135,6 +135,11 @@ pub enum Msg {
     Digging(Vec<(crate::items::Thing, crate::items::Digging)>),
     /// What breaking each block gives now (`world.drops`), all of it.
     Drops(Vec<(crate::blocks::BlockId, crate::items::Drop)>),
+    /// A shot set off (`world.shoot`): its id, look, where it is, how fast
+    /// and how strongly it falls. Every game flies its own copy.
+    Shot { id: u32, look: u8, at: [f32; 3], vel: [f32; 3], drop: f32 },
+    /// A shot came down.
+    ShotGone(u32),
     /// What a player asks to say in chat (to the host).
     Say(crate::chat::Say),
     /// Lines of chat, as the host keeps them (from the host).
@@ -575,6 +580,13 @@ impl Net {
     }
     pub fn broadcast_drops(&mut self, drops: Vec<(crate::blocks::BlockId, crate::items::Drop)>) {
         self.pending.push(Msg::Drops(drops));
+    }
+    /// A shot set off or came down, for every game.
+    pub fn broadcast_shot(&mut self, news: &crate::script::ShotNews) {
+        self.pending.push(match news {
+            crate::script::ShotNews::Flew(f) => Msg::Shot { id: f.id, look: f.look, at: f.pos.to_array(), vel: f.vel.to_array(), drop: f.drop },
+            crate::script::ShotNews::Gone(id) => Msg::ShotGone(*id),
+        });
     }
     pub fn send_creation(&self, c: &Creation) {
         self.send_host(&Msg::Creation(c.payload()));
@@ -1205,7 +1217,7 @@ pub fn client_net(
     mut focus: ResMut<Focus>,
     mut info: ResMut<WorldInfo>,
     mut acts: ResMut<crate::ui::Acts>,
-    mut heard: ResMut<crate::sound::Heard>,
+    (mut heard, mut shots): (ResMut<crate::sound::Heard>, ResMut<crate::shots::Shots>),
 ) {
     let Role::Client(_) = &net.role else { return };
     let events: Vec<Event> = match &net.role {
@@ -1379,6 +1391,13 @@ pub fn client_net(
                 Msg::Piece { creation, id, piece } => me.show(crate::script::UiChange::Piece { creation, id, piece }),
                 Msg::Panel(p) => me.show(crate::script::UiChange::Panel(p)),
                 Msg::Sound(p) => heard.0.push(p),
+                Msg::Shot { id, look, at, vel, drop } => {
+                    let (pos, vel) = (Vec3::from_array(at), Vec3::from_array(vel));
+                    if pos.is_finite() && vel.is_finite() && drop.is_finite() {
+                        shots.add(crate::shots::Flying { id, look, pos, vel, drop: drop.clamp(0.0, 2.0), age: 0.0, stuck: false });
+                    }
+                }
+                Msg::ShotGone(id) => shots.gone(id),
                 Msg::Net(n) => me.notes.push(n),
                 Msg::Pockets { seq, changes } => {
                     me.change_pockets(&changes);

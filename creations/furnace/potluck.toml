@@ -1,13 +1,13 @@
 name = "Furnaces and campfires"
 by = "Potluck"
 kind = "mod"
-about = "A furnace smelts raw metal into ingots, logs into charcoal, sand into glass and cobblestone into stone, and cooks bread, roasted carrots and fish, burning coal, charcoal, logs or planks. A campfire cooks with no fuel, and its light keeps Gloomlings away. Make both at a workbench."
+about = "A furnace smelts raw metal into ingots, logs into charcoal, sand into glass and cobblestone into stone, and cooks bread, roasted carrots, baked potatoes, fried eggs and fish, burning coal, charcoal, logs or planks. A campfire cooks with no fuel, and its light keeps Gloomlings away. A cooking pot over a fire cooks pies, stews, porridge and honey cake. Make them all at a workbench."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"
 
 [needs]
-world = "0.14"
+world = "0.20"
 tweak = "0.1"
 store = "0.1"
 ui = "0.2"
@@ -492,6 +492,69 @@ picture = """
 ..sspppppppnnonrnoorrpppmmppss..
 ..sspnnnnmmn........nnnnmmnpss..
 uttunnn..................nnnttut
+"""
+
+# A cooking pot: a belly, a rim and two handles, with a stew in it. Set
+# over a fire, it cooks pies and stews.
+[blocks.cooking_pot]
+name = "Cooking pot"
+kind = "hard"
+hardness = 1.5
+boxes = [[3, 0, 3, 13, 8, 13], [2, 8, 2, 14, 10, 14], [0, 6, 7, 2, 8, 9], [14, 6, 7, 16, 8, 9]]
+colors = { a = "#25272c", b = "#3c3f46", e = "#5c6068", c = "#7c8088", s = "#8a5a2a", t = "#b47a3c" }
+top = """
+cccccccccccccccc
+cccccccccccccccc
+ccccccsssscccccc
+ccccsstssssscccc
+cccssssstssssccc
+cccssssssstssccc
+ccsssssssssstscc
+ccstsssssssssscc
+ccssstsssssssscc
+ccssssstsssssscc
+cccsssssstsssccc
+cccsssssssstsccc
+ccccsssssssscccc
+ccccccsssscccccc
+cccccccccccccccc
+cccccccccccccccc
+"""
+side = """
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+cccccccccccccccc
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+bbbabeebbbbbabbb
+aaaaaaaaaaaaaaaa
+"""
+bottom = """
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaa
 """
 
 # a furnace taking light

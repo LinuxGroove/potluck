@@ -6,6 +6,11 @@
 
 use super::*;
 
+#[path = "armor.rs"]
+mod armor;
+#[path = "ranged.rs"]
+mod ranged;
+
 /// What a tool's head is made of.
 #[derive(Clone, Copy, PartialEq)]
 enum Made {
@@ -211,11 +216,20 @@ enum Gear {
     Sickle,
     Hammer,
     Rod,
-    Bucket { water: bool },
+    Bucket(Pail),
     Can,
     Fish { cooked: bool },
 }
 
+/// What's in a bucket.
+#[derive(Clone, Copy, PartialEq)]
+enum Pail {
+    Empty,
+    Water,
+    Milk,
+}
+
+const MILK: &[u32] = &[0xb4b8bc, 0xd0d4d8, 0xe4e7ea, 0xf4f6f8];
 const WATER: &[u32] = &[0x0f2f5c, 0x163f78, 0x1f5496, 0x2f6db3, 0x4b8bcc, 0x76aee0];
 const FISH: &[u32] = &[0x2d3a4a, 0x45566a, 0x617489, 0x8297aa, 0xa8bccb, 0xd2dfe8];
 const COOKED: &[u32] = &[0x3a1c0a, 0x5e3112, 0x84491c, 0xa86529, 0xc6833b, 0xdfa557];
@@ -237,7 +251,8 @@ fn gear(name: &'static str, g: Gear) -> Tex {
         Gear::Sickle => [PLANK, super::smelting::COPPER_BAR, TWINE, OUTLINE],
         Gear::Hammer => [PLANK, super::smelting::IRON_BAR, TWINE, OUTLINE],
         Gear::Rod => [PLANK, super::WOOL_CREAM, BOBBER, OUTLINE],
-        Gear::Bucket { .. } => [super::smelting::IRON_BAR, WATER, NAIL, OUTLINE],
+        Gear::Bucket(Pail::Milk) => [super::smelting::IRON_BAR, MILK, NAIL, OUTLINE],
+        Gear::Bucket(_) => [super::smelting::IRON_BAR, WATER, NAIL, OUTLINE],
         Gear::Can => [super::smelting::COPPER_BAR, WATER, NAIL, OUTLINE],
         Gear::Fish { cooked: false } => [FISH, FISH, NAIL, OUTLINE],
         Gear::Fish { cooked: true } => [COOKED, COOKED, NAIL, OUTLINE],
@@ -327,7 +342,7 @@ fn gear(name: &'static str, g: Gear) -> Tex {
                     return p;
                 }
             }
-            Gear::Bucket { water } => {
+            Gear::Bucket(pail) => {
                 // a pail seen a little from above: sides narrowing to the
                 // bottom, a rim, its inside (or water) and a handle over it
                 let (top, bottom) = (20.0, 53.0);
@@ -339,7 +354,11 @@ fn gear(name: &'static str, g: Gear) -> Tex {
                     if rim {
                         return metal(x, y, 0.9, 0.6);
                     }
-                    return if water { px(1, 0.55 + 0.2 * (x * 0.6 + y).sin() * 0.5, 0.3, 0.1) } else { px(2, 0.1, 0.2, 0.8) };
+                    return match pail {
+                        Pail::Water => px(1, 0.55 + 0.2 * (x * 0.6 + y).sin() * 0.5, 0.3, 0.1),
+                        Pail::Milk => px(1, 0.7 - 0.25 * dx.abs(), 0.3, 0.3),
+                        Pail::Empty => px(2, 0.1, 0.2, 0.8),
+                    };
                 }
                 if (top..=bottom).contains(&y) && (x - 32.0).abs() <= half {
                     let round = ((x - 32.0) / half).abs();
@@ -441,8 +460,9 @@ const ICONS: &[(&str, Tool, Made)] = &[
 /// The rest of the things players hold, each its own shape.
 const GEAR: &[(&str, Gear)] = &[
     ("shears", Gear::Shears),
-    ("bucket", Gear::Bucket { water: false }),
-    ("bucket_water", Gear::Bucket { water: true }),
+    ("bucket", Gear::Bucket(Pail::Empty)),
+    ("bucket_water", Gear::Bucket(Pail::Water)),
+    ("bucket_milk", Gear::Bucket(Pail::Milk)),
     ("fishing_rod", Gear::Rod),
     ("watering_can", Gear::Can),
     ("sickle", Gear::Sickle),
@@ -453,5 +473,5 @@ const GEAR: &[(&str, Gear)] = &[
 
 /// Every tool's, sword's and hoe's icon, and the rest of the gear's.
 pub(super) fn tiles() -> Vec<(&'static str, Tex)> {
-    ICONS.iter().map(|&(name, tool, made)| (name, paint(name, tool, made))).chain(GEAR.iter().map(|&(name, g)| (name, gear(name, g)))).collect()
+    ICONS.iter().map(|&(name, tool, made)| (name, paint(name, tool, made))).chain(GEAR.iter().map(|&(name, g)| (name, gear(name, g)))).chain(armor::tiles()).chain(ranged::tiles()).collect()
 }

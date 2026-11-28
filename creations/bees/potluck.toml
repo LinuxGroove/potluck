@@ -1,0 +1,135 @@
+name = "Bees"
+by = "Potluck"
+kind = "creature"
+about = "Bees buzz from flower to flower on the Green. Put down a beehive (a workbench makes one from planks and hay) near flowers, and bees come to live in it and fill it with honey: use a full hive to take two jars of honey. Leave them be: bop a bee in survival and it stings."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.20"
+tweak = "0.1"
+store = "0.1"
+sound = "0.2"
+
+# A beehive: woven straw in bands, with a dark way in.
+[blocks.beehive]
+name = "Beehive"
+kind = "wood"
+hardness = 0.8
+colors = { a = "#7a5a1c", b = "#b08a34", c = "#d4b050", k = "#2a1c0c" }
+top = """
+aaaaaaaaaaaaaaaa
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbabbba
+abbbbabbbbabbbba
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbabbba
+abbbbabbbbabbbba
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbabbba
+aaaaaaaaaaaaaaaa
+"""
+side = """
+cccccccccccccccc
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+bbbbbbbbbbbbbbbb
+bbbbbbbbbbbbbbbb
+aaaaaaaaaaaaaaaa
+cccccccccccccccc
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+bbbbbbbbbbbbbbbb
+bbbbbbkkkkbbbbbb
+aaaaaakkkkaaaaaa
+cccccckkkkcccccc
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+bbbbbbbbbbbbbbbb
+"""
+bottom = """
+aaaaaaaaaaaaaaaa
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbabbba
+abbbbabbbbabbbba
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbabbba
+abbbbabbbbabbbba
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbabbba
+aaaaaaaaaaaaaaaa
+"""
+
+# the same, full of honey and seeping
+[blocks.full_beehive]
+name = "Full beehive"
+kind = "wood"
+hardness = 0.8
+colors = { a = "#7a5a1c", b = "#b08a34", c = "#d4b050", k = "#2a1c0c", h = "#f2a418" }
+top = """
+aaaaaaaaaaaaaaaa
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbhbbbbabba
+aabbhbabbbbabbba
+abbbbabbbbabbbba
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbhbbba
+abbbbabbbbabbbba
+abhbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbahba
+aabbbbabbbbabbba
+aaaaaaaaaaaaaaaa
+"""
+side = """
+cccccccccccccccc
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+bbbbbbbbbbbbbbbb
+bbbbbbbbbbbbbbbb
+aaahaaaaaaaahaaa
+cccccccccccccccc
+cccccccccccccccc
+aaaaaaaaaaaaaaaa
+bbbbbhbbbbhbbbbb
+bbbbbbkkkkbbbbbb
+aaaaaakkkkaaaaaa
+cccccckkkkcccccc
+cccccchhhhcccccc
+aaaaaaahhaaaaaaa
+bbbbbbbbhbbbbbbb
+"""
+bottom = """
+aaaaaaaaaaaaaaaa
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbhbbbbabba
+aabbhbabbbbabbba
+abbbbabbbbabbbba
+abbbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbabba
+aabbbbabbbbhbbba
+abbbbabbbbabbbba
+abhbabbbbabbbbaa
+abbabbbbabbbbaba
+ababbbbabbbbahba
+aabbbbabbbbabbba
+aaaaaaaaaaaaaaaa
+"""

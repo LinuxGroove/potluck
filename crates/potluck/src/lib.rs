@@ -31,6 +31,7 @@ pub mod render;
 pub mod script;
 pub mod settings;
 pub mod share;
+pub mod shots;
 pub mod sound;
 pub mod testing;
 pub mod textures;
@@ -76,6 +77,7 @@ pub fn sim(app: &mut App, seed: u32) {
         .init_resource::<photos::Photos>()
         .init_resource::<check::Hints>()
         .init_resource::<world::stream::Stream>()
+        .init_resource::<shots::Shots>()
         .add_systems(First, hosting::tick_begins)
         .add_systems(Last, hosting::tick_ends)
         .add_systems(Startup, start)
@@ -94,6 +96,8 @@ pub fn sim(app: &mut App, seed: u32) {
         bridge::add(app);
         // and type checking the player's own creations as they're made
         app.add_systems(Update, check::keep_checking);
+        // and arrows, stones and spears in the air
+        app.add_systems(Update, shots::draw.after(Sim));
         // and the worlds the player keeps, saved as they play
         app.init_resource::<worlds::Current>()
             .add_systems(Update, (worlds::acts.after(chat::acts).before(game::do_acts), worlds::autosave.after(Sim)));

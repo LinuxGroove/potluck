@@ -2,7 +2,7 @@
 -- The furnace creation's own tests: `potluck-server --test=furnace`.
 
 local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.14")
+local world = require("@potluck/world@0.20")
 
 -- a survival player beside a `block` they've put down
 local function beside(block: string, carrying: { [string]: number }): (any, vector)
@@ -28,7 +28,7 @@ local function pick(p, what: string)
 end
 
 test.case("its blocks are in the world", function()
-	for _, name in { "Furnace", "Lit furnace", "Campfire" } do
+	for _, name in { "Furnace", "Lit furnace", "Campfire", "Cooking pot" } do
 		test.check(pcall(world.kind, name), name)
 	end
 end)
@@ -113,3 +113,25 @@ test.case("in creative, it says what it's for", function()
 	local q = test.asked(p)
 	test.check(q ~= nil and string.find(q.text, "In survival", 1, true) ~= nil, "a word on what it does")
 end)
+
+test.case("a cooking pot over a campfire cooks porridge, and gives the bucket back", function()
+	local p, at = beside("Cooking pot", { Wheat = 4, ["Milk bucket"] = 1, Campfire = 1 })
+	test.use_block(p, at)
+	local q = test.asked(p)
+	test.check(q ~= nil and string.find(q.text, "cold", 1, true) ~= nil, "a cold pot says so")
+	test.answer(p, 1)
+	test.place(p, at + vector.create(1, 0, 0), "Campfire")
+	test.use_block(p, at)
+	-- a dish shows only when all it takes is in this world (what other
+	-- creations make may be, by now): no pies without eggs
+	q = test.asked(p)
+	if not pcall(world.kind, "Egg") then
+		test.check(q ~= nil and table.find(q.choices, "2 Berry pie") == nil, "no pie without eggs")
+	end
+	pick(p, "2 Porridge")
+	test.same(world.has(p, "Porridge"), 2, "two bowls")
+	test.same(world.has(p, "Wheat"), 2, "two wheat used")
+	test.same(world.has(p, "Bucket"), 1, "the bucket back")
+	test.same(world.has(p, "Milk bucket"), 0, "and the milk gone")
+end)
+

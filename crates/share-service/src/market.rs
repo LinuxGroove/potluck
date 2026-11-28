@@ -132,7 +132,7 @@ macro_rules! base {
     };
 }
 
-pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming" + "test.luau", "hunger", "tools" + "test.luau", "balloon" + "client.luau" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau", "storage" + "test.luau", "brickworks" + "test.luau", "mining" + "test.luau", "fire" + "test.luau", "furnace" + "test.luau", "circuits" + "test.luau", "water" + "test.luau"];
+pub const BASE: &[(&str, &[(&str, &str)])] = base!["mossback", "woolly" + "test.luau", "pebble-crab", "glowbug", "gnome", "duck", "frog", "mole", "pup", "rodeo-ram" + "client.luau", "jelly", "tag-bot", "villagers", "gloomlings", "workbench", "farming" + "test.luau", "hunger", "tools" + "test.luau", "balloon" + "client.luau" + "test.luau", "old-greens" + "test.luau", "hedgehog" + "hedgehog.bbmodel" + "test.luau", "storage" + "test.luau", "brickworks" + "test.luau", "mining" + "test.luau", "fire" + "test.luau", "furnace" + "test.luau", "circuits" + "test.luau", "water" + "test.luau", "armor" + "test.luau", "ranged" + "test.luau", "hens" + "test.luau", "goats" + "test.luau", "bees" + "test.luau"];
 
 pub const POTLUCK: &str = "potluck";
 

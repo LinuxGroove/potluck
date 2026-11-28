@@ -9,7 +9,7 @@
 -- (frames); with Reduce flashing on, players see the first one only. Knobs
 -- turn spreading off, which a server's host may want.
 
-local world = require("@potluck/world@0.14")
+local world = require("@potluck/world@0.18")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local sound = require("@potluck/sound@0.2")
@@ -229,7 +229,7 @@ do
 	end
 end
 
--- Standing in fire hurts.
+-- Standing in fire hurts, and armor doesn't help (guarded = false).
 world.every(1, function()
 	if not knobs.hurts then
 		return
@@ -237,7 +237,7 @@ world.every(1, function()
 	for _, p in world.players() do
 		local feet = p.position
 		if world.block(feet) == FIRE or world.block(feet + vector.create(0, 1, 0)) == FIRE then
-			if world.hurt(p, 1) then
+			if world.hurt(p, 1, { guarded = false }) then
 				sound.play_for(p, "crackle", { caption = "You're burning" })
 			end
 		end

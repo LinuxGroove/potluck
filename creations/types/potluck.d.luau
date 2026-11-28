@@ -89,7 +89,8 @@ export type World = {
 	every: (seconds: number, fn: () -> ()) -> number,
 	cancel: (id: number) -> boolean,
 	on: ((event: "player_joined" | "player_left", fn: (player: Player) -> ()) -> ())
-		& ((event: "block_placed" | "block_broken" | "block_used", fn: (player: Player, at: vector, block: string) -> ()) -> ()),
+		& ((event: "block_placed" | "block_broken" | "block_used", fn: (player: Player, at: vector, block: string) -> ()) -> ())
+		& ((event: "item_used", fn: (player: Player, item: string?, aim: vector) -> ()) -> ()),
 	-- 0.3
 	pockets: (player: Player | number) -> { [string]: number }?,
 	has: (player: Player | number, block: string) -> number,
@@ -99,7 +100,7 @@ export type World = {
 	daytime: () -> number,
 	daylight: () -> number,
 	find_light: (pos: Position, radius: number) -> vector?,
-	hurt: (player: Player | number, amount: number, opts: { down_to: number? }?) -> boolean,
+	hurt: (player: Player | number, amount: number, opts: { down_to: number?, guarded: boolean? }?) -> boolean,
 	heal: (player: Player | number, amount: number) -> boolean,
 	-- 0.6
 	healing: (player: Player | number, rate: number) -> boolean,
@@ -108,7 +109,16 @@ export type World = {
 	kind: (block: string) -> "soft" | "hard" | "wood" | "plant" | "glass" | "water" | "air",
 	digging: (block: string, speeds: { soft: number?, hard: number?, wood: number?, plant: number?, glass: number?, level: number? }?) -> (),
 	drops: (block: string, rule: { gives: (string | false)?, count: (number | { number })?, level: number? }?) -> (),
+	-- 0.18
+	guard: (player: Player | number, share: number) -> boolean,
+	-- 0.19
+	shoot: (player: Player | number, opts: ShotOptions, landed: ((at: vector, block: string?, creature: number?) -> ())?) -> number?,
+	aims: (item: string, on: boolean?) -> (),
 }
+
+-- world.shoot's options (0.19), and the shot a creature's hit hears
+export type ShotOptions = { aim: Position, look: ("arrow" | "stone" | "spear")?, speed: number?, drop: number?, power: number? }
+export type Shot = { id: number, look: string, power: number }
 
 export type Score = { name: string, value: number }
 
@@ -200,6 +210,7 @@ export type Test = {
 	place: (player: Player, at: Position, block: string, facing: string?) -> (),
 	dig: (player: Player, at: Position) -> boolean,
 	use_block: (player: Player, at: Position) -> (),
+	use_item: (player: Player, aim: Position?) -> (),
 	use: (player: Player, creature: Creature | number) -> (),
 	hit: (player: Player, creature: Creature | number) -> (),
 	ride: (player: Player, creature: Creature | number) -> (),
