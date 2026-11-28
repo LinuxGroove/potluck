@@ -77,6 +77,8 @@ pub struct ServerConfig {
     pub teleport: bool,
     /// Whether players may chat.
     pub chat: bool,
+    /// How dangerous the world is: "peaceful", "gentle", "normal" or "hard".
+    pub danger: crate::script::Danger,
 }
 
 impl Default for ServerConfig {
@@ -105,6 +107,7 @@ impl Default for ServerConfig {
             links: BTreeMap::new(),
             teleport: true,
             chat: true,
+            danger: crate::script::Danger::Gentle,
         }
     }
 }

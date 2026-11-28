@@ -1,0 +1,40 @@
+name = "Ember Imps"
+by = "Potluck"
+kind = "creature"
+about = "Little fiery things that flit about the deep caverns, far below the ground. They keep their distance and throw embers at anyone in survival: an ember stings, and where it lands it may start a small fire. Pop one with two bops, or better an arrow, and it leaves an ember, which burns in a furnace and lights a fire like flint and steel. None on a Peaceful world, and fewer on a Gentle one."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.21"
+tweak = "0.1"
+store = "0.1"
+sound = "0.2"
+
+# a giggle: quick, high and bright
+[sounds.cackle]
+caption = "An imp cackles"
+wave = "square"
+notes = [880, 1040, 920, 1180]
+each = 0.06
+attack = 0.004
+decay = 0.04
+lowpass = 3600
+
+# an ember thrown: a soft whoosh with a crackle
+[sounds.fling]
+caption = "An ember flies"
+wave = "noise"
+pitch = 1800
+length = 0.35
+attack = 0.02
+decay = 0.15
+lowpass = 2600
+
+[[sounds.fling.layers]]
+wave = "noise"
+pitch = 6000
+length = 0.2
+at = 0.05
+gain = 0.3

@@ -1,0 +1,39 @@
+name = "Cave Crawlers"
+by = "Potluck"
+kind = "creature"
+about = "Many-legged things that live in the dark of caves. Underground, away from any light, they come skittering at anyone in survival, climb up after you and nip. A torch or lantern keeps them off, so light your way. Bop one three times to pop it (a sword bops harder), and it leaves silk, which a workbench spins into wool or a bowstring. None come on a Peaceful world, and fewer on a Gentle one."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.21"
+tweak = "0.1"
+sound = "0.2"
+
+# legs on stone, quick and many
+[sounds.skitter]
+caption = "Something skitters"
+wave = "noise"
+pitch = 3400
+length = 0.22
+attack = 0.002
+decay = 0.03
+pulse = [28, 0.9]
+highpass = 900
+
+# a nip: a dry click and a hiss
+[sounds.hiss]
+caption = "A crawler hisses"
+wave = "noise"
+pitch = 5200
+length = 0.35
+attack = 0.01
+decay = 0.12
+highpass = 1800
+
+[[sounds.hiss.layers]]
+wave = "square"
+pitch = [180, 120]
+length = 0.05
+gain = 0.4

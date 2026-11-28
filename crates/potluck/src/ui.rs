@@ -102,6 +102,8 @@ pub enum Act {
     OpenForget(String),
     ForgetWorld(String),
     RenameWorld(String),
+    /// The next danger round for a kept world.
+    WorldDanger(String),
     Host,
     JoinAddress(String),
     OpenJoin,
@@ -880,7 +882,7 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             }
             if !focus.worlds.is_empty() {
                 v.push(note("Each world saves as you play."));
-                v.push(button("Rename or delete a world", Act::OpenForget(String::new())));
+                v.push(button("Change or delete a world", Act::OpenForget(String::new())));
             }
             if !focus.status.is_empty() {
                 v.push(note(focus.status.clone()));
@@ -897,6 +899,13 @@ pub fn menu_items(focus: &Focus, lib: &Library, scripts: &Scripts, settings: &Se
             let Some(k) = focus.worlds.iter().find(|k| k.id == *id) else { return ("Gone".into(), vec![button("Back", Act::OpenWorlds(false))]) };
             let name = focus.fields.get("world_name").cloned().unwrap_or_else(|| k.name.clone());
             let mut v = vec![field("Name", "world_name", name), button("Rename it", Act::RenameWorld(id.clone()))];
+            v.push(button(format!("Danger: {}", k.danger.label()), Act::WorldDanger(id.clone())));
+            v.push(note(match k.danger {
+                crate::script::Danger::Peaceful => "No creatures come after you in survival.",
+                crate::script::Danger::Gentle => "Creatures that come after you are few and nip gently. Fall and you keep what you carry.",
+                crate::script::Danger::Normal => "More creatures, and they bite harder. Fall and what you carry is left where you fell.",
+                crate::script::Danger::Hard => "Many creatures, and they bite hard. Fall and what you carry is left where you fell.",
+            }));
             v.push(note("Deleting a world is for good: everything built in it goes too."));
             v.push(button(format!("Delete {} for good", k.name), Act::ForgetWorld(id.clone())));
             if !focus.status.is_empty() {

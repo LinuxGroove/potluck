@@ -1681,9 +1681,11 @@ fn every_base_creation_runs_and_answers_players() {
     assert!(built(&scripts), "the Old Greens build their ruins");
     voxels.changes.clear();
     let kinds: std::collections::BTreeSet<String> = herd.bodies.values().map(|b| b.kind.clone()).collect();
-    // everything but the Gloomlings (only near survival players at night) and mods with no bodies
-    // (and balloons, which only come from a basket put down, and the Old Greens, which only build)
-    for c in base.iter().filter(|c| !["gloomlings", "balloon", "old-greens"].contains(&c.id.as_str()) && c.manifest.kind != "mod") {
+    // everything but the wild creatures that only turn up near survival players (Gloomlings
+    // at night, and the woods' and caves' ones), mods with no bodies, balloons (which only
+    // come from a basket put down) and the Old Greens (which only build)
+    let only_near = ["gloomlings", "crawlers", "boars", "imps", "sentinels", "balloon", "old-greens"];
+    for c in base.iter().filter(|c| !only_near.contains(&c.id.as_str()) && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
     for second in 0..60usize {
@@ -3242,7 +3244,7 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
     // and a shot as hard as its power (world 0.19): an arrow at 2 pops one
     if let Some(&third) = ids.get(2) {
         let fly = crate::shots::Flying { id: 1, look: 0, pos: Vec3::ZERO, vel: Vec3::X, drop: 0.0, age: 0.0, stuck: false };
-        let arrow = crate::script::Shot { fly, creation: "ranged".into(), shooter: 7, power: 2.0 };
+        let arrow = crate::script::Shot { fly, creation: "ranged".into(), shooter: 7, by: None, power: 2.0 };
         scripts.event_with(&mut voxels, &mut herd, third, "hit", &ada, Some(&arrow));
         assert!(!herd.bodies.contains_key(&third), "an arrow pops it");
     }
@@ -3252,7 +3254,9 @@ fn gloomlings_come_out_at_night_nip_and_keep_away_from_light() {
     assert_eq!(count(&herd), 0);
     // and creative players have nothing to fear
     voxels.set(IVec3::new(cx + 1, ground + 3, cz), crate::blocks::AIR);
-    scripts.set_pockets(7, false, &[], 0);
+    // (her game has had the gloom dust the popped ones left)
+    scripts.pocket_changes();
+    scripts.set_pockets(7, false, &[], 1000);
     scripts.set_day(0.0);
     run(&mut scripts, &mut voxels, &mut herd, 10.0);
     assert_eq!(count(&herd), 0);
@@ -3333,6 +3337,85 @@ fn shots_fly_hit_what_is_in_their_way_and_land() {
     assert_eq!(crate::items::by_name("Wool cap"), Some(crate::items::WOOL_CAP));
     assert_eq!(crate::items::by_name("Shears"), Some(crate::items::SHEARS));
     assert_eq!(crate::items::by_name("Cooked fish"), Some(crate::items::COOKED_FISH));
+}
+
+const THROWS: &str = r##"
+local world = require("@potluck/world@0.21")
+local Imp = world.creature {
+	name = "Imp", count = 1, speed = 0, home = { 60, 41, 50 }, behaviours = { wander = false },
+	body = { { "box", size = { 0.6, 1, 0.6 }, at = { 0, 0.5, 0 }, color = "#ff6020" } },
+}
+local Roamer = world.creature {
+	name = "Roamer", count = 0, home = "here",
+	body = { { "box", size = { 0.6, 1, 0.6 }, at = { 0, 0.5, 0 }, color = "#20ff60" } },
+}
+print("danger " .. world.danger())
+world.on("player_fell", function(player, at)
+	print(string.format("fell %s %.0f %.0f", player.name, at.x, at.z))
+end)
+world.after(0.5, function()
+	print("roamer " .. tostring(world.spawn(Roamer, vector.create(80.5, 41, 80.5))))
+	for _, id in world.creatures(Imp) do
+		print("imp " .. id)
+	end
+end)
+function Imp:tick(dt)
+	if self.thrown then return end
+	local p = world.nearest_player(self.position, 30)
+	if p then
+		self.thrown = true
+		local id = self:throw({ at = p.position + vector.create(0, 1, 0), look = "ember", speed = 20, drop = 0 }, function(at, block, creature, player)
+			print(string.format("ember %s %s %s", block or "-", if creature then "creature" else "-", if player then player.name else "-"))
+		end)
+		print("threw " .. tostring(id))
+	end
+end
+"##;
+
+/// world 0.21: a creature throws at a player and hits them (not itself),
+/// the world's danger reads as its name, a player hurt too badly is heard
+/// as `player_fell`, and `home = "here"` keeps a creature where it spawned.
+#[test]
+fn creatures_throw_at_players_and_danger_and_falling_are_heard() {
+    use crate::script::Danger;
+    home();
+    let mut voxels = world();
+    for x in 30..=90 {
+        for z in 30..=90 {
+            for y in 1..world::WY {
+                voxels.set(IVec3::new(x, y, z), if y <= 40 { crate::blocks::STONE } else { crate::blocks::AIR });
+            }
+        }
+    }
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.set_danger(Danger::Hard);
+    let ada = Vec3::new(60.5, 41.0, 60.5);
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: ada }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.start(&creation(THROWS), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 2.0);
+    let log = |scripts: &Scripts| scripts.vms["test"].log.join("\n");
+    assert_eq!(scripts.vms["test"].error, None, "{}", log(&scripts));
+    let l = log(&scripts);
+    assert!(l.contains("danger hard"), "{l}");
+    assert!(l.contains("threw 1") && l.contains("ember - - Ada"), "the ember hits Ada, not the imp: {l}");
+    scripts.fell(7, Vec3::new(61.0, 41.0, 59.0));
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    assert!(log(&scripts).contains("fell Ada 61 59"), "{}", log(&scripts));
+    // a roamer's home is where it was spawned, far from the Green
+    let roamer = herd.bodies.values().find(|b| b.kind == "Roamer").expect("a roamer");
+    assert!(roamer.home.distance(Vec3::new(80.5, 41.0, 80.5)) < 0.01, "{:?}", roamer.home);
+    // names and numbers
+    for d in Danger::ALL {
+        assert_eq!(Danger::parse(d.as_str()), Some(d));
+    }
+    assert_eq!(Danger::default(), Danger::Gentle);
+    assert_eq!(Danger::Hard.next(), Danger::Peaceful);
+    assert_eq!(crate::items::by_name("Silk"), Some(crate::items::SILK));
+    assert_eq!(crate::items::by_name("Gloom dust"), Some(crate::items::GLOOM_DUST));
+    assert_eq!(crate::items::by_name("Leather cap"), Some(crate::items::LEATHER_CAP));
+    assert_eq!(crate::items::by_name("Leather boots"), Some(crate::items::LEATHER_BOOTS));
 }
 
 /// world 0.18: armor's share comes off a hurt as it's given, unless the
@@ -3557,12 +3640,12 @@ fn a_table_is_a_workbench_for_survival_players() {
     // every recipe makes what it says, with enough to hand
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
-        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot"],
+        vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot", "Silk"],
         vec!["Planks", "Iron ingot"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat", "Copper ingot", "Hay"],
-        vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool"],
-        vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint", "Feather"],
+        vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool", "Silk"],
+        vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint", "Feather", "Silk", "Bristles", "Leather"],
         vec!["Cream wool", "Planks", "Lantern"],
         vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
     ];

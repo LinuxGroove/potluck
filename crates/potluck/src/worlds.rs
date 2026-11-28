@@ -41,6 +41,9 @@ pub struct Kept {
     /// When it was made and last played, in seconds since 1970.
     pub created: u64,
     pub played: u64,
+    /// How dangerous it is (`world.danger`); gentle for one from before.
+    #[serde(default)]
+    pub danger: crate::script::Danger,
 }
 
 /// Where the player stood and what they had, saved with the world. Things
@@ -180,7 +183,7 @@ pub fn make(seed: Option<u32>) -> Result<Kept, String> {
         let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         (t as u32) ^ ((t >> 32) as u32).rotate_left(7) ^ std::process::id()
     });
-    let kept = Kept { id: format!("world-{n}"), name: format!("World {n}"), seed, created: now(), played: now() };
+    let kept = Kept { id: format!("world-{n}"), name: format!("World {n}"), seed, created: now(), played: now(), danger: Default::default() };
     let d = dir(&kept.id).ok_or("a world needs a plain name")?;
     std::fs::create_dir_all(&d).map_err(|e| format!("couldn't make {}: {e}", d.display()))?;
     write(&d.join("meta.json"), serde_json::to_string_pretty(&kept).unwrap_or_default().as_bytes())?;
@@ -196,6 +199,14 @@ pub fn rename(id: &str, name: &str) -> Result<(), String> {
         return Err("a world needs a name".into());
     }
     k.name = name;
+    write(&d.join("meta.json"), serde_json::to_string_pretty(&k).unwrap_or_default().as_bytes())
+}
+
+/// Sets how dangerous a world is, and says what it is now.
+pub fn set_danger(id: &str, danger: crate::script::Danger) -> Result<(), String> {
+    let d = dir(id).ok_or("no such world")?;
+    let mut k: Kept = read_json(&d.join("meta.json")).ok_or("no such world")?;
+    k.danger = danger;
     write(&d.join("meta.json"), serde_json::to_string_pretty(&k).unwrap_or_default().as_bytes())
 }
 
@@ -281,6 +292,7 @@ fn enter(loaded: Loaded, lib: &mut Library, scripts: &mut Scripts, herd: &mut He
         let mut sh = scripts.shared.lock().unwrap();
         sh.store = loaded.store;
         sh.boards = loaded.boards;
+        sh.danger = loaded.kept.danger;
     }
     crate::game::start_world(lib, scripts, herd, net, toasts);
     for r in loaded.ran {
@@ -365,6 +377,19 @@ pub fn acts(
                     }
                     focus.worlds = list();
                     focus.go(Screen::Worlds(false));
+                }
+            }
+            Act::WorldDanger(id) => {
+                let next = focus.worlds.iter().find(|k| k.id == id).map(|k| k.danger.next()).unwrap_or_default();
+                match set_danger(&id, next) {
+                    Ok(()) => {
+                        // the open world changes straight away
+                        if current.id.as_deref() == Some(id.as_str()) {
+                            scripts.set_danger(next);
+                        }
+                        focus.worlds = list();
+                    }
+                    Err(e) => focus.status = e,
                 }
             }
             Act::RenameWorld(id) => {

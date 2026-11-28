@@ -83,6 +83,7 @@ function test.release(player, action) ask("press", player, action, false) end
 function test.answer(player, choice) ask("answer", player, choice) end
 function test.hold(player, block) ask("hold", player, block) end
 function test.from_half(player, topic, value) ask("from_half", player, topic, value) end
+function test.danger(level) ask("danger", level) end
 -- looking: these only read what the harness said
 function test.kind(name)
 	seen("kind")
@@ -453,6 +454,16 @@ impl Harness {
             for (pid, d, to) in self.scripts.health_changes() {
                 let h = self.health.entry(pid).or_insert(20.0);
                 *h = if d < 0.0 { (*h + d).max(to.min(*h)) } else { (*h + d).min(20.0) };
+                // hurt too badly: the game tells the host where they fell
+                // (`player_fell`) and they're whole again (on the hill in
+                // play; a test leaves them where they stood)
+                if *h <= 0.0 {
+                    *h = 20.0;
+                    if let Some(p) = self.scripts.players.iter().find(|p| p.id == pid) {
+                        let at = p.pos;
+                        self.scripts.fell(pid, at);
+                    }
+                }
             }
             let ids: Vec<u32> = self.scripts.players.iter().map(|p| p.id).collect();
             let _ = self.scripts.ui_changes(&ids);
@@ -649,6 +660,12 @@ impl Harness {
                     Some(name) => crate::items::by_name(&name).ok_or_else(|| Stop::Problem(format!("test.hold: there's nothing called \"{name}\"")))?,
                 };
                 self.scripts.set_held(p.id, b);
+                nothing
+            }
+            "danger" => {
+                let level = arg(1).and_then(|v| v.as_string().map(|s| s.to_string_lossy())).unwrap_or_default();
+                let d = script::Danger::parse(&level).ok_or_else(|| Stop::Problem(format!("test.danger: \"{level}\" isn't a danger (peaceful, gentle, normal or hard)")))?;
+                self.scripts.set_danger(d);
                 nothing
             }
             "get_off" => {

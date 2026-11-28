@@ -1,15 +1,16 @@
 --!strict
 -- Fire. A flint and steel lights it (Interact while aiming at a block holding
--- one), and it burns for a while, then goes out. Beside wood, leaves, plants,
--- hay or wool it spreads, slowly: at most a block every few seconds from each
--- fire. When a fire goes out the wood or wool it was eating may burn away.
--- Water puts it out, and so does breaking it. Standing in it hurts.
+-- one, or an Ember Imp's ember, which is used up), and it burns for a
+-- while, then goes out. Beside wood, leaves, plants, hay or wool it spreads,
+-- slowly: at most a block every few seconds from each fire. When a fire
+-- goes out the wood or wool it was eating may burn away. Water puts it
+-- out, and so does breaking it. Standing in it hurts.
 --
 -- The fire block is in potluck.toml, drawn in four pictures it shows in turn
 -- (frames); with Reduce flashing on, players see the first one only. Knobs
 -- turn spreading off, which a server's host may want.
 
-local world = require("@potluck/world@0.18")
+local world = require("@potluck/world@0.21")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local sound = require("@potluck/sound@0.2")
@@ -25,6 +26,7 @@ local knobs = tweak {
 
 local FIRE = "Fire"
 local LIGHTER = "Flint and steel"
+local EMBER = "Ember" -- lights one fire, and is gone
 local MOST = 256 -- fires burning at once, at most
 
 -- What burns: wood and plants by their kind, and these by name. A remix can
@@ -244,11 +246,13 @@ world.every(1, function()
 	end
 end)
 
--- Flint and steel: lights the side of the block nearest the player, or its top.
+-- Flint and steel, or an ember: lights the side of the block nearest the
+-- player, or its top.
 local used: { [number]: number } = {}
 
 world.on("block_used", function(player, at: vector, block: string)
-	if world.held(player) ~= LIGHTER or NEVER[block] then
+	local held = world.held(player)
+	if (held ~= LIGHTER and held ~= EMBER) or NEVER[block] then
 		return
 	end
 	local eye = player.position + vector.create(0, 1.6, 0)
@@ -261,8 +265,14 @@ world.on("block_used", function(player, at: vector, block: string)
 	else
 		side = vector.create(0, 0, if d.z > 0 then 1 else -1)
 	end
-	sound.play("strike", { at = at })
+	if held == LIGHTER then
+		sound.play("strike", { at = at })
+	end
 	if not (light(at + side) or light(at + vector.create(0, 1, 0))) then
+		return
+	end
+	if held == EMBER then
+		world.take(player, EMBER, 1)
 		return
 	end
 	-- it wears out, in survival

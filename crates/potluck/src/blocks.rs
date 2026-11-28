@@ -439,9 +439,9 @@ pub fn by_name(name: &str) -> Option<BlockId> {
     let key = squash(name);
     BLOCKS
         .iter()
-        .position(|b| squash(b.name) == key)
+        .position(|b| squashes_to(b.name, &key))
         .map(|i| i as BlockId)
-        .or_else(|| (FIRST_MADE..=BlockId::MAX).find(|&id| made(id).is_some_and(|b| squash(b.name) == key && b.quarter == 0)))
+        .or_else(|| (FIRST_MADE..=BlockId::MAX).find(|&id| made(id).is_some_and(|b| b.quarter == 0 && squashes_to(b.name, &key))))
 }
 
 /// The block as it's carried and named: a turned block's north-facing
@@ -485,4 +485,11 @@ pub fn quarter_looking(x: f32, z: f32) -> u8 {
 /// A name as `by_name` compares it: letters and digits, lowercase.
 pub fn squash(name: &str) -> String {
     name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+/// Whether `name` squashes to `key` (itself squashed), without making a
+/// string: creations look names up thousands of times a tick.
+pub fn squashes_to(name: &str, key: &str) -> bool {
+    let mut k = key.chars();
+    name.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).all(|c| k.next() == Some(c)) && k.next().is_none()
 }

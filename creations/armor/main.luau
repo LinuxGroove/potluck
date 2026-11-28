@@ -8,7 +8,7 @@
 -- nothing to see what you wear and take a piece off. What each player
 -- wears is kept with the world (store), by their name.
 
-local world = require("@potluck/world@0.18")
+local world = require("@potluck/world@0.21")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -31,6 +31,7 @@ local FULL = 23 -- the bar's full at this
 -- each material: its pieces' names (head, body, legs, feet) and guards
 local MATERIALS = {
 	{ names = { "Wool cap", "Wool coat", "Wool leggings", "Wool boots" }, guards = { 1, 3, 2, 1 } },
+	{ names = { "Leather cap", "Leather coat", "Leather leggings", "Leather boots" }, guards = { 2, 4, 3, 1 } },
 	{ names = { "Copper helmet", "Copper coat", "Copper leggings", "Copper boots" }, guards = { 2, 5, 4, 1 } },
 	{ names = { "Iron helmet", "Iron coat", "Iron leggings", "Iron boots" }, guards = { 2, 6, 5, 2 } },
 	{ names = { "Moonsilver helmet", "Moonsilver coat", "Moonsilver leggings", "Moonsilver boots" }, guards = { 3, 8, 6, 3 } },

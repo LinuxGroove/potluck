@@ -1,0 +1,50 @@
+name = "Bramble Boars"
+by = "Potluck"
+kind = "creature"
+about = "Bristly wild boars that root about in the woods by day. Leave them be: come too close in survival and one snorts, stamps and charges, then goes back to its rooting. They're tough, but bop one enough and it leaves leather, bristles and meat to cook. On a Peaceful world they never charge; on a Hard one they hit harder and come back at you sooner."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.21"
+tweak = "0.1"
+sound = "0.2"
+
+# a boar's grunt: low and rough
+[sounds.grunt]
+caption = "A boar grunts"
+wave = "saw"
+pitch = [110, 82]
+length = 0.32
+attack = 0.02
+decay = 0.12
+pulse = [22, 0.6]
+lowpass = 700
+
+[[sounds.grunt.layers]]
+wave = "noise"
+pitch = 500
+length = 0.25
+gain = 0.35
+
+# a snort before it charges
+[sounds.snort]
+caption = "A boar snorts"
+wave = "noise"
+pitch = 1400
+length = 0.4
+attack = 0.03
+decay = 0.12
+pulse = [9, 0.8]
+lowpass = 2200
+
+# a squeal when bopped
+[sounds.squeal]
+caption = "A boar squeals"
+wave = "square"
+pitch = [620, 900]
+length = 0.28
+attack = 0.01
+decay = 0.1
+lowpass = 2400

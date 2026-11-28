@@ -15,14 +15,14 @@ This folder is a Potluck creation: plain text that the game runs in a sandbox. E
 
 ## The API
 
-Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.20")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.20. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
+Modules are versioned on their own, never by the game's version: `require("@potluck/world")` or, to be exact, `require("@potluck/world@0.21")`. A newer minor version only adds to an older one, so a creation made for `world 0.1` runs with 0.21. The game's `docs/api.md` is the promise that goes with the versions, and lists the limits.
 
-### `@potluck/world` 0.20
+### `@potluck/world` 0.21
 
 Positions are Luau vectors: `vector.create(x, y, z)`, with `+`, `-` and `*` working on them, `.x`, `.y` and `.z` to read them. A table `{ x, y, z }` works too. y is up; one block is 1.
 
 - `world.creature(def)` defines a kind of creature and returns it, to add handlers to. `def` has:
-  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
+  - `name` (required), `speed` (blocks a second, default 2), `count` (how many the game keeps in the world, default 1; one that has `become` another kind still counts as the kind it came as), `home` (`"green"`, `"paddock"`, `"creek"`, `"start"` or a position: where they appear and stay near; or, new in 0.21, `"here"`: wherever each is spawned), `rideable`, `seat` (the height a rider sits at), `flies` (new in 0.9: no gravity; it rises and sinks as `self:climb` says)
   - `body`: a list of boxes, each `{ "name", size = { w, h, d }, at = { x, y, z }, color = "#rrggbb" }`, with `leg = true` to swing as it walks, `head = true` to bob, `glow = true` to light up. The creature faces negative z. Or (new in 0.11) the name of a Blockbench model in the creation's folder, `body = "hedgehog.bbmodel"`: see `world.model`.
   - `size = { w, h, d }`: the box it bumps into things with and stands on. Left out, it's worked out from the body: as wide as its legs stand (or its body across its narrower side), so a long creature's head and tail reach past it rather than holding it up on the block beside it
   - `behaviours` (new in 0.10): what it does by itself, with no code. See below.
@@ -132,6 +132,36 @@ end
 - It flies until it comes to a creature (which hears `hit(player, shot)`, with whoever shot it) or a solid block, or for 6 seconds. Then `landed(at, block, creature)` is called with where it came down and the block's name or the creature's id (or neither). It passes through players and water. Every game draws it as it flies.
 - A creation has at most 64 in the air. They go when the creation stops.
 
+Creatures that throw (new in 0.21), for imps, archers and snowball fights:
+
+```luau
+function Imp:tick(dt)
+	local p = world.nearest_player(self.position, 14)
+	if p then
+		self:throw({ at = p.position + vector.create(0, 1, 0), look = "ember", speed = 13, drop = 0.3 }, function(at, block, creature, player)
+			if player then world.hurt(player, 2) end
+		end)
+	end
+end
+```
+
+- `self:throw(shot, landed?)` sends something flying from about the creature's eyes, at `at` (a place) or the way `aim` says, with the same `look` (and `"ember"`, glowing), `speed`, `drop` and `power` as `world.shoot`, and returns its id.
+- It never hits the creature that threw it. Unlike a player's shot it hits players: `landed(at, block, creature, player)` gets the player it hit, and what that does is up to the creation. A creature it hits hears nothing (no player hit it), but `landed` is told which.
+
+How dangerous the world is (new in 0.21), for hostile creatures and what dying costs:
+
+```luau
+local HOW = { peaceful = 0, gentle = 0.5, normal = 1, hard = 1.5 }
+local bite = 2 * HOW[world.danger()]
+world.on("player_fell", function(player, at)
+	print(player.name .. " fell at " .. tostring(at))
+end)
+```
+
+- `world.danger()` is the world's danger: `"peaceful"`, `"gentle"` (the default), `"normal"` or `"hard"`. Players choose it for each world (Change or delete a world), and a server in its `server.toml`. What it means is up to each creation: the base game's hostile creatures don't come on Peaceful, and come fewer and gentler on Gentle.
+- `world.on("player_fell", fn)` hears a player in survival hurt too badly, with where they fell, as they go back to the hill. The Lost packs creation drops what they carry there on Normal and Hard.
+- A creature kind's `home = "here"` makes each one's home wherever it's spawned, so wandering keeps it there rather than drawing it back to a spot: for creatures a creation spawns near players.
+
 How fast players heal (new in 0.6), for hunger, rest and healing springs:
 
 ```luau
@@ -172,7 +202,7 @@ world.digging("Wooden pickaxe", nil)                          -- as usual again
 print(world.kind("Oak log"))                                  -- "wood"
 ```
 
-- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords in wood, stone, copper, iron and moonsilver (the copper, iron and moonsilver ones new in 0.16), copper, iron and moonsilver hoes (0.16), Shears, a Bucket and a Water bucket, a Fishing rod, a Watering can, a Sickle and a Hammer (0.17), caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver and a Shield (0.18), a Bow, a Sling and a Spear (0.19) and the Flint and steel (one to a slot), Arrow (0.19), Raw fish and Cooked fish (0.17), a Milk bucket (0.20), what farms give and kitchens make, Seeds, Berries, Apple, Baked potato, Fried egg, Pumpkin pie, Berry pie, Bean stew, Fish stew, Porridge, Honey and Honey cake, and a Feather (0.20), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
+- Items are things to carry and hold, not blocks: the pickaxes, axes, shovels and swords in wood, stone, copper, iron and moonsilver (the copper, iron and moonsilver ones new in 0.16), copper, iron and moonsilver hoes (0.16), Shears, a Bucket and a Water bucket, a Fishing rod, a Watering can, a Sickle and a Hammer (0.17), caps, helmets, coats, leggings and boots in wool, copper, iron and moonsilver and a Shield (0.18), and in leather (0.21), a Bow, a Sling and a Spear (0.19) and the Flint and steel (one to a slot), Arrow (0.19), Raw fish and Cooked fish (0.17), a Milk bucket (0.20), what farms give and kitchens make, Seeds, Berries, Apple, Baked potato, Fried egg, Pumpkin pie, Berry pie, Bean stew, Fish stew, Porridge, Honey and Honey cake, and a Feather (0.20), what wild creatures leave, Silk, Leather, Bristles, Raw meat, Cooked meat, Ember, Sentinel core and Gloom dust (0.21), what ores give, Coal, Raw copper, Raw iron, Raw gold, Crystal and Raw moonsilver, and what furnaces make and fire needs, Charcoal, Flint, Copper ingot, Iron ingot, Gold ingot, Moonsilver ingot, Bread and Roasted carrots (99 to a slot). They're carried, given and taken by name like blocks, but never put down, and `world.set_block` with one is an error.
 - `world.held(player)` is the name of what's in the chosen slot of their hotbar, or nil for an empty hand (an empty slot in survival).
 - `world.kind(block)` is what a block is made of: `"soft"` (earth, sand, gravel, wool), `"hard"` (stone, brick, ore), `"wood"`, `"plant"`, `"glass"`, `"water"` or `"air"`.
 - `world.digging(block, speeds)` makes a survival player holding `block` break each kind of block faster: speeds by kind (soft, hard, wood, plant or glass), from 0 to 10, 1 as usual and 0 not at all. nil puts it back. When several creations set speeds for the same thing, they multiply; they last until the creation changes them or stops. Breaking happens on the player's own game, so it's told the speeds.
@@ -538,12 +568,12 @@ end
 - `game.links()` is the names of the other servers this one can send players to (its `[links]`, set by whoever runs it). Alone or hosting from the game it's empty.
 - `game.send(player, link, note?)` sends a player to one of those servers, showing them `note`. The player at the keyboard of a hosted world stays: they are the world.
 
-### `@potluck/test` 0.6
+### `@potluck/test` 0.7
 
 A creation's own tests, in `test.luau` beside `main.luau`. They run only when asked for: the dev bridge's `test` tool, or `potluck-server --test=balloon` (an id or a folder, or `all` for every creation that has tests; it ends with 1 if any failed, for scripts). Each case plays in a world of its own: a copy of the world with only this creation in it, its knobs as its code sets them, and players made for the test. Nothing a test does reaches the world anyone plays in. It needn't be in `[needs]`. The base game's balloon and woolly have tests to read.
 
 ```luau
-local test = require("@potluck/test@0.6")
+local test = require("@potluck/test@0.7")
 local world = require("@potluck/world@0.12")
 
 test.case("a basket put down fills up into a balloon", function()
@@ -568,6 +598,7 @@ end)
 - `test.player(name?, { at = pos, survival = true, carrying = { ["Cream wool"] = 2 } }?)` brings a player in, on the Green unless `at` says where. In creative they have every block, as in play. `test.move(player, pos)` moves them, and the table you hold with them.
 - What players do: `test.place(player, pos, block, facing?)` (`facing` for a block that turns, 0.5; north if left out) and `test.dig(player, pos)` (heard as `block_placed` and `block_broken`; a survival player puts down only what they carry, and keeps what they dig, as `world.drops` says; `test.dig` returns false, breaking nothing, when what they hold can't break it, 0.4), `test.use_block(player, pos)`, `test.use_item(player, aim?)` (Interact on nothing, heard as `item_used`, looking `aim` or north; 0.6), `test.use(player, creature)` and `test.hit(player, creature)`, `test.ride(player, creature)` and `test.get_off(player)`, `test.press(player, action)` and `test.release(player, action)` for its `[actions]`, `test.answer(player, choice)` for the question in front of them (choices count from 1), `test.hold(player, block)` for what's in their hand (nil for nothing), and `test.from_half(player, topic, value?)`, a message from that player's client half as `net.send` sends it there (0.3). Placing, digging, using a block, pressing, answering and messages from a half pass a tenth of a second so the creation hears them; using, hitting and riding a creature are heard at once.
 - Looking: `test.kind(name)` is one of its kinds, for `world.creatures` and `world.spawn`. `test.creature(id)` is a creature's table (`position`, `kind`, `rider` and the fields its code keeps), or nil once it's gone; it's the same table from one moment to the next. `test.health(player)` is their health (20 is full), `test.shown(player, id)` the text of one of its pieces on their screen, or nil, `test.asked(player)` the question in front of them (`title`, `text`, `choices`), or nil, and `test.heard(name)` how many times the creation has played that sound (its own or the game's, by the name it plays) since the case began (0.2). `test.sent(player, topic)` is the last value the creation sent that player's client half on that topic (true for a message with no value), and how many times it has since the case began: `nil, 0` if it hasn't (0.3). The half itself doesn't run in a case.
+- `test.danger(level)` (0.7) sets the world's danger for the case (`"peaceful"`, `"gentle"`, `"normal"` or `"hard"`; Gentle until it's set). A survival player whose health runs out in a case is heard as `player_fell` where they stand, and is whole again.
 - The rest of the API works in a case as in `main.luau`: `world.block`, `world.pockets`, `store.get` and so on. `main.luau`'s locals aren't reachable: use `test.kind` and `test.creature`.
 - `wait`, `player`, `move` and what players do hand over to the game, so give each a line of its own rather than putting one inside a call to `world` or a creature: `local p = test.player()` and then `world.spawn(kind, p.position)`, not `world.spawn(kind, test.player().position)`.
 

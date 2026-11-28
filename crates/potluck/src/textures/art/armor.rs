@@ -1,6 +1,6 @@
 //! Icons for armor (the Armor creation wears them): a cap or helmet, a
-//! coat, leggings and boots in wool, copper, iron and moonsilver, and a
-//! shield. Each is drawn upright, as it would hang on a peg, with the same
+//! coat, leggings and boots in wool, leather, copper, iron and moonsilver,
+//! and a shield. Each is drawn upright, as it would hang on a peg, with the same
 //! dark outline as the tools.
 
 use super::super::*;
@@ -14,6 +14,26 @@ enum Piece {
     Feet,
 }
 
+/// What a piece is made of.
+#[derive(Clone, Copy, PartialEq)]
+enum Stuff {
+    Wool,
+    Leather,
+    Metal(Made),
+}
+
+impl Stuff {
+    fn metal(self) -> Option<Made> {
+        match self {
+            Stuff::Metal(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+/// Tanned hide, from Bramble Boars.
+const LEATHER: &[u32] = &[0x3a1e0e, 0x56301a, 0x744426, 0x925a34, 0xae7446, 0xc8905c];
+
 /// Knitted wool: rows of little stitches.
 fn knit(x: f32, y: f32) -> f32 {
     let stitch = ((x * 1.1).sin() * 0.5 + 0.5) * ((y * 1.5 + 0.8 * (x * 1.1).cos()).sin() * 0.5 + 0.5);
@@ -22,10 +42,15 @@ fn knit(x: f32, y: f32) -> f32 {
 
 /// One texel of the piece's stuff: knitted wool, or metal plate `depth` 0
 /// at its edges to 1 in its middle, with `trim` along its edges.
-fn stuff(made: Option<Made>, x: f32, y: f32, depth: f32, trim: f32, s: u32) -> Px {
-    match made {
-        None => Px { pal: 0, t: (knit(x, y) + 0.2 * depth - 0.25 * trim).clamp(0.0, 1.0), h: 0.4 + 0.3 * depth, rough: 0.95, alpha: 1.0 },
-        Some(m) => {
+fn stuff(kind: Stuff, x: f32, y: f32, depth: f32, trim: f32, s: u32) -> Px {
+    match kind {
+        Stuff::Wool => Px { pal: 0, t: (knit(x, y) + 0.2 * depth - 0.25 * trim).clamp(0.0, 1.0), h: 0.4 + 0.3 * depth, rough: 0.95, alpha: 1.0 },
+        // smooth, with a little grain and darker stitched edges
+        Stuff::Leather => {
+            let grain = fbm(x * 0.8, y * 0.8, 4, 3, s ^ 11) - 0.5;
+            Px { pal: 0, t: (0.5 + 0.3 * depth + 0.18 * grain - 0.35 * trim).clamp(0.0, 1.0), h: 0.45 + 0.35 * depth, rough: 0.7, alpha: 1.0 }
+        }
+        Stuff::Metal(m) => {
             let mut p = head(m, x, y, depth, 0.35 * trim, s);
             p.pal = 0;
             p
@@ -33,13 +58,15 @@ fn stuff(made: Option<Made>, x: f32, y: f32, depth: f32, trim: f32, s: u32) -> P
     }
 }
 
-fn paint(name: &'static str, piece: Piece, made: Option<Made>) -> Tex {
+fn paint(name: &'static str, piece: Piece, kind: Stuff) -> Tex {
     let s = seed_of(name);
-    let pal = match made {
-        None => WOOL_CREAM,
-        Some(Made::Copper) => super::super::smelting::COPPER_BAR,
-        Some(Made::Iron) => super::super::smelting::IRON_BAR,
-        Some(_) => super::super::smelting::MOONSILVER_BAR,
+    let made = kind.metal();
+    let pal = match kind {
+        Stuff::Wool => WOOL_CREAM,
+        Stuff::Leather => LEATHER,
+        Stuff::Metal(Made::Copper) => super::super::smelting::COPPER_BAR,
+        Stuff::Metal(Made::Iron) => super::super::smelting::IRON_BAR,
+        Stuff::Metal(_) => super::super::smelting::MOONSILVER_BAR,
     };
     let mut a = Art::new(name, &[pal, pal, NAIL, OUTLINE]);
     a.fill(|x, y, _| {
@@ -51,21 +78,21 @@ fn paint(name: &'static str, piece: Piece, made: Option<Made>) -> Tex {
                 let (rx, ry) = (19.0, 20.0);
                 let d = (cx / rx).powi(2) + ((y - 38.0) / ry).powi(2);
                 if y <= 38.0 && d <= 1.0 {
-                    if made.is_none() && ((x - 32.0).powi(2) + (y - 15.0).powi(2)).sqrt() <= 5.0 {
+                    if kind == Stuff::Wool && ((x - 32.0).powi(2) + (y - 15.0).powi(2)).sqrt() <= 5.0 {
                         // a cap's bobble
-                        return stuff(made, x * 1.7, y * 1.7, 0.8, 0.0, s);
+                        return stuff(kind, x * 1.7, y * 1.7, 0.8, 0.0, s);
                     }
                     // a helmet's ridge down the middle
                     let ridge = if made.is_some() { (1.0 - dx / 2.0).max(0.0) } else { 0.0 };
-                    return stuff(made, x, y, 1.0 - d + 0.4 * ridge, smooth(0.8, 1.0, d), s);
+                    return stuff(kind, x, y, 1.0 - d + 0.4 * ridge, smooth(0.8, 1.0, d), s);
                 }
                 if (38.0..=45.0).contains(&y) && dx <= 21.0 {
                     let edge = ((y - 38.0) / 7.0 - 0.5).abs() * 2.0;
-                    return stuff(made, x, y * 3.0, 0.6, edge, s);
+                    return stuff(kind, x, y * 3.0, 0.6, edge, s);
                 }
                 // a helmet's nose guard
                 if made.is_some() && (45.0..=52.0).contains(&y) && dx <= 2.0 {
-                    return stuff(made, x, y, 0.5, 0.5, s);
+                    return stuff(kind, x, y, 0.5, 0.5, s);
                 }
             }
             Piece::Body => {
@@ -83,18 +110,18 @@ fn paint(name: &'static str, piece: Piece, made: Option<Made>) -> Tex {
                     if made.is_none() && dx <= 1.2 && (y - 22.0).rem_euclid(9.0) < 2.0 && y > 18.0 {
                         return Px { pal: 2, t: 0.5, h: 0.8, rough: 0.6, alpha: 1.0 };
                     }
-                    return stuff(made, x, y, 1.0 - dx / 25.0, (edge + seam).min(1.0), s);
+                    return stuff(kind, x, y, 1.0 - dx / 25.0, (edge + seam).min(1.0), s);
                 }
             }
             Piece::Legs => {
                 // leggings: a waistband and two legs apart below the hips
                 if dx <= 16.0 && (10.0..=17.0).contains(&y) {
-                    return stuff(made, x, y * 2.5, 0.7, 0.6, s);
+                    return stuff(kind, x, y * 2.5, 0.7, 0.6, s);
                 }
                 let legs = dx <= 16.0 && (17.0..=56.0).contains(&y) && (dx >= 2.5 || y < 26.0);
                 if legs {
                     let mid = (dx - 9.25).abs() / 6.75;
-                    return stuff(made, x, y, 1.0 - mid, smooth(51.0, 56.0, y), s);
+                    return stuff(kind, x, y, 1.0 - mid, smooth(51.0, 56.0, y), s);
                 }
             }
             Piece::Feet => {
@@ -108,7 +135,7 @@ fn paint(name: &'static str, piece: Piece, made: Option<Made>) -> Tex {
                         if sole {
                             return Px { pal: 2, t: 0.25, h: 0.5, rough: 0.9, alpha: 1.0 };
                         }
-                        return stuff(made, x, y, 1.0 - ((x - bx) / 6.0).abs().min(1.0), if cuff { 0.8 } else { 0.0 }, s);
+                        return stuff(kind, x, y, 1.0 - ((x - bx) / 6.0).abs().min(1.0), if cuff { 0.8 } else { 0.0 }, s);
                     }
                 }
             }
@@ -150,11 +177,12 @@ fn shield(name: &'static str) -> Tex {
 
 const PIECES: [Piece; 4] = [Piece::Head, Piece::Body, Piece::Legs, Piece::Feet];
 /// Each material, and its pieces' icons in the order of `PIECES`.
-const MATERIALS: &[(Option<Made>, [&str; 4])] = &[
-    (None, ["armor_wool_head", "armor_wool_body", "armor_wool_legs", "armor_wool_feet"]),
-    (Some(Made::Copper), ["armor_copper_head", "armor_copper_body", "armor_copper_legs", "armor_copper_feet"]),
-    (Some(Made::Iron), ["armor_iron_head", "armor_iron_body", "armor_iron_legs", "armor_iron_feet"]),
-    (Some(Made::Moonsilver), ["armor_moonsilver_head", "armor_moonsilver_body", "armor_moonsilver_legs", "armor_moonsilver_feet"]),
+const MATERIALS: &[(Stuff, [&str; 4])] = &[
+    (Stuff::Wool, ["armor_wool_head", "armor_wool_body", "armor_wool_legs", "armor_wool_feet"]),
+    (Stuff::Leather, ["armor_leather_head", "armor_leather_body", "armor_leather_legs", "armor_leather_feet"]),
+    (Stuff::Metal(Made::Copper), ["armor_copper_head", "armor_copper_body", "armor_copper_legs", "armor_copper_feet"]),
+    (Stuff::Metal(Made::Iron), ["armor_iron_head", "armor_iron_body", "armor_iron_legs", "armor_iron_feet"]),
+    (Stuff::Metal(Made::Moonsilver), ["armor_moonsilver_head", "armor_moonsilver_body", "armor_moonsilver_legs", "armor_moonsilver_feet"]),
 ];
 
 /// Every piece's icon, and the shield's.

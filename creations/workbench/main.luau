@@ -33,6 +33,8 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Birch log"] = 1 }, give = "Planks", n = 4 },
 		{ want = { Sand = 4 }, give = "Sandstone", n = 1 },
 		{ want = { Stone = 4 }, give = "Mossy brick", n = 4 },
+		-- Cave Crawlers' silk, spun
+		{ want = { Silk = 4 }, give = "Cream wool", n = 1 },
 		-- the Brickworks creation's, when it's in the world
 		{ want = { Cobblestone = 8 }, give = "Kiln", n = 1 },
 		-- the furnace creation's
@@ -90,6 +92,7 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Iron ingot"] = 3, Planks = 2 }, give = "Hammer", n = 1 },
 		{ want = { ["Iron ingot"] = 3 }, give = "Bucket", n = 1 },
 		{ want = { Planks = 3, ["Cream wool"] = 2 }, give = "Fishing rod", n = 1 },
+		{ want = { Planks = 3, Silk = 2 }, give = "Fishing rod", n = 1 },
 		-- lights fires (the fire creation)
 		{ want = { Flint = 1, ["Iron ingot"] = 1 }, give = "Flint and steel", n = 1 },
 	},
@@ -99,8 +102,12 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Copper ingot"] = 2, Planks = 1 }, give = "Copper sword", n = 1 },
 		-- shot and thrown (the Bows, slings and spears creation)
 		{ want = { Planks = 3, ["Cream wool"] = 2 }, give = "Bow", n = 1 },
+		-- silk strings a bow better than wool (Cave Crawlers leave it)
+		{ want = { Planks = 3, Silk = 2 }, give = "Bow", n = 1 },
 		{ want = { Flint = 1, Planks = 1 }, give = "Arrow", n = 4 },
 		{ want = { Flint = 1, Planks = 1, Feather = 1 }, give = "Arrow", n = 8 },
+		-- boar bristles fletch them as well as a feather
+		{ want = { Flint = 1, Planks = 1, Bristles = 1 }, give = "Arrow", n = 8 },
 		{ want = { ["Cream wool"] = 3 }, give = "Sling", n = 1 },
 		{ want = { Flint = 1, Planks = 3 }, give = "Spear", n = 1 },
 		{ want = { Planks = 6, ["Iron ingot"] = 1 }, give = "Shield", n = 1 },
@@ -109,6 +116,11 @@ local RECIPES: { [string]: { Recipe } } = {
 		{ want = { ["Cream wool"] = 8 }, give = "Wool coat", n = 1 },
 		{ want = { ["Cream wool"] = 7 }, give = "Wool leggings", n = 1 },
 		{ want = { ["Cream wool"] = 4 }, give = "Wool boots", n = 1 },
+		-- leather from Bramble Boars
+		{ want = { Leather = 5 }, give = "Leather cap", n = 1 },
+		{ want = { Leather = 8 }, give = "Leather coat", n = 1 },
+		{ want = { Leather = 7 }, give = "Leather leggings", n = 1 },
+		{ want = { Leather = 4 }, give = "Leather boots", n = 1 },
 		{ want = { ["Copper ingot"] = 5 }, give = "Copper helmet", n = 1 },
 		{ want = { ["Copper ingot"] = 8 }, give = "Copper coat", n = 1 },
 		{ want = { ["Copper ingot"] = 7 }, give = "Copper leggings", n = 1 },

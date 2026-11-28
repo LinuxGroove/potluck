@@ -1,0 +1,49 @@
+name = "Stone Sentinels"
+by = "Potluck"
+kind = "creature"
+about = "Old stone guardians that stand over the moonsilver deep in the earth. Come near their ore in survival and one wakes: slow, but it hits hard, and it's very tough. Beat it and it leaves a sentinel core, and sometimes moonsilver, and that seam is yours. Rare, and only far below the ground. None on a Peaceful world."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.21"
+tweak = "0.1"
+store = "0.1"
+sound = "0.2"
+
+# stone grinding as it moves
+[sounds.grind]
+caption = "Stone grinds"
+wave = "noise"
+pitch = 380
+length = 0.6
+attack = 0.05
+decay = 0.25
+pulse = [14, 0.5]
+lowpass = 900
+
+# a slam: a deep thud and a crack
+[sounds.slam]
+caption = "A sentinel slams"
+wave = "sine"
+pitch = [90, 40]
+length = 0.5
+attack = 0.005
+decay = 0.18
+
+[[sounds.slam.layers]]
+wave = "noise"
+pitch = 2200
+length = 0.15
+gain = 0.6
+
+# waking: a low hum that rises
+[sounds.wake]
+caption = "A sentinel wakes"
+wave = "triangle"
+pitch = [70, 140]
+length = 1.2
+attack = 0.3
+decay = 0.5
+wobble = [4, 3]
