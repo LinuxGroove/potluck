@@ -11,7 +11,7 @@ use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::pbr::DistanceFog;
 use bevy::prelude::*;
 
-use super::{Clock, NotRaytraced, Sun};
+use super::{Clock, Gloom, NotRaytraced, Sun};
 use crate::noise::smooth;
 use crate::player::MainCamera;
 
@@ -31,6 +31,8 @@ pub struct DomeLook {
     at: f32,
     /// And the sun's glow.
     glow: Glow,
+    /// And the weather's.
+    gloom: Gloom,
 }
 
 /// How high above the horizon ring `r` of `RINGS` is, -1 (straight down) to
@@ -73,7 +75,7 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Asse
     let mat = mats.add(StandardMaterial { unlit: true, fog_enabled: false, double_sided: true, cull_mode: None, ..default() });
     let mesh = meshes.add(mesh());
     commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::default(), Dome, NotShadowCaster, NotRaytraced));
-    commands.insert_resource(DomeLook { mesh, at: -1.0, glow: Glow::default() });
+    commands.insert_resource(DomeLook { mesh, at: -1.0, glow: Glow::default(), gloom: Gloom::default() });
 }
 
 /// The sky's colour, in sRGB like the fog's, looking along `d` (unit length)
@@ -81,14 +83,22 @@ pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Asse
 /// sunset) as `sky` works them out. The glow round the sun comes on top
 /// (`Glow`).
 pub fn colour(d: Vec3, sun: Vec3, day: f32, low: f32) -> Vec3 {
-    let horizon = super::fog_colour(day, low);
-    let zenith = Vec3::new(0.015, 0.025, 0.07).lerp(Vec3::new(0.36, 0.56, 0.96), day);
+    colour_in(d, sun, day, low, &Gloom::default())
+}
+
+/// The same under the weather: greying over as it clouds up, to the fog's
+/// grey at the horizon and a brighter grey overhead, with no glow round a
+/// sun that's behind the cloud.
+pub(crate) fn colour_in(d: Vec3, sun: Vec3, day: f32, low: f32, gloom: &Gloom) -> Vec3 {
+    let horizon = gloom.fog_colour(day, low);
+    let clear = Vec3::new(0.015, 0.025, 0.07).lerp(Vec3::new(0.36, 0.56, 0.96), day);
+    let zenith = clear.lerp((gloom.grey(day, low) * 1.15).min(Vec3::ONE), gloom.cover);
     let c = horizon.lerp(zenith, smooth(0.0, 0.5, d.y).powf(0.65));
     // toward a low sun the sky over the horizon burns gold, with rose above
     // and round it. Below the horizon it stays the fog's colour, as the far
     // sea is: the sea stops where it meets the dome, a little below the
     // horizon, and any gold there drew a hard line along it
-    let set = low * day;
+    let set = low * day * (1.0 - gloom.cover);
     let facing = Vec2::new(d.x, d.z).normalize_or_zero().dot(Vec2::new(sun.x, sun.z).normalize_or_zero()).max(0.0);
     let band = smooth(0.0, 0.05, d.y) * (1.0 - smooth(0.05, 0.5, d.y));
     c.lerp(Vec3::new(0.86, 0.5, 0.56), set * 0.5 * band * facing.powf(1.5)).lerp(Vec3::new(1.0, 0.6, 0.26), set * 0.85 * band * facing.powf(5.0))
@@ -132,16 +142,21 @@ pub fn follow(
     cam: Query<(&GlobalTransform, &Exposure, &DistanceFog), With<MainCamera>>,
     sun: Query<(&GlobalTransform, &DirectionalLight), With<Sun>>,
     mut dome: Query<&mut Transform, With<Dome>>,
+    weather: Res<crate::sky::Weather>,
+    settings: Res<crate::settings::Settings>,
 ) {
     let Some(mut look) = look else { return };
     let (Ok((cam, exposure, fog)), Ok(mut t)) = (cam.single(), dome.single_mut()) else { return };
     t.translation = cam.translation();
     let glow = sun.single().map(|(st, l)| Glow::of(l, st.back().into(), exposure.exposure(), fog)).unwrap_or_default();
-    if (clock.time - look.at).abs() <= 0.001 && !glow.differs(&look.glow) {
+    let gloom = Gloom::of(&weather, settings.reduce_flashing);
+    let changed = [gloom.cover - look.gloom.cover, gloom.fog - look.gloom.fog, gloom.storm - look.gloom.storm, gloom.glow - look.gloom.glow].iter().any(|d| d.abs() > 0.004);
+    if (clock.time - look.at).abs() <= 0.001 && !glow.differs(&look.glow) && !changed {
         return;
     }
     look.at = clock.time;
     look.glow = glow;
+    look.gloom = gloom;
     let (sun, day, low) = super::sun_now(&clock);
     let Some(mut mesh) = meshes.get_mut(&look.mesh) else { return };
     // (never `attribute`, which panics on a mesh whose data has gone to the GPU)
@@ -149,7 +164,7 @@ pub fn follow(
     if let Ok(Some(VertexAttributeValues::Float32x4(col))) = mesh.try_attribute_mut_option(Mesh::ATTRIBUTE_COLOR) {
         for (c, p) in col.iter_mut().zip(&pos) {
             let d = Vec3::from(*p) / RADIUS;
-            let s = colour(d, sun, day, low);
+            let s = colour_in(d, sun, day, low, &gloom);
             let lin = Color::srgb(s.x, s.y, s.z).to_linear().to_vec3() + glow.at(d);
             *c = [lin.x, lin.y, lin.z, 1.0];
         }

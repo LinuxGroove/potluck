@@ -1,6 +1,7 @@
-// Under water with ray tracing (`render::murk`): the water's murk laid over
-// the picture by how far away each pixel is, since the ray traced lighting
-// leaves out the distance fog the other tiers close in with.
+// Under water or in the weather's fog with ray tracing (`render::murk`):
+// the murk laid over the picture by how far away each pixel is, since the
+// ray traced lighting leaves out the distance fog the other tiers close in
+// with.
 
 struct FullscreenVertexOutput {
     @builtin(position) position: vec4<f32>,

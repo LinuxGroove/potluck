@@ -3,7 +3,9 @@
 //! sea floor came out clear and bright to the edge of the murk ball. This
 //! pass lays the water's murk over the picture after the lighting, by how
 //! far away each pixel is in the depth buffer (and no further than the
-//! water's surface above), as the fog would have.
+//! water's surface above), as the fog would have. Out of the water it does
+//! the same for the weather's fog (`Gloom`), so rain and fog close in on
+//! Ultra as they do on the other tiers.
 
 use bevy::core_pipeline::{Core3d, Core3dSystems, FullscreenShader};
 use bevy::prelude::*;
@@ -128,32 +130,46 @@ fn pass(view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<Murk>, &ViewMurk)>, c
     pass.draw(0..3, 0..1);
 }
 
+/// How thick the weather's fog lies over a ray traced picture: none on a
+/// clear day (the atmosphere's own haze is enough there), most of the
+/// other tiers' in rain, and whole in thick fog.
+pub(crate) fn weather_murk(gloom: &super::Gloom) -> f32 {
+    use crate::noise::smooth;
+    0.65 * smooth(0.0, 0.15, gloom.fog) + 0.35 * smooth(0.0, 0.5, gloom.fog)
+}
+
 /// Puts the murk on the camera while it's under water with ray tracing on,
-/// in the fog's colour (`super::sky` sets it), and takes it off after.
+/// or out in the weather's fog, in the fog's colour (`super::sky` sets it),
+/// and takes it off after.
+#[allow(clippy::too_many_arguments)]
 pub fn follow(
     mut commands: Commands,
     me: Res<crate::player::Me>,
     rt: Res<super::Raytraced>,
     voxels: Res<crate::world::Voxels>,
+    weather: Res<crate::sky::Weather>,
+    settings: Res<crate::settings::Settings>,
     cam: Query<(Entity, &Transform, &Projection, &DistanceFog, Has<Murk>), With<crate::player::MainCamera>>,
 ) {
     let Ok((e, t, projection, fog, has)) = cam.single() else { return };
     let Projection::Perspective(p) = projection else { return };
-    if !(rt.0 && me.under_water) {
+    let thick = if me.under_water { 1.0 } else { weather_murk(&super::Gloom::of(&weather, settings.reduce_flashing)) };
+    if !rt.0 || thick < 0.005 {
         if has {
             commands.entity(e).remove::<Murk>();
         }
         return;
     }
     let half = (p.fov * 0.5).tan();
-    let surface = (crate::player::surface(&voxels, t.translation) - t.translation.y).max(0.0);
+    // out of the water it reaches up into the sky
+    let surface = if me.under_water { (crate::player::surface(&voxels, t.translation) - t.translation.y).max(0.0) } else { 1.0e9 };
     let reach = match fog.falloff {
         FogFalloff::Linear { start, end } => Vec2::new(start, end),
         _ => Vec2::new(1.0, super::UNDER_SEA),
     };
     let c = fog.color.to_linear();
     commands.entity(e).insert(Murk {
-        colour: Vec4::new(c.red, c.green, c.blue, 1.0),
+        colour: Vec4::new(c.red, c.green, c.blue, thick),
         reach: Vec4::new(reach.x, reach.y, p.near, surface),
         ray: Vec4::new(half * p.aspect_ratio, half, 0.0, 0.0),
         right: t.right().as_vec3().extend(0.0),

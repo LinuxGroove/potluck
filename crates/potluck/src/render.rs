@@ -17,6 +17,7 @@ use bevy::prelude::*;
 
 pub mod clouds;
 pub mod dome;
+pub mod fall;
 pub mod far;
 pub mod timings;
 pub mod motes;
@@ -551,6 +552,73 @@ pub(crate) fn fog_colour(day: f32, low: f32) -> Vec3 {
     night_fog.lerp(day_fog, day).lerp(SUNSET, 0.45 * low * day)
 }
 
+/// What the weather (`sky::Weather`) does to the light: how much of the sky
+/// is grey cloud, how much of the sun gets through it, how thick the fog
+/// is, and lightning's glow. The sky, the clouds, Low's dome, the fog and
+/// the falling rain all read the same numbers, so they agree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Gloom {
+    /// How much of the sky is grey, 0 (clear) to 1 (overcast).
+    pub cover: f32,
+    /// The share of the sun's light that gets through, 1 in a clear sky.
+    pub sun: f32,
+    /// How thick the fog is, 0 to 1.
+    pub fog: f32,
+    /// How dark a storm's cloud is, 0 to 1.
+    pub storm: f32,
+    /// Lightning's soft glow now, 0 to 0.5 (none with Reduce flashing on).
+    pub glow: f32,
+}
+
+impl Default for Gloom {
+    /// A clear sky.
+    fn default() -> Self {
+        Gloom { cover: 0.0, sun: 1.0, fog: 0.0, storm: 0.0, glow: 0.0 }
+    }
+}
+
+impl Gloom {
+    pub fn of(w: &crate::sky::Weather, reduce_flashing: bool) -> Gloom {
+        use crate::noise::smooth;
+        let fog = w.fog.clamp(0.0, 1.0);
+        Gloom {
+            cover: smooth(0.2, 0.9, w.cloud).max(smooth(0.05, 0.6, fog)),
+            sun: (1.0 - 0.82 * smooth(0.2, 1.0, w.cloud)) * (1.0 - 0.6 * fog),
+            fog,
+            storm: w.storm.clamp(0.0, 1.0),
+            glow: w.glow(reduce_flashing),
+        }
+    }
+
+    /// The cloud's grey (sRGB): pale by day, slate in a storm, nearly black
+    /// at night, warmed a little by a low sun; and lit up by lightning.
+    pub fn grey(&self, day: f32, low: f32) -> Vec3 {
+        let pale = Vec3::new(0.64, 0.67, 0.71).lerp(Vec3::new(0.3, 0.32, 0.36), self.storm);
+        let night = Vec3::new(0.022, 0.027, 0.04);
+        night.lerp(pale, day).lerp(SUNSET * 0.7, 0.25 * low * day) + Vec3::new(0.5, 0.52, 0.6) * self.glow
+    }
+
+    /// The fog's colour under this weather (sRGB): the clear day's, going
+    /// grey as the cloud comes over.
+    pub fn fog_colour(&self, day: f32, low: f32) -> Vec3 {
+        fog_colour(day, low).lerp(self.grey(day, low), self.cover)
+    }
+
+    /// Where the fog starts and where it's whole: as far as the clear day's
+    /// on Medium and up (or Low's), closing in as the fog thickens.
+    pub fn reach(&self, medium: bool) -> (f32, f32) {
+        let (start, clear) = if medium { (160.0, 520.0) } else { (140.0, 330.0) };
+        let end = clear + (48.0 - clear) * self.fog.powf(0.6);
+        (start * (end / clear) * (1.0 - self.fog.sqrt()), end)
+    }
+
+    /// How many stops the eye opens by day as the cloud takes the sun away
+    /// (less than it lost: an overcast day is duller than a sunny one).
+    pub fn opens(&self) -> f32 {
+        (-self.sun.max(0.05).log2() * 0.55).min(1.6)
+    }
+}
+
 /// The colour of the water round the eye (sRGB) at daylight `day`, `deep`
 /// blocks under the surface: green-blue near the top by day, bluer and
 /// darker going down, and nearly black at night.
@@ -634,7 +702,9 @@ pub fn sky(
     mut under: Query<(&mut Visibility, &MeshMaterial3d<StandardMaterial>), With<UnderSea>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut eye: ResMut<Eye>,
+    weather: Res<crate::sky::Weather>,
 ) {
+    let gloom = Gloom::of(&weather, settings.reduce_flashing);
     // how open the sky over the player is, and how far underground they
     // are, looked at a few times a second and followed slowly, as eyes adjust
     eye.since += time.delta_secs();
@@ -666,7 +736,8 @@ pub fn sky(
     // the haze only shows in sunlight, so it thins away as the moon takes
     // over and isn't drawn at all in the dead of night (on High that's a
     // sixth of the frame)
-    let haze_lit = crate::noise::smooth(-0.3, -0.12, up);
+    // and none under grey cloud, where no shafts come through
+    let haze_lit = crate::noise::smooth(-0.3, -0.12, up) * (1.0 - crate::noise::smooth(0.3, 0.85, gloom.cover));
     if let Ok((e, mut t, mut l, shafts)) = sun.single_mut() {
         if !haze.is_empty() && shafts != (haze_lit > 0.0) {
             if shafts {
@@ -693,6 +764,8 @@ pub fn sky(
             l.illuminance = 400.0 * (1.0 - crate::noise::smooth(-0.2, -0.05, up));
             l.color = Color::srgb(0.66, 0.76, 1.0);
         }
+        // cloud takes the sun (and the moon) away, and its shadows with it
+        l.illuminance *= gloom.sun;
     }
     if let Ok((mut t, mut v)) = haze.single_mut() {
         // the haze sits on the ground round the player, thickest at dawn and dusk
@@ -710,13 +783,16 @@ pub fn sky(
         grade.global.post_saturation = 1.0 + 0.12 * golden - 0.18 * night;
         grade.shadows.lift = -0.008 * golden;
         grade.highlights.gain = 1.0 + 0.04 * golden;
+        // an overcast day is a little greyer and cooler
+        grade.global.post_saturation *= 1.0 - 0.22 * gloom.cover;
+        grade.global.temperature -= 0.025 * gloom.cover * day;
         // eyes adjust to the dark, gently; ray traced shade has no made-up
         // fill from everywhere, so there the eye opens up a little more
         let night_open = |n: f32| n * 4.4 + if rt.0 { 0.4 + 1.0 * n } else { 0.0 };
         // under trees or a roof by day the eye opens up: a little where the
         // sky's fill still reaches in, more where ray tracing finds the
         // shade truly dark; deep underground, as far as it does at night
-        let open = night_open(night_eye(day)) + day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 };
+        let open = night_open(night_eye(day)) + day * shade.powf(1.3) * if rt.0 { 3.5 } else { 1.0 } + day * gloom.opens();
         ex.ev100 = 13.7 - open.max(night_open(below));
         // the sky's reflections and fill don't reach down into caves either
         // (the sky's share each face sees only dims some of it): deep
@@ -725,11 +801,15 @@ pub fn sky(
         if let Some(mut env) = env {
             env.intensity = 1.0 - below * (1.0 - 0.03 * (1.0 - day));
         }
-        let f = fog_colour(day, low);
-        fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 } else { 1.0 });
-        fog.directional_light_color = Color::srgba(1.0, 0.93, 0.8, 0.4);
+        // the fog greys under cloud and closes in as it thickens; past the
+        // clear day's haze it hides the land whole, so the far hills go
+        let f = gloom.fog_colour(day, low);
+        let whole = crate::noise::smooth(0.0, 0.5, gloom.fog).max(0.5 * gloom.cover);
+        fog.color = Color::srgba(f.x, f.y, f.z, if medium { 0.65 + 0.35 * whole } else { 1.0 });
+        fog.directional_light_color = Color::srgba(1.0, 0.93, 0.8, 0.4 * gloom.sun);
         fog.directional_light_exponent = 24.0;
-        fog.falloff = if medium { FogFalloff::Linear { start: 160.0, end: 520.0 } } else { FogFalloff::Linear { start: 140.0, end: 330.0 } };
+        let (start, end) = gloom.reach(medium);
+        fog.falloff = FogFalloff::Linear { start, end };
         if me.under_water {
             // under water the murk closes in, darker the deeper you go and
             // brighter toward the sun; the grade turns cool and quiet. It
@@ -759,10 +839,14 @@ pub fn sky(
         }
     }
     // Low's sky, under its dome (`dome`)
-    let s = Vec3::new(0.02, 0.03, 0.07).lerp(Vec3::new(0.5, 0.68, 0.9), day).lerp(SUNSET, 0.4 * low * day);
+    let s = Vec3::new(0.02, 0.03, 0.07).lerp(Vec3::new(0.5, 0.68, 0.9), day).lerp(SUNSET, 0.4 * low * day).lerp(gloom.grey(day, low), gloom.cover);
     clear.0 = Color::srgb(s.x, s.y, s.z);
-    // deep underground the sky's fill is the night's, day or night
-    ambient.brightness = if medium { 40.0 + 1310.0 * day * (1.0 - below) } else { 160.0 + 5940.0 * day * (1.0 - below) };
+    // deep underground the sky's fill is the night's, day or night. Under
+    // cloud the sky's light is grey and comes from everywhere, so more of
+    // it is fill; lightning lights everything for a moment
+    let grey_fill = gloom.cover * (1.0 - gloom.sun);
+    ambient.brightness = if medium { 40.0 + 1310.0 * day * (1.0 - below) * (1.0 + 1.2 * grey_fill) } else { 160.0 + 5940.0 * day * (1.0 - below) * (1.0 + 0.9 * grey_fill) };
+    ambient.brightness += gloom.glow * (1.0 - below) * if medium { 2600.0 } else { 9000.0 };
     let _ = PI;
 }
 

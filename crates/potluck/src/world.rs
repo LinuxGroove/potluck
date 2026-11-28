@@ -473,6 +473,29 @@ impl Voxels {
         MIN_Y
     }
 
+    /// Where rain and snow stop falling in a column: on top of its highest
+    /// block of any kind but air and tufts (leaves and water too). Columns
+    /// not made yet stop it at the ground the seed puts there.
+    pub fn roof(&self, x: i32, z: i32) -> i32 {
+        let Some(s) = self.slot(key_of(x, z)) else {
+            return ground_height(self.seed, x, z) + 1;
+        };
+        let (lx, lz) = (x & (CHUNK - 1), z & (CHUNK - 1));
+        for si in (0..SECTIONS).rev() {
+            if s.col.uniform(si) == Some(AIR) {
+                continue;
+            }
+            let y0 = MIN_Y + si as i32 * CHUNK;
+            for y in (y0..y0 + CHUNK).rev() {
+                let b = s.col.get(lx, y, lz);
+                if b != AIR && blocks::shape(b) != Shape::Cross {
+                    return y + 1;
+                }
+            }
+        }
+        MIN_Y
+    }
+
     /// Marks every loaded chunk to be meshed again.
     pub fn mark_all_dirty(&mut self) {
         let keys: Vec<IVec2> = self.keys().collect();

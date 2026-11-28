@@ -166,6 +166,7 @@ fn main() {
     app.add_plugins((MaterialPlugin::<render::WaterMaterial>::default(), made::MadePlugin));
     render::add_menu_blur(&mut app);
     render::murk::add(&mut app);
+    render::fall::add(&mut app);
     if offscreen {
         app.insert_resource(OffscreenSize(size));
     }
@@ -199,7 +200,7 @@ fn main() {
         .init_resource::<waypoints::Travel>()
         .init_resource::<map::MapView>()
         .init_resource::<map::MapImage>()
-        .add_systems(Startup, ((ui::fonts, setup, ui::spawn_hud, map::spawn_hud, map::spawn_map, chat::spawn_feed, waypoints::spawn_fade).chain(), render::motes::setup))
+        .add_systems(Startup, ((ui::fonts, setup, ui::spawn_hud, map::spawn_hud, map::spawn_map, chat::spawn_feed, waypoints::spawn_fade).chain(), render::motes::setup, render::fall::setup))
         .add_systems(PostStartup, map::palette)
         .add_systems(
             Update,
@@ -289,6 +290,33 @@ fn main() {
                 .collect();
             app.insert_resource(Puts(puts));
             app.add_systems(Update, put_blocks.before(Sim));
+        }
+        // --weather=rain[:0.8[:wind_x,wind_z]] holds the sky that way, settled,
+        // and --season=autumn[:0.5] the season and how far through it
+        if opt("weather").is_some() || opt("season").is_some() {
+            // high summer unless said, so only the weather shows
+            let mut held = sky::Sky { season: sky::Season::Summer, progress: 0.5, ..default() };
+            if let Some(w) = opt("weather") {
+                let mut it = w.split(':');
+                held.kind = it.next().and_then(sky::Kind::named).unwrap_or_default();
+                held.strength = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                if let Some(wind) = it.next() {
+                    let v: Vec<f32> = wind.split(',').filter_map(|n| n.parse().ok()).collect();
+                    held.wind = [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0)];
+                }
+            }
+            if let Some(s) = opt("season") {
+                let mut it = s.split(':');
+                held.season = it.next().and_then(sky::Season::named).unwrap_or_default();
+                held.progress = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            }
+            let held = held.tidy();
+            app.add_systems(Update, (move |mut w: ResMut<sky::Weather>| {
+                if w.sky != held {
+                    w.sky = held;
+                    w.settle();
+                }
+            }).after(Sim));
         }
         app.insert_resource(Shot { path, after, at, exact, tod, screen, creature, person, hold, wear, lines, done: false, frames: 0 });
         app.add_systems(Update, shot.after(Sim));

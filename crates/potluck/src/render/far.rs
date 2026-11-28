@@ -92,6 +92,10 @@ pub struct Colours {
     gravel: Vec3,
     snow: Vec3,
     leaves: [Vec3; 3],
+    /// How far into autumn and winter the land is, as the drawn chunks have
+    /// it (`mesh::Cover`).
+    pub autumn: f32,
+    pub winter: f32,
 }
 
 impl Colours {
@@ -108,6 +112,8 @@ impl Colours {
             gravel: c(blocks::GRAVEL),
             snow: c(blocks::SNOW),
             leaves: [c(blocks::LEAVES), c(blocks::BIRCH_LEAVES), c(blocks::PINE)],
+            autumn: 0.0,
+            winter: 0.0,
         }
     }
 
@@ -118,7 +124,9 @@ impl Colours {
         let h = s.ground as i32 - 1;
         let steep = smooth(0.9, 1.6, slope);
         let (x, z) = ((g.x * STEP) as f32, (g.y * STEP) as f32);
-        let grass = self.grass * crate::mesh::grass_tint(crate::mesh::climate_tint(s.climate), x, z);
+        let grass = self.grass * crate::mesh::grass_tint(crate::mesh::climate_tint(s.climate), x, z) * crate::mesh::season_grass(self.autumn, self.winter);
+        // snow lies on the grass as it does on the drawn grass
+        let grass = if crate::mesh::snow_lies(g.x * STEP, g.y * STEP, self.winter) { self.snow } else { grass };
         let green = grass.lerp(self.stone, steep);
         match s.biome {
             Biome::Home => {
@@ -156,9 +164,20 @@ impl Colours {
 
     /// The canopy's colour, from its mix of leaves, tinted by the climate as
     /// drawn leaves are (`mesh::leaf_tint`).
-    fn canopy(&self, s: &Spot) -> Vec3 {
+    fn canopy(&self, s: &Spot, g: IVec2) -> Vec3 {
         let [o, b, p] = s.trees.2;
-        (self.leaves[0] * o + self.leaves[1] * b + self.leaves[2] * p) * crate::mesh::leaf_tint(crate::mesh::climate_tint(s.climate))
+        // the season's leaves (`mesh::leaf_tile`): an oak's turning and then
+        // brown, a birch's gold, with snow over them all in winter
+        let turned = self.autumn.max(self.winter) * 0.92;
+        let fall = Vec3::new(0.36, 0.12, 0.02).lerp(Vec3::new(0.12, 0.06, 0.02), self.winter / (self.autumn + self.winter).max(1e-3));
+        let oak = self.leaves[0].lerp(fall, turned);
+        let birch = self.leaves[1].lerp(Vec3::new(0.45, 0.3, 0.03), turned);
+        let leaves = (oak * o + birch * b + self.leaves[2] * p) * crate::mesh::leaf_tint(crate::mesh::climate_tint(s.climate));
+        if crate::mesh::snow_lies(g.x * STEP, g.y * STEP, self.winter) {
+            leaves.lerp(self.snow, 0.6)
+        } else {
+            leaves
+        }
     }
 }
 
@@ -292,7 +311,7 @@ impl Job {
                         let (cover, _, _) = s.trees;
                         if cover > 0.0 {
                             // crowns in their own shade, mottled from point to point
-                            let leaves = self.colours.canopy(&s) * (0.56 + 0.28 * hash2(g.x, g.y, 4423));
+                            let leaves = self.colours.canopy(&s, g) * (0.56 + 0.28 * hash2(g.x, g.y, 4423));
                             colour = colour.lerp(leaves, smooth(0.0, 0.3, cover));
                         }
                         let deep = water_over(ground);
@@ -410,7 +429,7 @@ pub struct Far {
     /// under it for a frame).
     drawn: HashSet<IVec2>,
     drawn_rev: u64,
-    looked: Option<(u64, u64, IVec2, u32)>,
+    looked: Option<(u64, u64, IVec2, u32, (u32, u32))>,
     spots: HashMap<IVec2, Spot>,
     task: Option<Task<Built>>,
 }
@@ -481,6 +500,7 @@ pub fn follow(
     focus: Res<crate::mesh::MeshFocus>,
     settings: Res<crate::settings::Settings>,
     map: Res<crate::map::MapImage>,
+    cover: Res<crate::mesh::Cover>,
     land: Query<(Entity, Option<&Mesh3d>), (With<FarLand>, Without<FarWater>)>,
     water: Query<(Entity, Option<&Mesh3d>), (With<FarWater>, Without<FarLand>)>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -517,7 +537,7 @@ pub fn follow(
     }
     let tier = Tier::of(&settings.lighting);
     let at = (Vec2::new(focus.0.x, focus.0.z) / STEP as f32).floor().as_ivec2();
-    let now = (voxels.id, far.drawn_rev, at, reach(tier).to_bits());
+    let now = (voxels.id, far.drawn_rev, at, reach(tier).to_bits(), (cover.autumn.to_bits(), cover.winter.to_bits()));
     if far.looked == Some(now) {
         return;
     }
@@ -530,7 +550,7 @@ pub fn follow(
         sea: if tier == Tier::Low { 0.0 } else { OPEN_SEA },
         drawn: far.drawn.clone(),
         spots: std::mem::take(&mut far.spots),
-        colours: Colours::from_palette(&map.palette),
+        colours: Colours { autumn: cover.autumn, winter: cover.winter, ..Colours::from_palette(&map.palette) },
     };
     far.task = Some(AsyncComputeTaskPool::get().spawn(async move { job.build() }));
 }
