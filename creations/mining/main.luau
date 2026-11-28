@@ -1,8 +1,10 @@
 --!strict
 -- Mining, for survival. Each ore breaks into what it holds (world.drops),
 -- once you hold a pickaxe of its level or better: wooden pickaxes are
--- level 1 and stone ones 2 (the tools creation says so). ORES below says
--- what each gives and needs.
+-- level 1, stone 2, copper 3, iron 4 and moonsilver 5 (the tools creation
+-- says so). So coal needs a wooden pickaxe, copper a stone one, iron a
+-- copper one, and gold, crystal and moonsilver an iron one. ORES below
+-- says what each gives and needs.
 --
 -- Old chests are left in old workings underground. Use one and it gives
 -- you its prizes and falls apart; the deeper it was, the better they are.
@@ -10,7 +12,7 @@
 --
 -- Breaking gravel turns up flint now and then, for a flint and steel.
 
-local world = require("@potluck/world@0.14")
+local world = require("@potluck/world@0.16")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -29,10 +31,10 @@ type Ore = { gives: string, least: number, most: number, level: number }
 local ORES: { [string]: Ore } = {
 	["Coal ore"] = { gives = "Coal", least = 1, most = 2, level = 1 },
 	["Copper ore"] = { gives = "Raw copper", least = 1, most = 3, level = 2 },
-	["Iron ore"] = { gives = "Raw iron", least = 1, most = 1, level = 2 },
-	["Gold ore"] = { gives = "Raw gold", least = 1, most = 1, level = 2 },
-	["Crystal ore"] = { gives = "Crystal", least = 1, most = 2, level = 2 },
-	["Moonsilver ore"] = { gives = "Raw moonsilver", least = 1, most = 1, level = 2 },
+	["Iron ore"] = { gives = "Raw iron", least = 1, most = 1, level = 3 },
+	["Gold ore"] = { gives = "Raw gold", least = 1, most = 1, level = 4 },
+	["Crystal ore"] = { gives = "Crystal", least = 1, most = 2, level = 4 },
+	["Moonsilver ore"] = { gives = "Raw moonsilver", least = 1, most = 1, level = 4 },
 }
 
 for name, o in ORES do
@@ -60,9 +62,12 @@ local PRIZES: { Prize } = {
 	{ thing = "Bread", least = 1, most = 3, chance = 0.25 },
 	{ thing = "Flint and steel", least = 1, most = 1, chance = 0.1 },
 	{ thing = "Raw copper", least = 1, most = 4, chance = 0.5, below = 60 },
+	{ thing = "Copper pickaxe", least = 1, most = 1, chance = 0.15, below = 20 },
 	{ thing = "Raw iron", least = 1, most = 4, chance = 0.45, below = 20 },
 	{ thing = "Iron ingot", least = 1, most = 3, chance = 0.25, below = 0 },
 	{ thing = "Raw gold", least = 1, most = 3, chance = 0.35, below = -10 },
+	{ thing = "Iron pickaxe", least = 1, most = 1, chance = 0.12, below = -20 },
+	{ thing = "Iron sword", least = 1, most = 1, chance = 0.1, below = -40 },
 	{ thing = "Crystal", least = 1, most = 3, chance = 0.3, below = -40 },
 	{ thing = "Raw moonsilver", least = 1, most = 2, chance = 0.15, below = -80 },
 }

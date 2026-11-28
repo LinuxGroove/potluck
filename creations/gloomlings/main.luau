@@ -24,6 +24,9 @@ local knobs = tweak {
 local SWORDS: { [string]: number } = {
 	["Wooden sword"] = 2,
 	["Stone sword"] = 3,
+	["Copper sword"] = 3,
+	["Iron sword"] = 4,
+	["Moonsilver sword"] = 5,
 }
 
 local Gloomling = world.creature {

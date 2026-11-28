@@ -9,7 +9,7 @@ Every creature, block and mini game in Potluck is a creation: Luau code that ask
 A creation asks for a module by name, and can name the version it was made for:
 
 ```luau
-local world = require("@potluck/world@0.15")
+local world = require("@potluck/world@0.17")
 local store = require("@potluck/store")      -- any version this game has
 ```
 
@@ -17,13 +17,13 @@ and lists what it needs in `potluck.toml`, which the market checks before sharin
 
 ```toml
 [needs]
-world = "0.15"
+world = "0.17"
 store = "0.1"
 ```
 
 | Module | Version | What |
 |---|---|---|
-| `@potluck/world` | 0.15 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
+| `@potluck/world` | 0.17 | Blocks (the game's and the creation's own, drawn in `potluck.toml`, still or moving, turning to face the way they're put down, with boxes that join their neighbours) and lights, creatures (walking or flying, changing kind, behaviours that need no code, and bodies from Blockbench models), players, their health (and how fast it comes back), the blocks they carry and what's in their hand, tools that dig faster and how hard a block each reaches, what breaking a block gives, what they build and use, named spots, messages, the time of day, random numbers, timers and world events |
 | `@potluck/tweak` | 0.1 | Knobs anyone can turn in Tweak without touching the code |
 | `@potluck/game` | 0.1 | Boards of players' bests, and sending players on to other servers |
 | `@potluck/store` | 0.1 | A creation's own saved data in a world, with a quota |
@@ -103,6 +103,8 @@ What a creation can never do, at any version: read or write files, reach the net
 
 ### `@potluck/world`
 
+- **0.17**: with an item in hand, Interact on water is heard as `block_used` with `"Water"` (it used to go through to the block behind, or nothing). The game's items gain shears, a bucket and a water bucket, a fishing rod, a watering can, a sickle, a hammer, raw fish and cooked fish. The game's workbench makes them, and the new Buckets and fishing creation fills buckets, pours them out and fishes.
+- **0.16**: the game's items gain copper, iron and moonsilver pickaxes, axes, shovels and swords, and copper, iron and moonsilver hoes. The game's workbench makes copper tools and an anvil, and the anvil (the Tools creation's) makes iron and moonsilver ones and mends worn tools.
 - **0.15**: blocks of a creation's own can turn (`turns = true`: they face north, east, south or west, the way the player looked when they put them down, with the top picture and boxes turned to match) and have boxes that join (`{ box = [...], joins = "east" }`: shown only when the block on that side is one of the same creation's). `world.facing(pos)` says which way one faces, and `world.set_block` takes the way to face; changing one turning block into another keeps it. The game's workbench gains Circuits.
 - **Every version**, from 27 November 2026: the world goes on past the island in every direction (to 30,000 blocks out) and down to bedrock at y = -128, where it stopped at the island's edge and y = 0. Land is made as players come near it, so far from everyone `world.block` says `"Air"` and `world.top` says where the ground will be; `world.set_block` there makes the land first. The island, 0 to 384 each way, is always there.
 - **0.14**: moving blocks: a block of a creation's own can give `frames`, more pictures it shows in turn (up to 8 in all), and `speed`, how many a second (0.5 to 8). Players with the new Reduce flashing setting on see only the first. The game's items gain charcoal, flint, copper, iron, gold and moonsilver ingots, a flint and steel, bread and roasted carrots.

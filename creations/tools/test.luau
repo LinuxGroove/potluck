@@ -1,0 +1,104 @@
+--!strict
+-- The Tools creation's own tests: `potluck-server --test=tools`.
+
+local test = require("@potluck/test@0.4")
+local world = require("@potluck/world@0.16")
+
+-- a survival player carrying `carrying`, and an anvil beside them
+local function at_an_anvil(carrying: { [string]: number }): (any, vector)
+	local p = test.player("Ada", { survival = true, carrying = carrying })
+	local x, z = p.position.x + 2, p.position.z
+	local at = vector.create(x, world.top(x, z) + 1, z)
+	world.set_block(at, "Anvil")
+	return p, at
+end
+
+-- what the question in front of them says
+local function asked(p): (string, string, { string })
+	local q = test.asked(p)
+	test.check(q ~= nil, "a question")
+	local a = q :: any
+	return a.title, a.text, a.choices
+end
+
+test.case("an anvil makes an iron pickaxe from iron and planks", function()
+	local p, at = at_an_anvil({ ["Iron ingot"] = 3, Planks = 2 })
+	test.hold(p, nil)
+	test.use_block(p, at)
+	local title, _, choices = asked(p)
+	test.same(title, "Anvil")
+	test.same(choices[1], "Make iron tools", "nothing in hand to mend")
+	test.answer(p, 1)
+	title, _, choices = asked(p)
+	test.same(title, "Anvil: Iron tools")
+	test.same(choices[1], "Pickaxe")
+	test.same(choices[#choices], "Back")
+	test.answer(p, 1)
+	local _, text = asked(p)
+	test.check(string.find(text, "Made an iron pickaxe.", 1, true) == 1, text)
+	test.same(world.has(p, "Iron pickaxe"), 1, "the pickaxe")
+	test.same(world.has(p, "Iron ingot") + world.has(p, "Planks"), 0, "the iron and planks it took")
+	test.same(test.heard("clink"), 1, "hammering")
+end)
+
+test.case("without enough, the anvil says what it takes and takes nothing", function()
+	local p, at = at_an_anvil({ ["Moonsilver ingot"] = 2, Planks = 2 })
+	test.use_block(p, at)
+	test.answer(p, 2)
+	local title = asked(p)
+	test.same(title, "Anvil: Moonsilver tools")
+	test.answer(p, 2)
+	local _, text = asked(p)
+	test.check(string.find(text, "You'll need 3 Moonsilver ingot and 2 Planks", 1, true) == 1, text)
+	test.same(world.has(p, "Moonsilver ingot"), 2, "still all there")
+	test.same(world.has(p, "Moonsilver axe"), 0, "no axe")
+end)
+
+test.case("a worn tool is mended with one more of what it's made of", function()
+	local p, at = at_an_anvil({ ["Wooden pickaxe"] = 1, Planks = 1 })
+	test.hold(p, "Wooden pickaxe")
+	local x, z = p.position.x - 2, p.position.z
+	local stone = vector.create(x, world.top(x, z) + 1, z)
+	for _ = 1, 10 do
+		world.set_block(stone, "Stone")
+		test.dig(p, stone)
+	end
+	test.use_block(p, at)
+	local _, text, choices = asked(p)
+	test.check(string.find(text, "50 of 60 uses left", 1, true) ~= nil, text)
+	test.same(choices[1], "Mend your wooden pickaxe")
+	test.answer(p, 1)
+	_, text = asked(p)
+	test.check(string.find(text, "Mended your wooden pickaxe.", 1, true) == 1, text)
+	test.check(string.find(text, "60 of 60 uses left", 1, true) ~= nil, text)
+	test.same(world.has(p, "Planks"), 0, "the planks it took")
+	test.answer(p, 1)
+	_, text = asked(p)
+	test.check(string.find(text, "as good as new", 1, true) ~= nil, text)
+end)
+
+test.case("a hoe wears as it tills, not as it breaks things", function()
+	local p, at = at_an_anvil({ ["Copper hoe"] = 1 })
+	test.hold(p, "Copper hoe")
+	local x, z = p.position.x - 2, p.position.z
+	local ground = vector.create(x, world.top(x, z) + 1, z)
+	world.set_block(ground, "Grass")
+	world.set_block(ground + vector.create(0, 1, 0), "Air")
+	test.use_block(p, ground)
+	test.use_block(p, ground)
+	world.set_block(ground, "Dirt")
+	test.dig(p, ground)
+	test.use_block(p, at)
+	local _, text = asked(p)
+	test.check(string.find(text, "198 of 200 uses left", 1, true) ~= nil, text)
+end)
+
+test.case("in creative, the anvil says what it's for", function()
+	local p = test.player("Bo")
+	local x, z = p.position.x + 2, p.position.z
+	local at = vector.create(x, world.top(x, z) + 1, z)
+	world.set_block(at, "Anvil")
+	test.use_block(p, at)
+	local _, text = asked(p)
+	test.check(string.find(text, "survival", 1, true) ~= nil, text)
+end)

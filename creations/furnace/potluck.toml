@@ -1,7 +1,7 @@
 name = "Furnaces and campfires"
 by = "Potluck"
 kind = "mod"
-about = "A furnace smelts raw metal into ingots, logs into charcoal, sand into glass and cobblestone into stone, and cooks bread and roasted carrots, burning coal, charcoal, logs or planks. A campfire cooks with no fuel, and its light keeps Gloomlings away. Make both at a workbench."
+about = "A furnace smelts raw metal into ingots, logs into charcoal, sand into glass and cobblestone into stone, and cooks bread, roasted carrots and fish, burning coal, charcoal, logs or planks. A campfire cooks with no fuel, and its light keeps Gloomlings away. Make both at a workbench."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"

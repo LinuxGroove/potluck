@@ -1,0 +1,40 @@
+name = "Buckets and fishing"
+by = "Potluck"
+kind = "mod"
+about = "A bucket carries water: use it on water to fill it, and on a block to pour the water out on top. A fishing rod catches fish in any water: use it on the water, keep it in hand, and wait for a bite. Raw fish cooks in a furnace or on a campfire. Make both at a workbench."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.17"
+tweak = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# A cast line landing in the water, and a fish coming up.
+[sounds.cast]
+caption = "A line lands in the water"
+wave = "noise"
+pitch = [2600, 900]
+length = 0.35
+attack = 0.01
+decay = 0.12
+highpass = 300
+
+[sounds.bite]
+caption = "Something bites"
+wave = "sine"
+pitch = [520, 880]
+length = 0.18
+attack = 0.005
+decay = 0.08
+
+[[sounds.bite.layers]]
+wave = "noise"
+pitch = 1800
+length = 0.3
+at = 0.05
+attack = 0.01
+decay = 0.12
+gain = 0.7
