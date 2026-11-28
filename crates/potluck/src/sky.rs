@@ -102,9 +102,14 @@ pub struct Sky {
     pub progress: f32,
 }
 
+/// How far through spring a new world starts: past the first tenth, when
+/// last winter's snow melts (`Weather::season_targets`).
+pub const NEW_WORLD: f32 = 0.3;
+
 impl Default for Sky {
     fn default() -> Self {
-        Sky { kind: Kind::Clear, strength: 0.0, wind: [0.0, 0.0], over: OVER, season: Season::Spring, progress: 0.0 }
+        // spring, past the thaw: a new world never starts under melting snow
+        Sky { kind: Kind::Clear, strength: 0.0, wind: [0.0, 0.0], over: OVER, season: Season::Spring, progress: NEW_WORLD }
     }
 }
 
