@@ -1,0 +1,175 @@
+name = "Gnome Diggings"
+by = "Potluck"
+kind = "world"
+about = "Long ago the Gnome Gardeners' people dug into the hills. Walk far from the Green and you'll come upon their diggings in a steep hillside: a timbered tunnel with old cart tracks, a slope down into the rock, a forge room, a store room and a long dark drift beyond. Bring a light. Burnt-out lanterns light again with a piece of coal, and gnome crates hold what the diggers left behind: tools, ore, ingots, seeds, a brass compass for collectors, and torn maps that lead to a crate buried out on the land."
+main = "main.luau"
+version = 1
+licence = "CC-BY-4.0"
+
+[needs]
+world = "0.25"
+tweak = "0.1"
+store = "0.1"
+ui = "0.2"
+sound = "0.2"
+
+# planks in a frame, with the diggers' red hat burnt into the front
+[blocks.gnome_crate]
+name = "Gnome crate"
+kind = "wood"
+hardness = 2
+colors = { k = "#2e1c0c", a = "#5a3a1e", b = "#7a5030", c = "#94643a", r = "#a8382c", d = "#3a2412" }
+side = """
+kkkkkkkkkkkkkkkk
+kcbbbbbbbbbbbbck
+kbcbbbbbbbbbbcbk
+kbbcbbbrrbbbcbbk
+kbbbcbbrrbbcbbbk
+kaaaacrrrrcaaaak
+kbbbbbrrrrbbbbbk
+kbbbbrrrrrrbbbbk
+kbbbbrrrrrrbbbbk
+kbbbrrrrrrrrbbbk
+kaaarrrrrrrraaak
+kbbrrrrrrrrrrbbk
+kbbcddddddddcbbk
+kbcbbbbbbbbbbcbk
+kcbbbbbbbbbbbbck
+kkkkkkkkkkkkkkkk
+"""
+top = """
+kkkkkkkkkkkkkkkk
+kbbbbbbbbbbbbbbk
+kbbbbbbbbbbbbbbk
+kaaaaaaaaaaaaaak
+kbbbcbbbbbbcbbbk
+kbbbbbbbbbbbbbbk
+kaaaaaaaaaaaaaak
+kbbbbbbbbbbbbbbk
+kbbcbbbbbbbbcbbk
+kaaaaaaaaaaaaaak
+kbbbbbbbbbbbbbbk
+kbbbbbbcbbbbbbbk
+kaaaaaaaaaaaaaak
+kbbbbbbbbbbbbbbk
+kbbbbbbbbbbbbbbk
+kkkkkkkkkkkkkkkk
+"""
+bottom = """
+kkkkkkkkkkkkkkkk
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kaaaaaaaaaaaaaak
+kkkkkkkkkkkkkkkk
+"""
+
+# an old iron lantern hanging by its hook, its glass gone black with soot
+[blocks.burnt_lantern]
+name = "Burnt-out lantern"
+kind = "glass"
+hardness = 0.5
+solid = false
+boxes = [[5, 2, 5, 11, 12, 11], [7, 12, 7, 9, 16, 9]]
+colors = { k = "#1e1c1a", i = "#3a3633", g = "#4a4640", s = "#2a2724" }
+picture = """
+.......kk.......
+.......ii.......
+.......kk.......
+.......ii.......
+.....kkkkkk.....
+.....isgsgi.....
+.....igggsi.....
+.....igsggi.....
+.....iggsgi.....
+.....isgggi.....
+.....igsgsi.....
+.....iggggi.....
+.....isgsgi.....
+.....kkkkkk.....
+................
+................
+"""
+
+# Use it on nothing to see where its cross is.
+[items.torn_map]
+name = "Torn map"
+stack = 16
+colors = { p = "#dccb98", d = "#b8a46e", i = "#5a3418", r = "#b0302a" }
+picture = """
+................
+.p.d.pp.pppp.p..
+.pppppdpppppppp.
+..pppppppdppppp.
+..pdpppppprprpp.
+.pppppdpppprppp.
+.ppppppppdrprp..
+.ppdpppppippdpp.
+..ppppdiipppppp.
+.pppppippdpppp..
+.ppdiippppppdpp.
+.ppippdppppppp..
+..pppppppdppppp.
+.ppdppppppppdpp.
+..p.pp.pp.pp.pp.
+................
+"""
+
+# A relic: its needle points to the nearest diggings.
+[items.brass_compass]
+name = "Brass compass"
+stack = 1
+colors = { d = "#6e4e18", b = "#c89a3a", f = "#efe6cc", r = "#b0302a", n = "#2a2a2a" }
+picture = """
+.......dd.......
+.....dddddd.....
+...ddbbbbbbdd...
+..ddbbffrfbbdd..
+..dbfffrrfffbd..
+.dbbfffrrfffbbd.
+.dbffffrrffffbd.
+.dbffffbbffffbd.
+.dbffffbbffffbd.
+.dbffffnnffffbd.
+.dbbfffnnfffbbd.
+..dbfffnffffbd..
+..ddbbfnffbbdd..
+...ddbbbbbbdd...
+.....dddddd.....
+................
+"""
+
+# The diggers' own pick: digs stone as well as a copper one, and never wears out.
+[items.gnome_pick]
+name = "Gnome's pick"
+kind = "tool"
+digs = { hard = 5, level = 3 }
+colors = { s = "#a8b0b6", d = "#5a6066", w = "#7a5030", h = "#4e3018", r = "#b0302a" }
+picture = """
+................
+....sssssss.....
+..ssdddddddss...
+.sd.....r...ds..
+.s......rwh..s..
+........wh......
+.......wh.......
+.......wh.......
+......wh........
+......wh........
+.....wh.........
+.....wh.........
+....wh..........
+....wh..........
+...wh...........
+................
+"""
