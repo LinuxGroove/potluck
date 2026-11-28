@@ -16,7 +16,7 @@
 -- and how far fuel goes, so a remix can add its own. The blocks are in potluck.toml;
 -- the lit furnace and the campfire flicker through pictures of their own.
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -54,6 +54,23 @@ local COOKS: { Recipe } = {
 	{ from = "Egg", n = 1, gives = "Fried egg", count = 1 },
 	{ from = "Raw meat", n = 1, gives = "Cooked meat", count = 1 },
 }
+
+-- XP for each one taken out of a furnace or campfire (world.reward), and
+-- for anything else made there; a fraction is a chance of one more.
+local XP: { [string]: number } = {
+	["Copper ingot"] = 0.7,
+	["Iron ingot"] = 1,
+	["Gold ingot"] = 1.5,
+	["Moonsilver ingot"] = 2,
+}
+local XP_ELSE = 0.25
+local XP_DISH = 2
+
+-- Some XP for `n` of `made`, rounding the fraction by chance.
+local function reward(player, made: string, n: number)
+	local xp = n * (XP[made] or XP_ELSE)
+	world.reward(player, math.floor(xp + world.random()))
+end
 
 -- How many lots each fuel smelts, best first: the furnace burns the first
 -- it finds in your pockets.
@@ -121,6 +138,7 @@ local function collect(player, c: Cooker): string?
 	if given == 0 then
 		return "Your pockets are full, so the " .. made .. " waits here."
 	end
+	reward(player, made, given)
 	return "You took " .. some(given, made) .. "."
 end
 
@@ -303,6 +321,7 @@ local function cook(player, d: Dish): (boolean, string)
 	if d.back then
 		world.give(player, d.back, 1)
 	end
+	world.reward(player, XP_DISH)
 	return true, "You cooked " .. some(given, d.give) .. "."
 end
 

@@ -3440,6 +3440,83 @@ world.after(0.1, function() world.hurt(7, 4) world.hurt(7, 4, { guarded = false 
     assert_eq!(hurt, -6.0, "half of 4, and all of 4");
 }
 
+/// world 0.22: XP is kept by name, given only in survival, a little at a
+/// time from each creation, and spent; the levels it makes; haste and might
+/// multiply and go when their creation stops, and charms stay.
+#[test]
+fn xp_rewards_haste_and_charms() {
+    use crate::script::{xp_for, xp_level};
+    assert_eq!((xp_for(0), xp_for(1), xp_for(2), xp_for(10)), (0, 10, 30, 550));
+    assert_eq!(xp_level(0), (0, 0.0));
+    assert_eq!(xp_level(9).0, 0);
+    assert_eq!(xp_level(10), (1, 0.0));
+    assert_eq!(xp_level(20), (1, 0.5));
+    assert_eq!((xp_level(549).0, xp_level(550).0), (9, 10));
+    for xp in (0..200_000).step_by(37) {
+        let (l, f) = xp_level(xp);
+        assert!(xp_for(l) <= xp && xp < xp_for(l + 1) && (0.0..1.0).contains(&f), "{xp}: {l} {f}");
+        assert_eq!(xp_level(xp_for(l)).0, l);
+    }
+    assert_eq!(xp_level(u32::MAX).0, xp_level(u32::MAX - 1).0, "no overflow at the top");
+    home();
+    let mut voxels = world();
+    let mut herd = Herd::default();
+    let mut scripts = Scripts::default();
+    scripts.players = vec![PlayerInfo { id: 7, name: "Ada".into(), pos: Vec3::ZERO }, PlayerInfo { id: 8, name: "Bo".into(), pos: Vec3::ZERO }];
+    scripts.set_pockets(7, true, &[], 0);
+    scripts.set_pockets(8, false, &[], 0);
+    let code = r#"
+local world = require("@potluck/world@0.22")
+world.after(0.1, function()
+	print("first " .. world.reward(7, 100) .. " " .. world.reward(7, 50) .. " bo " .. world.reward(8, 10))
+	print(pcall(world.reward, 7, 101) and "too many ok" or "too many no")
+	world.haste(7, 2)
+	world.might(7, 1.5)
+	print(pcall(world.haste, 7, 5) and "fast ok" or "fast no")
+	world.charm(7, "Iron pickaxe", { "Swift", "Sturdy" })
+	print(pcall(world.charm, 7, "Nothing at all", { "Swift" }) and "nothing ok" or "nothing no")
+end)
+world.after(0.6, function()
+	print("soon " .. world.reward(7, 50))
+end)
+world.after(40.6, function()
+	local xp, level = world.xp(7)
+	print("later " .. world.reward(7, 50) .. " had " .. xp .. " level " .. level)
+	print("spend " .. tostring(world.spend_xp(7, 5000)) .. " " .. tostring(world.spend_xp(7, 20)) .. " " .. world.xp(7))
+	print("might " .. world.might(7) .. " haste " .. world.haste(7) .. " charms " .. table.concat(world.charms(7, "Iron pickaxe"), ","))
+end)
+"#;
+    scripts.start(&creation(code), &mut herd).unwrap();
+    run(&mut scripts, &mut voxels, &mut herd, 0.3);
+    let log = scripts.vms["test"].log.clone();
+    assert!(log.iter().any(|l| l == "first 100 20 bo 0"), "120 at once, none in creative: {log:?}");
+    assert!(log.iter().any(|l| l == "too many no") && log.iter().any(|l| l == "fast no") && log.iter().any(|l| l == "nothing no"), "{log:?}");
+    assert_eq!(scripts.haste_changes(), vec![(7, 2.0)]);
+    assert!(scripts.xp_changes().contains(&(7, 120)));
+    run(&mut scripts, &mut voxels, &mut herd, 41.0);
+    assert_eq!(scripts.vms["test"].error, None, "{:?}", scripts.vms["test"].log);
+    let log = scripts.vms["test"].log.clone();
+    let soon: u32 = log.iter().find_map(|l| l.strip_prefix("soon ")).and_then(|n| n.parse().ok()).expect("soon");
+    assert!((1..=2).contains(&soon), "4 a second after the first 120: {soon}");
+    let had = 120 + soon;
+    let level = xp_level(had).0;
+    assert!(log.iter().any(|l| *l == format!("later 50 had {had} level {level}")), "and 120 again after a long while: {log:?}");
+    assert!(log.iter().any(|l| *l == format!("spend false true {}", had + 50 - 20)), "{log:?}");
+    assert!(log.iter().any(|l| l == "might 1.5 haste 2 charms Swift,Sturdy"), "{log:?}");
+    assert_eq!(scripts.shared.lock().unwrap().store.xp.get("Ada"), Some(&(had + 30)), "kept by name");
+    // stopped, its haste and might go, and the charms and XP stay
+    scripts.stop("test", &mut herd);
+    assert_eq!(scripts.haste_changes(), vec![(7, 1.0)]);
+    let sh = scripts.shared.lock().unwrap();
+    assert!(sh.might.is_empty());
+    assert_eq!(sh.store.charms["Ada"]["Iron pickaxe"], ["Swift", "Sturdy"]);
+    assert_eq!(sh.store.xp["Ada"], had + 30);
+    // and the store keeps them when it's saved
+    let json = serde_json::to_string(&sh.store).unwrap();
+    let back: crate::script::Store = serde_json::from_str(&json).unwrap();
+    assert_eq!((back.xp["Ada"], back.charms["Ada"]["Iron pickaxe"].len()), (had + 30, 2));
+}
+
 const HEARS_BLOCKS: &str = r#"
 local world = require("@potluck/world@0.5")
 for _, e in { "block_placed", "block_broken", "block_used" } do
@@ -3582,6 +3659,9 @@ fn a_table_is_a_workbench_for_survival_players() {
     // and the anvil when the Tools creation's is
     let tools = lib.remove("tools").expect("the base game has tools");
     crate::made::register(&tools.id, &tools.manifest.blocks).unwrap();
+    // and the charm table when the Charms creation's is
+    let charms = lib.remove("charms").expect("the base game has charms");
+    crate::made::register(&charms.id, &charms.manifest.blocks).unwrap();
     let b = |n: &str| by_name(n).unwrap();
     let (table, oak, glass, cobble) = (b("Table"), b("Oak log"), b("Glass"), b("Cobblestone"));
     let mut voxels = world();
@@ -3641,7 +3721,7 @@ fn a_table_is_a_workbench_for_survival_players() {
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
         vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot", "Silk"],
-        vec!["Planks", "Iron ingot"],
+        vec!["Planks", "Iron ingot", "Gold ingot", "Crystal"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
         vec!["Planks", "Dirt", "Wheat", "Copper ingot", "Hay"],
         vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool", "Silk"],

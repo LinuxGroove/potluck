@@ -9,7 +9,7 @@
 -- hard it slams and how quick it is go by the world's danger
 -- (world.danger, world 0.21); none stand guard on Peaceful.
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local sound = require("@potluck/sound@0.2")
@@ -188,7 +188,8 @@ end
 
 function Sentinel:hit(player, shot)
 	local held = world.held(player)
-	local bop = if shot then shot.power else (held and SWORDS[held] or 1)
+	-- a Keen sword hits harder (world.might); a shot's power says already
+	local bop = if shot then shot.power else (held and SWORDS[held] or 1) * world.might(player)
 	self.bopped = (self.bopped or 0) + bop
 	if self.bopped < knobs.bops then
 		sound.play("grind", { at = self, volume = 0.8, pitch = 1.3, caption = "Stone cracks" })
@@ -200,6 +201,7 @@ function Sentinel:hit(player, shot)
 	end
 	sound.play("crack", { at = self, pitch = 0.6, caption = "A sentinel crumbles" })
 	world.give(player, "Sentinel core", 1)
+	world.reward(player, 20)
 	if world.random() < 0.5 then
 		world.give(player, "Raw moonsilver", 1)
 	end

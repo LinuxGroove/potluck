@@ -1,8 +1,8 @@
 --!strict
 -- The Tools creation's own tests: `potluck-server --test=tools`.
 
-local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.16")
+local test = require("@potluck/test@0.7")
+local world = require("@potluck/world@0.22")
 
 -- a survival player carrying `carrying`, and an anvil beside them
 local function at_an_anvil(carrying: { [string]: number }): (any, vector)
@@ -95,6 +95,57 @@ test.case("a worn tool is mended with one more of what it's made of", function()
 	test.answer(p, 1)
 	_, text = asked(p)
 	test.check(string.find(text, "as good as new", 1, true) ~= nil, text)
+end)
+
+-- breaks the stone beside them `n` times with what's in hand
+local function dig_stone(p, n: number)
+	local x, z = p.position.x - 2, p.position.z
+	local stone = vector.create(x, world.top(x, z) + 1, z)
+	for _ = 1, n do
+		world.set_block(stone, "Stone")
+		test.dig(p, stone)
+	end
+end
+
+test.case("a worn tool is mended with XP, less the less it's worn", function()
+	local p, at = at_an_anvil({ ["Wooden pickaxe"] = 1 })
+	test.hold(p, "Wooden pickaxe")
+	world.reward(p, 15)
+	dig_stone(p, 30)
+	test.use_block(p, at)
+	local _, text, choices = asked(p)
+	test.check(string.find(text, "30 of 60 uses left. Mending it takes 1 Planks, or 10 XP.", 1, true) ~= nil, text)
+	test.same(choices[2], "Mend it with XP")
+	test.answer(p, 2)
+	_, text = asked(p)
+	test.check(string.find(text, "Mended your wooden pickaxe.", 1, true) == 1, text)
+	test.same(world.xp(p), 5, "the XP it took")
+	dig_stone(p, 30)
+	test.use_block(p, at)
+	test.answer(p, 2)
+	_, text = asked(p)
+	test.check(string.find(text, "Mending your wooden pickaxe takes 10 XP.", 1, true) == 1, text)
+	test.same(world.xp(p), 5, "not enough, so none taken")
+end)
+
+test.case("a Sturdy tool wears about half as fast", function()
+	local p, at = at_an_anvil({ ["Wooden pickaxe"] = 1 })
+	test.hold(p, "Wooden pickaxe")
+	world.charm(p, "Wooden pickaxe", { "Sturdy" })
+	dig_stone(p, 30)
+	test.use_block(p, at)
+	local _, text = asked(p)
+	local left = tonumber(string.match(text, "has (%d+) of 60 uses left")) or 0
+	test.check(left > 30 and left < 60, text)
+end)
+
+test.case("a tool that breaks takes its charms with it", function()
+	local p = test.player("Ada", { survival = true, carrying = { ["Wooden pickaxe"] = 1 } })
+	test.hold(p, "Wooden pickaxe")
+	world.charm(p, "Wooden pickaxe", { "Swift" })
+	dig_stone(p, 60)
+	test.same(world.has(p, "Wooden pickaxe"), 0, "broke")
+	test.same(#world.charms(p, "Wooden pickaxe"), 0, "no charms left on it")
 end)
 
 test.case("a hoe wears as it tills, not as it breaks things", function()

@@ -365,6 +365,21 @@ pub fn host_step(
             net.send_healing(pid, rate);
         }
     }
+    // XP, and how much faster charms dig, for each player's own game
+    for (pid, xp) in scripts.xp_changes() {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().xp = Some(xp);
+        } else {
+            net.send_to(pid, crate::net::Msg::Xp(xp));
+        }
+    }
+    for (pid, n) in scripts.haste_changes() {
+        if pid == my_id && me.is_some() {
+            me.as_mut().unwrap().haste = n;
+        } else {
+            net.send_to(pid, crate::net::Msg::Haste(n));
+        }
+    }
     // what tools dig faster and what blocks give, for every game here
     if let Some(digging) = scripts.digging_changes() {
         if let Some(me) = me.as_mut() {
@@ -1188,6 +1203,14 @@ pub fn start_world(lib: &mut Library, scripts: &mut Scripts, herd: &mut Herd, ne
         let mut sh = scripts.shared.lock().unwrap();
         sh.input = Default::default();
         sh.ui = Default::default();
+        // everyone here hears their XP in this world, and digs as usual
+        // till its creations say otherwise
+        let here: Vec<u32> = sh.names.keys().copied().collect();
+        sh.xp_changed.extend(here.iter().copied());
+        sh.haste.clear();
+        sh.haste_changed.extend(here);
+        sh.might.clear();
+        sh.xp_left.clear();
     }
     let base: Vec<String> = lib.list.values().filter(|c| c.origin == Origin::Base).map(|c| c.id.clone()).collect();
     for id in base {

@@ -116,6 +116,12 @@ pub struct Me {
     pub fell_at: Option<Vec3>,
     /// The same, for telling the host (creations' `player_fell`).
     pub fell: Option<Vec3>,
+    /// XP in this world, as the host last said (none till it has).
+    pub xp: Option<u32>,
+    /// The level shown last, for saying when it goes up.
+    pub level_seen: Option<u32>,
+    /// How much faster than usual this player digs (`world.haste`).
+    pub haste: f32,
 }
 
 impl Default for Me {
@@ -161,6 +167,9 @@ impl Default for Me {
             hurt: 9.0,
             fell_at: None,
             fell: None,
+            xp: None,
+            level_seen: None,
+            haste: 1.0,
         }
     }
 }
@@ -257,7 +266,7 @@ impl Me {
         if !self.rules.can_break(held, block) {
             return 0.0;
         }
-        self.rules.speed(held, block)
+        self.rules.speed(held, block) * self.haste
     }
 
     pub fn hurt(&mut self, amount: f32) {
@@ -464,6 +473,15 @@ pub fn walk(
     let dt = time.delta_secs().min(0.05);
     let now = time.elapsed_secs_f64();
     me.hurt += dt;
+    // a new level, said once (not the one a player arrives with)
+    if let Some(xp) = me.xp {
+        let level = crate::script::xp_level(xp).0;
+        if me.level_seen.is_some_and(|l| level > l) && settings.survival {
+            toasts.push(format!("Level {level}"));
+            heard.game("chime", me.pos + Vec3::Y * 1.6, 0.5, 1.2);
+        }
+        me.level_seen = Some(level);
+    }
     // what creations did to your health, in survival
     let due = std::mem::take(&mut me.health_due);
     if settings.survival && due < 0.0 {

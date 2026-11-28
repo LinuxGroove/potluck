@@ -1,6 +1,6 @@
 --!strict
 local test = require("@potluck/test@0.7")
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.22")
 
 local function imps(): { number }
 	return world.creatures(test.kind("Ember Imp"))
@@ -57,4 +57,5 @@ test.case("two bops pop one, and it leaves an ember", function()
 	test.hit(p, test.creature(id))
 	test.same(test.creature(id), nil, "popped")
 	test.check(world.has(p, "Ember") >= 1, "an ember")
+	test.same(world.xp(p), 4, "and some XP")
 end)

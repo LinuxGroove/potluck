@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 21), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 22), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 7)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -146,6 +146,42 @@ pub const MAX_METERS: usize = 3;
 pub const MAX_HEALING: f64 = 4.0;
 /// Choices a panel can offer.
 pub const MAX_CHOICES: usize = 8;
+/// The most `world.haste` or `world.might` changes a player by, either way.
+pub const MAX_KNACK: f64 = 4.0;
+/// The most XP one `world.reward` gives.
+pub const MAX_REWARD: f64 = 100.0;
+/// XP each creation may give each player a second, on average, and the most
+/// it can give at once (`world.reward`), so a stranger's creation can't
+/// flood anyone with levels.
+pub const XP_RATE: f32 = 4.0;
+pub const XP_BURST: f32 = 120.0;
+/// Charms one thing may carry (`world.charm`), and how long a name.
+pub const MAX_CHARMS: usize = 4;
+pub const CHARM_NAME: usize = 16;
+
+/// A player's level for this much XP, and how far they are toward the
+/// next, 0 to 1: level n takes 5 n (n + 1) XP, so 10 for the first, 30
+/// for the second and 550 for the tenth.
+pub fn xp_level(xp: u32) -> (u32, f32) {
+    // worked out, then made exact (the square root can be one off)
+    let need = |l: u32| 5 * l as u64 * (l as u64 + 1);
+    let xp64 = xp as u64;
+    let mut level = (((1.0 + 0.8 * xp as f64).sqrt() - 1.0) / 2.0).floor() as u32;
+    while need(level + 1) <= xp64 {
+        level += 1;
+    }
+    while level > 0 && need(level) > xp64 {
+        level -= 1;
+    }
+    let (from, to) = (need(level), need(level + 1));
+    (level, ((xp64 - from) as f64 / (to - from) as f64) as f32)
+}
+
+/// The XP a player needs for a level (as much as XP can be, past that).
+pub fn xp_for(level: u32) -> u32 {
+    let l = level as u64;
+    (5 * l * (l + 1)).min(u32::MAX as u64) as u32
+}
 /// The most `world.digging` speeds a kind of block up by.
 pub const MAX_DIGGING: f64 = 10.0;
 /// Panels waiting on one player's screen, from every creation together.
@@ -297,6 +333,21 @@ pub struct GameShared {
     /// Things held that are always aimed (`world.aims`): Interact with one
     /// is heard as `item_used`, whatever it points at. (thing, creation).
     pub aims: BTreeSet<(Thing, String)>,
+    /// Each player here's name, for what's kept by name (XP, charms).
+    pub names: HashMap<u32, String>,
+    /// How much faster each creation has each player dig (`world.haste`),
+    /// where it isn't 1: (player, creation).
+    pub haste: BTreeMap<(u32, String), f32>,
+    /// Players whose haste changed since the host last looked.
+    pub haste_changed: BTreeSet<u32>,
+    /// How much harder each creation has each player hit (`world.might`),
+    /// where it isn't 1: (player, creation).
+    pub might: BTreeMap<(u32, String), f32>,
+    /// Players whose XP changed since the host last looked.
+    pub xp_changed: BTreeSet<u32>,
+    /// What each creation may still give each player (`world.reward`): the
+    /// XP left and when it was worked out.
+    pub xp_left: HashMap<(u32, String), (f32, f64)>,
 }
 
 /// The most `world.hurt` or `world.heal` does at once: a whole bar.
@@ -561,6 +612,13 @@ pub(crate) fn pid_of(v: &Value) -> mlua::Result<u32> {
 #[derive(serde::Serialize, serde::Deserialize, Default, Debug, Clone)]
 pub struct Store {
     pub data: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+    /// Each player's XP, by name (`world.reward`, world 0.22).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub xp: BTreeMap<String, u32>,
+    /// The charms on each player's things, by name and the thing's name
+    /// (`world.charm`, world 0.22).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub charms: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// Bytes each creation uses, worked out when first needed.
     #[serde(skip)]
     used: HashMap<String, usize>,
@@ -1653,6 +1711,161 @@ impl Vm {
                     })?,
                 )?;
             }
+            // world 0.22: XP, and what it buys
+            {
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    "reward",
+                    lua.create_function(move |_, (player, n): (Value, f64)| {
+                        let pid = pid_of(&player)?;
+                        if !n.is_finite() || !(0.0..=MAX_REWARD).contains(&n) {
+                            return Err(bad("reward takes a number of XP from 0 to 100"));
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        // only for players in survival
+                        if sh.pockets.get(&pid).is_none_or(|p| !p.survival) {
+                            return Ok(0);
+                        }
+                        let Some(name) = sh.names.get(&pid).cloned() else { return Ok(0) };
+                        let now = sh.ui.time;
+                        let (left, then) = sh.xp_left.get(&(pid, me.clone())).copied().unwrap_or((XP_BURST, now));
+                        let left = (left + (now - then).max(0.0) as f32 * XP_RATE).min(XP_BURST);
+                        let given = (n.floor() as f32).min(left.floor()).max(0.0) as u32;
+                        sh.xp_left.insert((pid, me.clone()), (left - given as f32, now));
+                        if given > 0 {
+                            let xp = sh.store.xp.entry(name).or_insert(0);
+                            *xp = xp.saturating_add(given);
+                            sh.store.dirty = true;
+                            sh.xp_changed.insert(pid);
+                        }
+                        Ok(given)
+                    })?,
+                )?;
+            }
+            {
+                let sh = shared.clone();
+                world.set(
+                    "xp",
+                    lua.create_function(move |_, player: Value| {
+                        let pid = pid_of(&player)?;
+                        let sh = sh.lock().unwrap();
+                        let xp = sh.names.get(&pid).and_then(|n| sh.store.xp.get(n)).copied().unwrap_or(0);
+                        Ok((xp, xp_level(xp).0))
+                    })?,
+                )?;
+            }
+            {
+                let sh = shared.clone();
+                world.set(
+                    "spend_xp",
+                    lua.create_function(move |_, (player, n): (Value, f64)| {
+                        let pid = pid_of(&player)?;
+                        if !n.is_finite() || n < 0.0 || n > u32::MAX as f64 {
+                            return Err(bad("spend_xp takes a number of XP, 0 or more"));
+                        }
+                        let n = n.ceil() as u32;
+                        let mut sh = sh.lock().unwrap();
+                        let Some(name) = sh.names.get(&pid).cloned() else { return Ok(false) };
+                        let have = sh.store.xp.get(&name).copied().unwrap_or(0);
+                        if have < n {
+                            return Ok(false);
+                        }
+                        if n > 0 {
+                            sh.store.xp.insert(name, have - n);
+                            sh.store.dirty = true;
+                            sh.xp_changed.insert(pid);
+                        }
+                        Ok(true)
+                    })?,
+                )?;
+            }
+            world.set("xp_for", lua.create_function(|_, level: f64| {
+                if !level.is_finite() || !(0.0..=10_000.0).contains(&level) {
+                    return Err(bad("xp_for takes a level from 0 to 10000"));
+                }
+                Ok(xp_for(level.floor() as u32))
+            })?)?;
+            // world 0.22: how much faster a player digs, and how much harder
+            // they hit, from every creation together
+            for knack in ["haste", "might"] {
+                let (sh, me) = (shared.clone(), creation.id.clone());
+                world.set(
+                    knack,
+                    lua.create_function(move |_, (player, share): (Value, Option<f64>)| {
+                        let pid = pid_of(&player)?;
+                        let mut sh = sh.lock().unwrap();
+                        let sh = &mut *sh;
+                        let map = if knack == "haste" { &mut sh.haste } else { &mut sh.might };
+                        let Some(share) = share else {
+                            return Ok(map.iter().filter(|(k, _)| k.0 == pid).map(|(_, v)| *v).product::<f32>().clamp(1.0 / MAX_KNACK as f32, MAX_KNACK as f32) as f64);
+                        };
+                        if !share.is_finite() || !(1.0 / MAX_KNACK..=MAX_KNACK).contains(&share) {
+                            return Err(bad(format!("{knack} takes a number from 0.25 to 4 (1 is as usual)")));
+                        }
+                        if !sh.pockets.contains_key(&pid) {
+                            return Ok(1.0);
+                        }
+                        let key = (pid, me.clone());
+                        let before = map.get(&key).copied().unwrap_or(1.0);
+                        if before != share as f32 {
+                            if share == 1.0 {
+                                map.remove(&key);
+                            } else {
+                                map.insert(key, share as f32);
+                            }
+                            if knack == "haste" {
+                                sh.haste_changed.insert(pid);
+                            }
+                        }
+                        Ok(share)
+                    })?,
+                )?;
+            }
+            // world 0.22: charms on a player's things, by the thing's name,
+            // kept with the world; any creation can read them
+            {
+                let sh = shared.clone();
+                world.set(
+                    "charms",
+                    lua.create_function(move |lua, (player, item): (Value, String)| {
+                        let pid = pid_of(&player)?;
+                        let sh = sh.lock().unwrap();
+                        let list = sh.names.get(&pid).and_then(|n| sh.store.charms.get(n)).and_then(|m| m.get(&item)).cloned().unwrap_or_default();
+                        lua.create_sequence_from(list)
+                    })?,
+                )?;
+            }
+            {
+                let sh = shared.clone();
+                world.set(
+                    "charm",
+                    lua.create_function(move |_, (player, item, list): (Value, String, Vec<String>)| {
+                        let pid = pid_of(&player)?;
+                        if items::by_name(&item).is_none() {
+                            return Err(bad(format!("there's nothing called {item} to charm")));
+                        }
+                        if list.len() > MAX_CHARMS || list.iter().any(|c| c.is_empty() || c.chars().count() > CHARM_NAME) {
+                            return Err(bad(format!("a thing carries at most {MAX_CHARMS} charms, each named in 1 to {CHARM_NAME} letters")));
+                        }
+                        let mut sh = sh.lock().unwrap();
+                        let Some(name) = sh.names.get(&pid).cloned() else { return Ok(false) };
+                        let mine = sh.store.charms.entry(name.clone()).or_default();
+                        if list.is_empty() {
+                            mine.remove(&item);
+                        } else {
+                            if !mine.contains_key(&item) && mine.len() >= 64 {
+                                return Err(bad("a player can have charms on at most 64 kinds of thing"));
+                            }
+                            mine.insert(item, list);
+                        }
+                        if mine.is_empty() {
+                            sh.store.charms.remove(&name);
+                        }
+                        sh.store.dirty = true;
+                        Ok(true)
+                    })?,
+                )?;
+            }
             // world 0.8: what players hold, and tools that dig faster
             {
                 let sh = shared.clone();
@@ -2627,6 +2840,11 @@ impl Scripts {
         sh.healing_changed.extend(slowed);
         // and its armor keeps nothing off, and its bows aim no more
         sh.guard.retain(|k, _| k.1 != id);
+        let hasted: Vec<u32> = sh.haste.keys().filter(|k| k.1 == id).map(|k| k.0).collect();
+        sh.haste.retain(|k, _| k.1 != id);
+        sh.haste_changed.extend(hasted);
+        sh.might.retain(|k, _| k.1 != id);
+        sh.xp_left.retain(|k, _| k.1 != id);
         sh.aims.retain(|k| k.1 != id);
         // and its tools dig as usual, and its blocks give themselves
         let before = sh.digging.len();
@@ -2865,6 +3083,21 @@ impl Scripts {
         let mut sh = self.shared.lock().unwrap();
         let changed = std::mem::take(&mut sh.healing_changed);
         changed.into_iter().map(|pid| (pid, sh.healing.iter().filter(|(k, _)| k.0 == pid).map(|(_, r)| *r).product::<f32>().clamp(0.0, MAX_HEALING as f32))).collect()
+    }
+
+    /// How much faster than usual players dig now, for those it changed for:
+    /// every creation's `world.haste` multiplied together.
+    pub fn haste_changes(&mut self) -> Vec<(u32, f32)> {
+        let mut sh = self.shared.lock().unwrap();
+        let changed = std::mem::take(&mut sh.haste_changed);
+        changed.into_iter().map(|pid| (pid, sh.haste.iter().filter(|(k, _)| k.0 == pid).map(|(_, r)| *r).product::<f32>().clamp(1.0 / MAX_KNACK as f32, MAX_KNACK as f32))).collect()
+    }
+
+    /// Each player's XP, for those whose XP changed (or who just came).
+    pub fn xp_changes(&mut self) -> Vec<(u32, u32)> {
+        let mut sh = self.shared.lock().unwrap();
+        let changed = std::mem::take(&mut sh.xp_changed);
+        changed.into_iter().filter_map(|pid| sh.names.get(&pid).map(|n| (pid, sh.store.xp.get(n).copied().unwrap_or(0)))).collect()
     }
 
     /// What a player has in hand now, as their game says (`world.held`).
@@ -3146,6 +3379,17 @@ impl Scripts {
                 sh.guard.retain(|k, _| k.0 != p.id);
                 sh.healing_changed.remove(&p.id);
                 sh.held.remove(&p.id);
+                sh.names.remove(&p.id);
+                sh.haste.retain(|k, _| k.0 != p.id);
+                sh.haste_changed.remove(&p.id);
+                sh.might.retain(|k, _| k.0 != p.id);
+                sh.xp_left.retain(|k, _| k.0 != p.id);
+                sh.xp_changed.remove(&p.id);
+            }
+            for p in &joined {
+                sh.names.insert(p.id, p.name.clone());
+                // their XP from before, if they've played here
+                sh.xp_changed.insert(p.id);
             }
             sh.ui.joined.extend(joined.iter().map(|p| p.id));
             sh.ui.time = time;
