@@ -3558,11 +3558,11 @@ fn a_table_is_a_workbench_for_survival_players() {
     // (the kiln and paper lanterns are there when Brickworks is)
     let inputs = [
         vec!["Oak log", "Birch log", "Sand", "Stone", "Cobblestone", "Copper ingot", "Iron ingot"],
-        vec!["Planks"],
+        vec!["Planks", "Iron ingot"],
         vec!["Coal", "Planks", "Hay", "Glass", "Cobblestone", "Oak log", "Candle", "Cream wool"],
-        vec!["Planks", "Dirt", "Wheat", "Copper ingot"],
+        vec!["Planks", "Dirt", "Wheat", "Copper ingot", "Hay"],
         vec!["Planks", "Cobblestone", "Flint", "Iron ingot", "Copper ingot", "Cream wool"],
-        vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint"],
+        vec!["Planks", "Cobblestone", "Copper ingot", "Iron ingot", "Cream wool", "Flint", "Feather"],
         vec!["Cream wool", "Planks", "Lantern"],
         vec!["Copper ingot", "Cobblestone", "Planks", "Stone", "Glass", "Crystal", "Copper wire", "Torch", "Coal"],
     ];
@@ -3604,7 +3604,8 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     let mut farming = Library::load().list.remove("farming").expect("the base game has farming");
     farming.knobs.insert("minutes".into(), KnobValue::Number(1.0));
     let b = |n: &str| by_name(n).unwrap();
-    let (grass, soil, wheat, carrots, shoot, fern) = (b("Grass"), b("Farmland"), b("Wheat"), b("Carrots"), b("Tall grass"), b("Fern"));
+    let (grass, soil, wheat, carrots) = (b("Grass"), b("Farmland"), b("Wheat"), b("Carrots"));
+    let seeds = crate::items::by_name("Seeds").unwrap();
     let mut voxels = world();
     let mut herd = Herd::default();
     let mut scripts = Scripts::default();
@@ -3613,6 +3614,8 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     scripts.set_pockets(8, false, &[], 0);
     scripts.set_day(0.5);
     scripts.start(&farming, &mut herd).unwrap();
+    // its crops grow as its own shoots
+    let (shoot, fern) = (b("Wheat shoots"), b("Carrot shoots"));
     // a strip of grass up in the air, dry but for water by its east end
     let at = |i: i32| IVec3::new(40 + i * 3, 110, 40);
     for i in 0..5 {
@@ -3651,17 +3654,18 @@ fn crops_planted_on_farmland_grow_and_give_more_back() {
     // a shoot broken too soon gives the seed back
     harvest(&mut scripts, &mut voxels, 1);
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
-    assert_eq!(carried(&scripts, wheat), 4);
+    assert_eq!((carried(&scripts, wheat), scripts.carried(7, seeds)), (3, 1));
     // near water they're ready in two thirds of the time
     run(&mut scripts, &mut voxels, &mut herd, 44.0);
     assert_eq!([voxels.at(at(0) + up), voxels.at(at(4) + up)], [shoot, carrots], "the carrots by the water are ripe first");
     run(&mut scripts, &mut voxels, &mut herd, 20.0);
     assert_eq!(voxels.at(at(0) + up), wheat, "a minute by day");
-    // a ripe crop gives two more than the one the game gives
+    // a ripe crop gives two more than the one the game gives, and wheat
+    // seeds to sow again
     harvest(&mut scripts, &mut voxels, 0);
     harvest(&mut scripts, &mut voxels, 4);
     run(&mut scripts, &mut voxels, &mut herd, 0.5);
-    assert_eq!((carried(&scripts, wheat), carried(&scripts, carrots)), (6, 3));
+    assert_eq!((carried(&scripts, wheat), carried(&scripts, carrots), scripts.carried(7, seeds)), (5, 3, 2));
     // at night, half as fast; and kept with the world, so it grows on after a restart
     scripts.set_day(0.0);
     plant(&mut scripts, &mut voxels, 2, wheat);

@@ -2,7 +2,7 @@
 -- Farming's own tests: `potluck-server --test=farming`.
 
 local test = require("@potluck/test@0.4")
-local world = require("@potluck/world@0.17")
+local world = require("@potluck/world@0.20")
 
 local UP = vector.create(0, 1, 0)
 
@@ -66,7 +66,7 @@ end)
 
 test.case("a watering can, filled at water, brings crops on", function()
 	local p, mid = sown()
-	test.same(count(mid + UP, 1, "Tall grass"), 9, "nine shoots")
+	test.same(count(mid + UP, 1, "Wheat shoots"), 9, "nine shoots")
 	test.hold(p, "Watering can")
 	test.use_block(p, mid + UP)
 	test.check(string.find(test.shown(p, "farming") or "", "Fill", 1, true) == 1, "an empty can says so")
@@ -96,6 +96,70 @@ test.case("a sickle reaps the ripe crops round the one it cuts", function()
 	test.hold(p, "Sickle")
 	test.dig(p, mid + UP)
 	test.same(count(mid + UP, 1, "Air"), 9, "all nine cut")
-	-- each gives itself and two more
+	-- each gives itself and two more, and seeds to sow again
 	test.same(world.has(p, "Wheat"), 27, "wheat")
+	test.same(world.has(p, "Seeds"), 9, "seeds")
+end)
+
+test.case("seeds sow wheat, and potatoes, beans and pumpkins grow too", function()
+	local p = test.player("Ada", { survival = true, carrying = { Seeds = 2, Potatoes = 1, Beans = 1, Pumpkin = 1 } })
+	local mid = patch()
+	for dx = -2, 2 do
+		world.set_block(mid + vector.create(dx, 0, 0), "Farmland")
+	end
+	test.hold(p, "Seeds")
+	test.use_block(p, mid + vector.create(-2, 0, 0))
+	test.same(world.block(mid + vector.create(-2, 1, 0)), "Wheat shoots", "seeds on farmland")
+	test.same(world.has(p, "Seeds"), 1, "one seed sown")
+	test.place(p, mid + vector.create(-1, 1, 0), "Potatoes")
+	test.place(p, mid + vector.create(0, 1, 0), "Beans")
+	test.place(p, mid + vector.create(1, 1, 0), "Pumpkin")
+	test.same(world.block(mid + vector.create(-1, 1, 0)), "Potato shoots")
+	test.same(world.block(mid + vector.create(0, 1, 0)), "Bean shoots")
+	test.same(world.block(mid + vector.create(1, 1, 0)), "Pumpkin vine")
+	-- broken too soon, a shoot gives its seed back and nothing else
+	test.dig(p, mid + vector.create(-2, 1, 0))
+	test.same(world.has(p, "Seeds"), 2, "the seed back")
+	test.same(world.has(p, "Wheat shoots"), 0, "and no shoot")
+	test.wait(500)
+	test.same(world.block(mid + vector.create(-1, 1, 0)), "Potatoes", "potatoes ripen")
+	test.same(world.block(mid + vector.create(1, 1, 0)), "Pumpkin", "and a pumpkin")
+	test.dig(p, mid + vector.create(1, 1, 0))
+	test.same(world.has(p, "Pumpkin"), 3, "a pumpkin and two more")
+end)
+
+test.case("a berry bush gives berries, and they grow back", function()
+	local p = test.player("Ada", { survival = true })
+	local mid = patch()
+	local at = mid + UP
+	world.set_block(at, "Berry bush")
+	test.use_block(p, at)
+	local picked = world.has(p, "Berries")
+	test.check(picked >= 2 and picked <= 4, "two to four berries, got " .. picked)
+	test.same(world.block(at), "Bare berry bush", "picked bare")
+	test.use_block(p, at)
+	test.same(world.has(p, "Berries"), picked, "nothing more from a bare bush")
+	test.wait(190)
+	test.same(world.block(at), "Berry bush", "the berries are back")
+	-- dug up, a bush comes away bare, with its berries
+	test.dig(p, at)
+	test.same(world.has(p, "Bare berry bush"), 1, "a bare bush to plant again")
+	test.same(world.has(p, "Berries"), picked + 2, "and its berries")
+end)
+
+test.case("tall grass gives seeds now and then", function()
+	local p = test.player("Ada", { survival = true })
+	local mid = patch()
+	for dx = -3, 3 do
+		for dz = -3, 3 do
+			world.set_block(mid + vector.create(dx, 1, dz), "Tall grass")
+		end
+	end
+	for dx = -3, 3 do
+		for dz = -3, 3 do
+			test.dig(p, mid + vector.create(dx, 1, dz))
+		end
+	end
+	local n = world.has(p, "Seeds")
+	test.check(n > 5 and n < 45, "about half of 49 give a seed, got " .. n)
 end)

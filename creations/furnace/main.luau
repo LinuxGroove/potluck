@@ -8,11 +8,15 @@
 --
 -- A campfire cooks food with no fuel, and its light keeps Gloomlings back.
 --
--- SMELTS, COOKS and FUELS below say what goes in, what comes out and how
--- far fuel goes, so a remix can add its own. The blocks are in potluck.toml;
+-- A cooking pot set over a campfire, a fire or a lit furnace (under it or
+-- beside it) cooks dishes of several things at once: pies, stews, porridge
+-- and honey cake (DISHES below). Use it and pick one.
+--
+-- SMELTS, COOKS, DISHES and FUELS below say what goes in, what comes out
+-- and how far fuel goes, so a remix can add its own. The blocks are in potluck.toml;
 -- the lit furnace and the campfire flicker through pictures of their own.
 
-local world = require("@potluck/world@0.14")
+local world = require("@potluck/world@0.20")
 local tweak = require("@potluck/tweak")
 local store = require("@potluck/store")
 local ui = require("@potluck/ui@0.2")
@@ -46,6 +50,8 @@ local COOKS: { Recipe } = {
 	{ from = "Carrots", n = 1, gives = "Roasted carrots", count = 1 },
 	{ from = "Raw fish", n = 1, gives = "Cooked fish", count = 1 },
 	{ from = "Wheat", n = 3, gives = "Bread", count = 1 },
+	{ from = "Potatoes", n = 1, gives = "Baked potato", count = 1 },
+	{ from = "Egg", n = 1, gives = "Fried egg", count = 1 },
 }
 
 -- How many lots each fuel smelts, best first: the furnace burns the first
@@ -84,6 +90,12 @@ local function recipe_of(c: Cooker): Recipe?
 		return nil
 	end
 	return if c.smelt then SMELTS[c.recipe] else COOKS[c.recipe]
+end
+
+-- Whether a block or item is in this world: eggs, potatoes and the like
+-- come from other creations.
+local function exists(name: string): boolean
+	return (pcall(world.kind, name))
 end
 
 -- "3 Raw iron"
@@ -200,7 +212,7 @@ function choose(player, at: vector, block: string, said: string?)
 	local lists = if furnace then { SMELTS, COOKS } else { COOKS }
 	for _, list in lists do
 		for i, r in list do
-			if world.has(player, r.from) >= r.n and #choices < 8 then
+			if exists(r.from) and world.has(player, r.from) >= r.n and #choices < 8 then
 				table.insert(options, { list = list, i = i })
 				local verb = if list == SMELTS then "Smelt " else "Cook "
 				table.insert(choices, verb .. r.from)
@@ -214,7 +226,7 @@ function choose(player, at: vector, block: string, said: string?)
 		end
 	end
 	if #choices == 0 then
-		table.insert(parts, if furnace then "Bring raw metal, logs, sand, cobblestone, carrots or wheat to put in." else "Bring carrots or wheat to cook.")
+		table.insert(parts, if furnace then "Bring raw metal, logs, sand, cobblestone, or food to cook: carrots, potatoes, eggs, fish or wheat." else "Bring food to cook: carrots, potatoes, eggs, fish or wheat.")
 	else
 		table.insert(parts, "What would you like to put in?")
 	end
@@ -228,9 +240,114 @@ function choose(player, at: vector, block: string, said: string?)
 	end)
 end
 
+-- ---- the cooking pot ----
+
+local POT = "Cooking pot"
+-- what's hot enough to cook over, under the pot or beside it
+local HEAT: { [string]: boolean } = { [CAMPFIRE] = true, [LIT] = true, Fire = true }
+local NEAR = { vector.create(0, -1, 0), vector.create(1, 0, 0), vector.create(-1, 0, 0), vector.create(0, 0, 1), vector.create(0, 0, -1) }
+
+-- A dish: what it takes, what it makes and how many, and what comes back
+-- (the bucket the milk was in). Eggs come from the Hens creation, honey
+-- from Bees and the rest from Farming, and a dish shows only when all it
+-- takes is in the world.
+type Dish = { want: { [string]: number }, give: string, n: number, back: string? }
+local DISHES: { Dish } = {
+	{ want = { Pumpkin = 1, Egg = 1, Wheat = 2 }, give = "Pumpkin pie", n = 2 },
+	{ want = { Berries = 4, Egg = 1, Wheat = 2 }, give = "Berry pie", n = 2 },
+	{ want = { Beans = 2, Potatoes = 1, Carrots = 1 }, give = "Bean stew", n = 2 },
+	{ want = { ["Raw fish"] = 1, Potatoes = 1, ["Milk bucket"] = 1 }, give = "Fish stew", n = 2, back = "Bucket" },
+	{ want = { Wheat = 2, ["Milk bucket"] = 1 }, give = "Porridge", n = 2, back = "Bucket" },
+	{ want = { Wheat = 3, Egg = 1, Honey = 1, ["Milk bucket"] = 1 }, give = "Honey cake", n = 2, back = "Bucket" },
+}
+
+local function hot(at: vector): boolean
+	for _, d in NEAR do
+		if HEAT[world.block(at + d)] then
+			return true
+		end
+	end
+	return false
+end
+
+-- what a dish takes: "1 Egg and 1 Pumpkin and 2 Wheat"
+local function takes(d: Dish): string
+	local parts = {}
+	for name, n in d.want do
+		table.insert(parts, n .. " " .. name)
+	end
+	table.sort(parts)
+	return table.concat(parts, " and ")
+end
+
+-- Cooks one, or says why not.
+local function cook(player, d: Dish): (boolean, string)
+	for name, n in d.want do
+		if world.has(player, name) < n then
+			return false, "You'll need " .. takes(d) .. " for that."
+		end
+	end
+	for name, n in d.want do
+		world.take(player, name, n)
+	end
+	local given = world.give(player, d.give, d.n)
+	if given == 0 then
+		for name, n in d.want do
+			world.give(player, name, n)
+		end
+		return false, "Your pockets are full. Make some room first."
+	end
+	if d.back then
+		world.give(player, d.back, 1)
+	end
+	return true, "You cooked " .. some(given, d.give) .. "."
+end
+
+local function stir(player, at: vector, said: string?)
+	if world.pockets(player) == nil then
+		ui.ask(player, { title = "Cooking pot", text = "In survival, a cooking pot over a campfire cooks pies, stews, porridge and honey cake.", choices = { "OK" } }, function() end)
+		return
+	end
+	if not hot(at) then
+		ui.ask(player, { title = "Cooking pot", text = "It's cold. Set it over a campfire, a fire or a lit furnace, or right beside one.", choices = { "OK" } }, function() end)
+		return
+	end
+	local list, choices, lines = {}, {}, {}
+	for _, d in DISHES do
+		local ok = exists(d.give)
+		for name in d.want do
+			ok = ok and exists(name)
+		end
+		if ok and #list < 8 then
+			table.insert(list, d)
+			table.insert(choices, some(d.n, d.give))
+			table.insert(lines, d.give .. ": " .. takes(d))
+		end
+	end
+	if #list == 0 then
+		ui.ask(player, { title = "Cooking pot", text = "There's nothing to cook in this world yet.", choices = { "OK" } }, function() end)
+		return
+	end
+	local text = (if said then said .. "\n\n" else "") .. "What would you like to cook?\n\n" .. table.concat(lines, "\n")
+	ui.ask(player, { title = "Cooking pot", text = text, choices = choices }, function(who, choice)
+		local d = choice and list[choice]
+		if not d then
+			return
+		end
+		local cooked, said = cook(who, d)
+		if cooked then
+			sound.play("crackle", { at = at, volume = 0.5, caption = "Something's cooking" })
+		end
+		-- ask again, so cooking several is quick
+		stir(who, at, said)
+	end)
+end
+
 world.on("block_used", function(player, at: vector, block: string)
 	if block == FURNACE or block == LIT or block == CAMPFIRE then
 		choose(player, at, block)
+	elseif block == POT then
+		stir(player, at)
 	end
 end)
 

@@ -1,7 +1,7 @@
 name = "Workbench"
 by = "Potluck"
 kind = "mod"
-about = "Crafting for survival: use any table to make building blocks, furnaces, an anvil, furniture, lights (torches and campfires from coal), things for the garden, wooden, stone and copper tools, shears, hammers, buckets, fishing rods, flint and steel, swords, bows and arrows, slings, spears, shields, wool and copper armor, hot air balloons and circuit parts from what you've gathered."
+about = "Crafting for survival: use any table to make building blocks, furnaces, an anvil, furniture, a cooking pot, lights (torches and campfires from coal), things for the garden and beehives, wooden, stone and copper tools, shears, hammers, buckets, fishing rods, flint and steel, swords, bows and arrows, slings, spears, shields, wool and copper armor, hot air balloons and circuit parts from what you've gathered."
 main = "main.luau"
 version = 1
 licence = "CC-BY-4.0"

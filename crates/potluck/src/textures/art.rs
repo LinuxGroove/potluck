@@ -13,6 +13,7 @@ use bevy::math::Vec2;
 
 use super::{hex, Tex, ART};
 
+mod food;
 mod ores;
 mod props;
 mod smelting;
@@ -734,5 +735,6 @@ pub(super) fn blocks() -> Vec<(&'static str, Tex)> {
     .chain(wilds::tiles())
     .chain(ores::tiles())
     .chain(smelting::tiles())
+    .chain(food::tiles())
     .collect()
 }
