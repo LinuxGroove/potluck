@@ -48,7 +48,7 @@ pub const BORDER: i32 = 30_000;
 /// Which way of making the world this is. Saves say which they were made
 /// with; bump it when what the seed makes changes. Columns players changed
 /// are kept whole, so a new version only changes ground nobody touched.
-pub const GEN: u32 = 1;
+pub const GEN: u32 = 2;
 /// Where deep stone (slate) starts, about.
 pub const SLATE_Y: i32 = -40;
 
@@ -754,11 +754,13 @@ pub(crate) fn deep(seed: u32, x: i32, y: i32, z: i32) -> BlockId {
 }
 
 /// What a block under the ground is, given what the terrain put there:
-/// caves (air) and ores go here (`underground::below`, from the survival
-/// work). Pure, and deciding only this one block, so a column comes out
-/// the same wherever and whenever it's made.
-pub(crate) fn below(_seed: u32, _x: i32, _y: i32, _z: i32, _ground: i32, b: BlockId) -> BlockId {
-    b
+/// caves (air), ores, crystal hollows and old workings (`underground::carve`),
+/// except where `keep_out` says. Pure, and deciding only this one block, so a
+/// column comes out the same wherever and whenever it's made.
+pub(crate) fn below(seed: u32, x: i32, y: i32, z: i32, ground: i32, b: BlockId) -> BlockId {
+    let c = crate::underground::carve(seed, x, y, z, ground, b);
+    // most blocks stay as they were, so keep_out is asked only about changes
+    if c != b && keep_out(x, y, z) { b } else { c }
 }
 
 /// Places caves never cut into: the Green, the camp, the farm and the

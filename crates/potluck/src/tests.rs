@@ -5868,9 +5868,10 @@ fn island_print(v: &Voxels) -> u64 {
 #[test]
 fn the_island_is_made_as_it_always_was() {
     // checked block for block against the island maker before the world
-    // went on past it
-    assert_eq!(island_print(&world::generate(26)), 0x8a20f6f4779acd69);
-    assert_eq!(island_print(&world::generate(7)), 0x794aaccb72e4082d);
+    // went on past it, then again when caves and ores came (world::GEN 2):
+    // they change only what's under the ground and cave mouths inland
+    assert_eq!(island_print(&world::generate(26)), 0x7d426827b76f8aec);
+    assert_eq!(island_print(&world::generate(7)), 0xc04af4975cbce73c);
 }
 
 #[test]
