@@ -20,7 +20,7 @@ use crate::noise::Rng;
 use crate::world::{self, Voxels};
 
 /// The modules and their versions this game provides: (name, major, minor).
-pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 24), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 8), ("sky", 0, 1)];
+pub const MODULES: &[(&str, u32, u32)] = &[("world", 0, 25), ("tweak", 0, 1), ("game", 0, 1), ("store", 0, 1), ("input", 0, 1), ("ui", 0, 2), ("sound", 0, 2), ("net", 0, 2), ("test", 0, 8), ("sky", 0, 1)];
 
 const MEMORY_LIMIT: usize = 32 << 20;
 const TICK_BUDGET: Duration = Duration::from_millis(15);
@@ -1737,6 +1737,24 @@ impl Vm {
                     })?,
                 )?;
             }
+            // world 0.25: items, the game's and those creations made
+            {
+                world.set(
+                    "item",
+                    lua.create_function(move |lua, name: String| {
+                        let Some(t) = items::by_name(&name).filter(|t| items::is_item(*t)) else {
+                            return Ok(Value::Nil);
+                        };
+                        let j = match crate::made::items::info(t) {
+                            Some((v, _)) => v,
+                            // the game's own: the base creations know what each is for
+                            None => serde_json::json!({ "name": items::name(t), "stack": items::stack(t), "by": "game" }),
+                        };
+                        from_json(lua, &j)
+                    })?,
+                )?;
+                world.set("items", lua.create_function(|_, ()| Ok(crate::made::items::names()))?)?;
+            }
             // world 0.19: things that are always aimed, never used on what
             // they point at
             {
@@ -3020,6 +3038,16 @@ impl Scripts {
     pub fn start(&mut self, creation: &Creation, herd: &mut Herd) -> Result<(), String> {
         // its own blocks first, so its code can use them by name
         crate::made::register(&creation.id, &creation.manifest.blocks)?;
+        crate::made::items::register(&creation.id, &creation.manifest.items)?;
+        {
+            // its tools dig as their `digs` says
+            let mut sh = self.shared.lock().unwrap();
+            for (t, d) in crate::made::items::diggers(&creation.id) {
+                if sh.digging.insert((t, creation.id.clone()), d) != Some(d) {
+                    sh.digging_changed = true;
+                }
+            }
+        }
         let saved = creation.knobs.clone();
         let mut vm = Vm::load(creation, &saved, self.shared.clone())?;
         // keep what the creatures were doing across a reload

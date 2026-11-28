@@ -2,12 +2,13 @@
 -- Hunger, for survival. A food bar sits beside your health bar and goes
 -- down slowly. When you get hungry you eat food you carry, a bite at a
 -- time: the most filling that fits (FOODS below says what's food and how
--- filling each is, from a pie or stew down to raw wheat). On an empty
--- belly you stop healing by yourself (world.healing) and it slowly hurts,
--- but never below half your health (world.hurt's down_to), and armor
--- doesn't help (guarded = false). When you're well fed you heal faster.
+-- filling each is, from a pie or stew down to raw wheat, and foods other
+-- creations make count too). On an empty belly you stop healing by
+-- yourself (world.healing) and it slowly hurts, but never below half your
+-- health (world.hurt's down_to), and armor doesn't help (guarded = false).
+-- When you're well fed you heal faster.
 
-local world = require("@potluck/world@0.21")
+local world = require("@potluck/world@0.25")
 local tweak = require("@potluck/tweak")
 local ui = require("@potluck/ui@0.2")
 local sound = require("@potluck/sound@0.1")
@@ -69,9 +70,31 @@ local function exists(name: string): boolean
 	return here[name] == true
 end
 
+-- FOODS and the foods other creations made ([items.*] with kind = "food",
+-- world.item): each made one goes in by how filling it is, before honey
+-- and milk.
+local function menu(): { Food }
+	local list = table.clone(FOODS)
+	for _, name in world.items() do
+		local it = world.item(name)
+		if it and it.kind == "food" then
+			local fills = it.food or 4
+			local at = #list + 1
+			for i, kind in list do
+				if kind.fills < fills or kind.name == "Honey" then
+					at = i
+					break
+				end
+			end
+			table.insert(list, at, { name = name, fills = fills, says = it.says or ("You ate some " .. string.lower(name) .. ".") })
+		end
+	end
+	return list
+end
+
 -- has a bite of something that fits, if they carry any
 local function eat(p, f: number): number
-	for _, kind in FOODS do
+	for _, kind in menu() do
 		if f + kind.fills <= FULL and exists(kind.name) and world.has(p, kind.name) >= 1 and world.take(p, kind.name, 1) then
 			if kind.back then
 				world.give(p, kind.back, 1)

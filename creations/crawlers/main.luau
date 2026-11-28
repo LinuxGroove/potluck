@@ -8,7 +8,7 @@
 -- nip, go by the world's danger (world.danger, world 0.21): none on
 -- Peaceful, half on Gentle, more on Hard. Set how many to 0 for none at all.
 
-local world = require("@potluck/world@0.22")
+local world = require("@potluck/world@0.25")
 local tweak = require("@potluck/tweak")
 local sound = require("@potluck/sound@0.2")
 
@@ -40,6 +40,19 @@ local SWORDS: { [string]: number } = {
 	["Iron sword"] = 4,
 	["Moonsilver sword"] = 5,
 }
+
+-- What's in hand bops this hard: a sword, a weapon another creation made
+-- ([items.*] with kind = "weapon", world.item) by its power, or a hand.
+local function bops(held: string?): number
+	if not held then
+		return 1
+	end
+	if SWORDS[held] then
+		return SWORDS[held]
+	end
+	local it = world.item(held)
+	return if it and it.kind == "weapon" then it.power or 1 else 1
+end
 
 -- What one leaves, from least to most.
 local SILK = { thing = "Silk", least = 1, most = 2 }
@@ -233,7 +246,7 @@ end
 function Crawler:hit(player, shot)
 	local held = world.held(player)
 	-- a Keen sword hits harder (world.might); a shot's power says already
-	local bop = if shot then shot.power else (held and SWORDS[held] or 1) * world.might(player)
+	local bop = if shot then shot.power else bops(held) * world.might(player)
 	self.bopped = (self.bopped or 0) + bop
 	if self.bopped < knobs.bops then
 		away_from(self, player.position, 3, 4)

@@ -487,12 +487,12 @@ async fn creation(State(app): State<Shared>, h: HeaderMap, Path(code): Path<Stri
 }
 
 /// What a creation brings besides its code: its buttons, its own sounds,
-/// its Blockbench models, a client half and its tests. Nothing when it has
-/// none of them.
+/// blocks and items, its Blockbench models, a client half and its tests.
+/// Nothing when it has none of them.
 fn contents(toml: &crate::checks::Toml, files: &BTreeMap<String, String>) -> Markup {
     let models: Vec<(&String, usize)> = files.iter().filter(|(n, _)| n.ends_with(".bbmodel")).map(|(n, t)| (n, crate::checks::model_cubes(t).unwrap_or(0))).collect();
     let tests = files.contains_key("test.luau");
-    if toml.actions.is_empty() && toml.sounds.is_empty() && toml.blocks.is_empty() && models.is_empty() && toml.client.is_none() && !tests {
+    if toml.actions.is_empty() && toml.sounds.is_empty() && toml.blocks.is_empty() && toml.items.is_empty() && models.is_empty() && toml.client.is_none() && !tests {
         return html! {};
     }
     html! {
@@ -510,6 +510,13 @@ fn contents(toml: &crate::checks::Toml, files: &BTreeMap<String, String>) -> Mar
                         @if let Some(svg) = block_picture(b) { (svg) }
                         "A block of its own, " b { (crate::checks::block_name(key, b)) }
                         @if b.get("light").and_then(|l| l.as_bool()) == Some(true) { span.sub { " · gives light" } }
+                    }
+                }
+                @for (key, i) in &toml.items {
+                    li.block {
+                        @if let Some(svg) = block_picture(i) { (svg) }
+                        "An item of its own, " b { (crate::checks::block_name(key, i)) }
+                        @if let Some(k) = i.get("kind").and_then(|k| k.as_str()).filter(|k| *k != "material") { span.sub { " · " (k) } }
                     }
                 }
                 @for (file, cubes) in &models {
