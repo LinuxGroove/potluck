@@ -26,8 +26,10 @@ local knobs = tweak {
 local climate = require("./climate")
 local SEASONS = climate.SEASONS
 
--- the days gone by, and the time of day last time it looked
-local days: number = store.get("days") or 0
+-- the days gone by, and the time of day last time it looked: a new world
+-- starts a little way into spring (two days of seven), after the thaw, so
+-- it isn't under melting snow
+local days: number = store.get("days") or math.floor(math.max(1, math.floor(knobs.days)) * 0.3)
 local last = world.daytime()
 
 -- the spell of weather now: its kind, how heavy, the wind, and the seconds

@@ -18,13 +18,13 @@ end
 test.case("a week makes a season, and four of them a year", function()
 	local name, progress = sky.season()
 	test.same(name, "spring", "a new world starts in spring")
-	test.check(progress < 0.15, "at its start: " .. progress)
+	test.check(progress > 0.25 and progress < 0.45, "after the thaw: " .. progress)
 	for _ = 1, 3 do
 		a_day_passes()
 	end
 	name, progress = sky.season()
 	test.same(name, "spring", "still spring after three days")
-	test.check(progress > 0.4 and progress < 0.5, "and almost half way through it: " .. progress)
+	test.check(progress > 0.7 and progress < 0.9, "and most of the way through it: " .. progress)
 	for _ = 1, 4 do
 		a_day_passes()
 	end
@@ -37,7 +37,7 @@ test.case("a week makes a season, and four of them a year", function()
 		a_day_passes()
 	end
 	test.same((sky.season()), "spring", "and round to spring again")
-	test.same(store.get("days"), 28, "the days are kept with the world")
+	test.same(store.get("days"), 30, "the days are kept with the world")
 end)
 
 test.case("it snows in winter, never rains, and summer is mostly fine", function()

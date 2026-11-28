@@ -1650,7 +1650,11 @@ print(best.name .. " " .. best.laps[2] .. " " .. best.at.y .. " " .. store.used(
 #[test]
 fn every_base_creation_runs_and_answers_players() {
     home();
-    let lib = Library::load();
+    let mut lib = Library::load();
+    // the Gnome Diggings dig a tunnel when a player wanders far from the Green: not here
+    if let Some(d) = lib.list.get_mut("diggings") {
+        d.knobs.insert("away".into(), KnobValue::Number(300.0));
+    }
     let base: Vec<&Creation> = lib.list.values().filter(|c| c.origin == Origin::Base).collect();
     assert!(base.len() >= 12, "a dozen creations in the base game, not {}", base.len());
     let mut voxels = world();
@@ -1684,7 +1688,7 @@ fn every_base_creation_runs_and_answers_players() {
     // everything but the wild creatures that only turn up near survival players (Gloomlings
     // at night, and the woods' and caves' ones), mods with no bodies, balloons (which only
     // come from a basket put down) and the Old Greens (which only build)
-    let only_near = ["gloomlings", "crawlers", "boars", "imps", "sentinels", "balloon", "old-greens"];
+    let only_near = ["gloomlings", "crawlers", "boars", "imps", "sentinels", "balloon", "old-greens", "diggings"];
     for c in base.iter().filter(|c| !only_near.contains(&c.id.as_str()) && c.manifest.kind != "mod") {
         assert!(herd.bodies.values().any(|b| b.creation == c.id), "{}'s creatures appear", c.manifest.name);
     }
